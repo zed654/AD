@@ -7,13 +7,16 @@ ROS2 bag 파일(.db3)에서 데이터를 추출하고 처리하는 메인 모듈
 
 # import typer
 import rclpy
-from .extractor import db3_extract
+try:
+    from .extractor import db3_extract
+except:
+    from extractor import db3_extract
 
 # app = typer.Typer()
 # app.add_typer(db3_extract.app, name="extract")
 
 import os
-def directory_selector():
+def directory_selection_gui():
     """
     GUI 기반의 파일 선택 다이얼로그를 표시합니다.
 
@@ -76,16 +79,14 @@ def main():
     parser = db3_extract.BagParser()
     # bag_path = "/home/chp/Documents/docker_shared/rosbag/sensor_data_153645_73.db3"
 
-    bag_path = directory_selector()
+    bag_path = directory_selection_gui()
 
     try:
         parser.read_bag(bag_path)
-        parser.process_synchronized_data()
     except Exception as e:
         parser.get_logger().error(f"Error processing bag file: {str(e)}")
         raise e
     finally:
-        parser.destroy_node()
         rclpy.shutdown()
 
 

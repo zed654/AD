@@ -153,5 +153,4 @@ def main():
         parser.get_logger().error(f"Error processing bag file: {str(e)}")
         raise e
     finally:
-        parser.destroy_node()
         rclpy.shutdown()

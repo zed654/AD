@@ -1,6 +1,7 @@
 
 import rclpy
-from data.data_extract.main import directory_selector
+# from data.data_extract.main import directory_selection_gui
+from data.data_extract import main as data_extract_main
 from data.data_extract.extractor import db3_extract
 
 
@@ -23,16 +24,15 @@ def main():
     parser = db3_extract.BagParser()
     # bag_path = "/home/chp/Documents/docker_shared/rosbag/sensor_data_153645_73.db3"
 
-    bag_path = directory_selector()
-
+    # bag_path = directory_selection_gui()
+    bag_path = data_extract_main.directory_selection_gui()
+    
     try:
         parser.read_bag(bag_path)
-        parser.process_synchronized_data()
     except Exception as e:
         parser.get_logger().error(f"Error processing bag file: {str(e)}")
         raise e
     finally:
-        parser.destroy_node()
         rclpy.shutdown()
 
 
