@@ -12,7 +12,8 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 
 # CUDA 실행 파일 추가
-add_executable(unified_memory_node src/main.cu)
+# add_executable(unified_memory_node src/main.cu)
+add_executable(unified_memory_node src/unified_memory_convolution.cu)
 target_include_directories(unified_memory_node PUBLIC ${CUDA_INCLUDE_DIRS})
 target_link_libraries(unified_memory_node ${CUDA_LIBRARIES})
 
