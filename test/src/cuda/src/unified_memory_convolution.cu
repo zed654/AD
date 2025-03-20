@@ -2,6 +2,8 @@
 #include <iostream>
 #include <chrono>
 
+#define __MATRIX_PRINT_DEACTIVATE__
+
 #define WIDTH 8  // 행렬 가로 크기
 #define HEIGHT 8 // 행렬 세로 크기
 #define PATCH_SIZE 3 // 3x3 Convolution
@@ -15,7 +17,9 @@ __global__ void gpu_convolution(const float *input, float *output, const float *
         float sum = 0.0f;
 
         // ✅ 3x3 Convolution 적용
+        #pragma unroll
         for (int ky = -1; ky <= 1; ky++) {
+            #pragma unroll
             for (int kx = -1; kx <= 1; kx++) {
                 int input_idx = (y + ky) * width + (x + kx);
                 int kernel_idx = (ky + 1) * PATCH_SIZE + (kx + 1);
@@ -56,6 +60,7 @@ void initialize_matrix(float *matrix, int width, int height) {
 
 // ✅ 행렬 출력 (디버깅용)
 void print_matrix(const float *matrix, int width, int height) {
+#ifndef __MATRIX_PRINT_DEACTIVATE__
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             std::cout << matrix[y * width + x] << "\t";
@@ -63,6 +68,7 @@ void print_matrix(const float *matrix, int width, int height) {
         std::cout << "\n";
     }
     std::cout << "\n";
+#endif
 }
 
 int main() {
@@ -72,6 +78,7 @@ int main() {
     cudaMallocManaged(&output_cpu, WIDTH * HEIGHT * sizeof(float));
     cudaMallocManaged(&output_gpu, WIDTH * HEIGHT * sizeof(float));
     cudaMallocManaged(&kernel, PATCH_SIZE * PATCH_SIZE * sizeof(float));
+
 
     // ✅ 2. CPU에서 데이터 초기화
     initialize_matrix(input, WIDTH, HEIGHT);
@@ -104,15 +111,18 @@ int main() {
     cudaEventCreate(&stop);
     cudaEventRecord(start);
     auto gpu_start_time = std::chrono::high_resolution_clock::now();
+
     cudaMemPrefetchAsync(input, WIDTH * HEIGHT * sizeof(float), 0);  // GPU로 데이터 전송
     cudaMemPrefetchAsync(kernel, PATCH_SIZE * PATCH_SIZE * sizeof(float), 0);
     cudaDeviceSynchronize();  // GPU 연산 전 동기화
-    dim3 threadsPerBlock(8, 8);
+    dim3 threadsPerBlock(16, 16);
     dim3 numBlocks((WIDTH + threadsPerBlock.x - 1) / threadsPerBlock.x, 
                    (HEIGHT + threadsPerBlock.y - 1) / threadsPerBlock.y);
     gpu_convolution<<<numBlocks, threadsPerBlock>>>(input, output_gpu, kernel, WIDTH, HEIGHT);
+
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
+    
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
     std::cout << "🔹 GPU Convolution Time: " << milliseconds << " milliseconds\n";
@@ -121,6 +131,9 @@ int main() {
     auto gpu_duration = std::chrono::duration_cast<std::chrono::microseconds>(gpu_end_time - gpu_start_time);
     std::cout << "🔹 GPU Convolution Time: " << gpu_duration.count() << " microseconds\n";
 
+    // 이벤트 정리
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
     // ✅ 6. GPU 결과를 CPU로 가져오기
     cudaMemPrefetchAsync(output_gpu, WIDTH * HEIGHT * sizeof(float), cudaCpuDeviceId);
