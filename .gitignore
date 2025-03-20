@@ -13,6 +13,9 @@ install/
 logs/
 */logs/
 **/logs/**
+log/
+*/log/
+**/log/**
 
 # Additional common files to ignore
 # Compiled object files
