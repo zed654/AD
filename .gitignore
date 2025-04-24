@@ -1,2 +1,45 @@
 db3_parser/db3/*.db3*
 db3_parser/results/*
+
+# Build directories
+build/
+*/build/
+**/build/**
+
+# Install directories
+install/
+*/install/
+**/install/**
+
+# Log files
+*.log
+logs/
+*/logs/
+**/logs/**
+log/
+*/log/
+**/log/**
+
+# Additional common files to ignore
+# Compiled object files
+*.o
+*.obj
+*.so
+*.a
+*.dll
+
+# Temporary files
+*.swp
+*.swo
+*~
+.DS_Store
+
+# IDE and editor folders
+.idea/
+.vscode/
+*.sublime-*
+
+# Dependency directories
+node_modules/
+vendor/
+>>>>>>> d35c767995ba46f2f4e11a01ef6d47f00fbbe6fb
