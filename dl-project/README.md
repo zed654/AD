@@ -23,10 +23,19 @@ bash:ai_ws/AD/dl-project/README.md
 git clone https://github.com/yourusername/dl-project.git
 cd dl-project
 
+## 가상환경 설정
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+
 2. 패키지 설치
 
 ```bash
-pip install -e .
+pip install -r requirements.lock
 ```
 
 ## 사용 방법
@@ -45,6 +54,11 @@ dl-extract
 
 ```bash
 dl-train
+```
+
+### 모델 분석
+```bash
+tensorboard --logdir ./results
 ```
 
 ### 모델 추론
