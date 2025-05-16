@@ -7,6 +7,16 @@ db3_parser/utility/__pycache__
 db3_parser/db3/*.db3*
 db3_parser/results/*
 
+dl-project/results/*
+dl-project/venv_chp/*
+dl-project/venv/*
+
+*/__pycache__/*
+**/__pycache__/**
+
+*/__pycache__
+**/__pycache__
+
 # Build directories
 build/
 */build/
