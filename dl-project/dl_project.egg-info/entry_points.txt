@@ -1,5 +1,0 @@
-[console_scripts]
-dl-extract = data.data_extract.main:main
-dl-infer = inference.main:main
-dl-train = training.main:main
-

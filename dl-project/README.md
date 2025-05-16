@@ -35,7 +35,7 @@ pip install -r requirements.txt
 2. 패키지 설치
 
 ```bash
-pip install -r requirements.lock
+pip install -r requirements.txt
 ```
 
 ## 사용 방법

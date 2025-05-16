@@ -1,11 +1,11 @@
 dl-project/data/__pycache__/
 dl-project/data/data_extract/__pycache__
 
-db3_parser/__pycache__/
-db3_parser/utility/__pycache__
+dl-project/db3_parser/__pycache__/
+dl-project/db3_parser/utility/__pycache__
 
-db3_parser/db3/*.db3*
-db3_parser/results/*
+dl-project/data/db3_parser/db3/*.db3*
+dl-project/data/db3_parser/results/**
 
 dl-project/results/*
 dl-project/venv_chp/*
