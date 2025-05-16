@@ -1,0 +1,7 @@
+numpy
+tensorboard
+torch
+joblib>=1.3
+matplotlib
+rich
+scipy
