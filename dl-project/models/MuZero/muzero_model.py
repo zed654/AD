@@ -138,14 +138,97 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         
         
     def dynamics_kinematic(self, state, action, agent_type: AgentTypeKinematic = AgentTypeKinematic.PEDESTRIAN):
+        """
+        Kinematic 동역학 모델
+        Args:
+            state: [batch_size, state_dim] - 에이전트의 현재 상태
+            action: [batch_size, action_dim] - 액션
+            agent_type: 에이전트 타입 (PEDESTRIAN, VEHICLE)
+            dt: 시간 간격 (초)
+        """
+        dt = 0.1
         if agent_type == AgentTypeKinematic.PEDESTRIAN:
-            # Kinematic Dynamics 적용
-            # state_next = ....
+            # 보행자 Kinematic 모델
+            # state: [x, y, v, theta] - 위치(x,y), 속력(v), 방향(theta)
+            # action: [dv, dtheta] - 속력 변화, 방향 변화
+            
+            batch_size = state.shape[0]
+            
+            # 현재 상태 분해
+            x = state[:, 0]      # x 위치
+            y = state[:, 1]      # y 위치  
+            v = state[:, 2]      # 속력
+            theta = state[:, 3]  # 방향 (라디안)
+            
+            # 액션 분해
+            dv = action[:, 0]       # 속력 변화 (-1~1 범위로 가정)
+            dtheta = action[:, 1]   # 방향 변화 (-1~1 범위로 가정)
+            
+            # 보행자 제약조건
+            max_speed = 2.0         # 최대 속력 (m/s)
+            max_accel = 2.0         # 최대 가속도 (m/s²)
+            max_angular_vel = 1.0   # 최대 각속도 (rad/s)
+            
+            # 속력 업데이트 (제약 적용)
+            v_new = v + dv * max_accel * dt
+            v_new = torch.clamp(v_new, 0.0, max_speed)
+            
+            # 방향 업데이트 (제약 적용)
+            theta_new = theta + dtheta * max_angular_vel * dt
+            theta_new = torch.fmod(theta_new, 2 * torch.pi)  # 0~2π 범위로 정규화
+            
+            # 위치 업데이트 (현재 속력과 방향 사용)
+            x_new = x + v_new * torch.cos(theta_new) * dt
+            y_new = y + v_new * torch.sin(theta_new) * dt
+            
+            # 새로운 상태 구성
+            state_next = torch.stack([x_new, y_new, v_new, theta_new], dim=1)
+            
             return state_next
+            
         elif agent_type == AgentTypeKinematic.VEHICLE:
-            # Kinematic Dynamics 적용
-            # state_next = ....
+            # 차량 Bicycle 모델
+            # state: [x, y, v, theta, delta] - 위치, 속력, 방향, 조향각
+            # action: [accel, steering_rate] - 가속도, 조향 변화율
+            
+            # 현재 상태 분해
+            x = state[:, 0]      # x 위치
+            y = state[:, 1]      # y 위치
+            v = state[:, 2]      # 속력
+            theta = state[:, 3]  # 방향
+            delta = state[:, 4]  # 조향각
+            
+            # 액션 분해
+            accel = action[:, 0] * 5.0      # 가속도 (-5~5 m/s²)
+            steering_rate = action[:, 1] * 0.5  # 조향 변화율 (-0.5~0.5 rad/s)
+            
+            # 차량 파라미터
+            L = 2.8  # 축간거리 (m)
+            max_speed = 15.0  # 최대 속력 (m/s)
+            max_steering = 0.6  # 최대 조향각 (rad)
+            
+            # 속력 업데이트
+            v_new = v + accel * dt
+            v_new = torch.clamp(v_new, 0.0, max_speed)
+            
+            # 조향각 업데이트
+            delta_new = delta + steering_rate * dt
+            delta_new = torch.clamp(delta_new, -max_steering, max_steering)
+            
+            # Bicycle 모델 기반 운동학
+            beta = torch.atan(0.5 * torch.tan(delta_new))  # 슬립각
+            
+            # 위치와 방향 업데이트
+            x_new = x + v_new * torch.cos(theta + beta) * dt
+            y_new = y + v_new * torch.sin(theta + beta) * dt
+            theta_new = theta + (v_new / L) * torch.sin(beta) * dt
+            theta_new = torch.fmod(theta_new, 2 * torch.pi)
+            
+            # 새로운 상태 구성
+            state_next = torch.stack([x_new, y_new, v_new, theta_new, delta_new], dim=1)
+            
             return state_next
+            
         else:
             # 다른 agent_type에 대한 처리 (기본값 반환)
             print("Unknown agent type")
