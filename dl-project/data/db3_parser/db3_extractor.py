@@ -181,17 +181,22 @@ class DB3Extractor:
                 last_sample_time = t_obs
                 
                 gt_dict_odom = []
+                trajectory_data = []  # (timestamp, odom_data) 형태로 수집
+                
+                # 장애물 감지 시점 이후의 odom 메시지들을 수집 (미래 trajectory)
                 for odom in odom_list:
                     t_odom = convert_ros2_timestamp_to_kst(odom["timestamp"])
                     if t_obs <= t_odom <= t_obs + timedelta(seconds=n_seconds):
-                        # odom dict + timestamp 포함
-                        # gt_dict_odom.append({**msg_to_dict(odom["msg"]), "timestamp": odom["timestamp"]}) # gt_dict_odom 에 timestamp 포함하려면 이렇게 하면 됨
-                        gt_dict_odom.append({**msg_to_dict(odom["msg"])})
+                        trajectory_data.append((odom["timestamp"], msg_to_dict(odom["msg"])))
+                
+                # 시간 순서로 정렬하여 올바른 trajectory 생성
+                trajectory_data.sort(key=lambda x: x[0])
+                gt_dict_odom = [data for _, data in trajectory_data]
                 
                 if gt_dict_odom:  # 매칭된 GT가 있을 때만 저장
                     input_dict = msg_to_dict(obs["msg"])
                     # input_dict["timestamp"] = obs["timestamp"] # json 문구 추가하려면 이렇게 추가하면 됨
-                    f.write(json.dumps({"input": input_dict, "gt": gt_dict_odom}) + "\n")
+                    f.write(json.dumps({"input_environment": input_dict, "gt_trajectory": gt_dict_odom}) + "\n")
                     matched_count += 1
         
         print(f"\n[DEBUG] 매칭된 샘플 수: {matched_count}")
