@@ -12,9 +12,24 @@
             - 이미지: 이미지 파일 이름에 timestamp 가 있음
             - GT: jsonl 의 각 데이터에 timestamp 가 있음
     
-기타
 
-    파싱된 ndjson 은 https://jsonviewer.stack.hu/ 에 복붙하여 형태 확인 가능
+사용법
+
+    1. 추출할 db3 입력
+        data/db3_parser/db3 에 추출할 db3 파일 넣기
+            - sensor_data_110416_63.db3
+            - sensor_data_110516_64.db3
+            - ...
+
+    2. 추출 프로그램 실행
+        python3 data/db3_parser/db3/db3_extractor.py 실행
+
+    3. 추출 결과 확인
+        data/db3_parser/db3/result 에서 결과 확인
+            jsonl(ndjson) 의 경우, https://jsonviewer.stack.hu/ 에 복붙하여 형태 확인 가능
+
+기타
+    db3 파싱 샘플 코드는 example/db3_extractor_odomgyro.py 참고
 
 
 데이터 구조 형태 샘플

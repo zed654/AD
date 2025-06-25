@@ -117,7 +117,7 @@ class DB3Extractor:
                         # error_count는 증가시키지 않음 (더미 데이터로 대체했으므로)
                     else:
                         error_count += 1
-                        print(f"\n[WARNING] {topic_name} 토픽 메시지 파싱 실패 (timestamp: {timestamp}): {e}")
+                        print(f"\n\033[31m[WARNING] {topic_name} 토픽 메시지 파싱 실패 (timestamp: {timestamp}): {e}\033[0m")
                 continue
         
         print(f"\n[INFO] {topic_name}: 성공 {success_count}개, 실패 {error_count}개")
@@ -150,7 +150,7 @@ class DB3Extractor:
         #         except Exception as e:
         #             if topic == topic_name:
         #                 error_count += 1
-        #                 print(f"\n[WARNING] {topic_name} 토픽 메시지 저장 실패 (timestamp: {timestamp}): {e}")
+        #                 print(f"\n\033[31m[WARNING] {topic_name} 토픽 메시지 저장 실패 (timestamp: {timestamp}): {e}\033[0m")
         #             continue
         
         print(f"{topic_name}: 성공 {success_count}개, 실패 {error_count}개 → {output_path}에 저장했습니다.")
@@ -243,7 +243,7 @@ if __name__ == "__main__":
         output_path = os.path.join(results_dir, f"odomgyro_{db3_name}.jsonl")
         print(f"\n[INFO] {db3_path} → {output_path}")
         extractor = DB3Extractor(db3_path)
-        extractor.db3_extract_function("/odomgyro", output_path, "nav_msgs/msg/Odometry")
+        # extractor.db3_extract_function("/odomgyro", output_path, "nav_msgs/msg/Odometry")
         
         # obstacles2odom GT 데이터셋 생성
         gt_output_path = os.path.join(results_dir, f"IO_GT_matching_{db3_name}.jsonl")
