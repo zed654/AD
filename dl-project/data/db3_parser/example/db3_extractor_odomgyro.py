@@ -3,6 +3,7 @@ from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 import sqlite3
 import json
+from pathlib import Path
 
 def extract_odom_from_db3(db3_path, topic_name, output_path):
     # db3 파일 연결
@@ -25,6 +26,8 @@ def extract_odom_from_db3(db3_path, topic_name, output_path):
     msg_module = get_message(msg_type)
 
     # 결과 저장 (예: jsonl)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         for timestamp, data in messages:
             msg = deserialize_message(data, msg_module)
@@ -59,9 +62,9 @@ def extract_odom_from_db3(db3_path, topic_name, output_path):
     conn.close()
 
 if __name__ == "__main__":
-    db3_path = "/home/chp/ai_ws/db3_parser/db3/sensor_data_160245_99.db3"
+    db3_path = "/home/chp/ai_ws/AD/dl-project/data/db3_parser/db3/sensor_data_165956_75.db3"
     topic_name = "/odomgyro"
-    output_path = "results/odomgyro.jsonl"
+    output_path = "/home/chp/ai_ws/AD/dl-project/data/db3_parser/example/results/odomgyro.jsonl"
 
     rclpy.init()
     extract_odom_from_db3(db3_path, topic_name, output_path)
