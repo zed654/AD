@@ -1,6 +1,11 @@
+"""
+MuZero 설정 파일
+하이퍼파라미터와 학습 설정 관리
+"""
 from pathlib import Path
 import datetime
 import torch
+from models.MuZero.action import Action
 
 # MuZero 설정 클래스
 class MuZeroConfig:
@@ -11,7 +16,7 @@ class MuZeroConfig:
 
         # 게임 관련 설정
         self.observation_shape = (1, 1, 4)  # 게임 관찰의 차원 (channel, height, width)
-        self.action_space = list(range(2))  # 가능한 모든 액션 목록
+        self.action_space = list(range(Action.get_action_space_size()))  # Position(8) x StopAndGo(2) = 16개 액션
         self.players = list(range(1))  # 플레이어 목록
         self.stacked_observations = 0  # 현재 관찰에 추가할 이전 관찰 및 이전 액션 수
 

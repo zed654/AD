@@ -6,13 +6,10 @@
 
 ```
 dl-project/
-├── config/ # 설정 파일
 ├── data/ # 데이터 처리 관련 모듈
-│ └── data_extract/ # ROS2 bag 파일 데이터 추출
-├── models/ # 딥러닝 모델 정의
-├── training/ # 모델 학습 관련 모듈
-├── inference/ # 모델 추론 관련 모듈
-└── main.py # 메인 실행 파일
+│ └── db3_parser/ # ROS2 bag 파일 데이터 추출
+├── models/ # 딥러닝 모델 정의 (학습/추론 모듈)
+└── muzero.py # 메인 실행 파일
 ```
 
 ## 설치 방법
