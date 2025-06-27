@@ -57,6 +57,29 @@ class ReplayBuffer:
         self.buffer.append(episode)
         self.episode_count += 1
         
+    def save_game(self, game_history):
+        """GameHistory를 Episode로 변환하여 저장
+        
+        Args:
+            game_history: SelfPlayManager의 GameHistory 객체
+        """
+        episode = Episode()
+        
+        # GameHistory 데이터를 Episode 형식으로 변환
+        for i in range(len(game_history.observations)):
+            done = (i == len(game_history.observations) - 1)  # 마지막 스텝인지 확인
+            
+            episode.add_step(
+                state=game_history.observations[i],
+                action=game_history.actions[i],
+                reward=game_history.rewards[i],
+                policy=game_history.policies[i],
+                value=game_history.values[i],
+                done=done
+            )
+        
+        self.save_episode(episode)
+        
     def get_batch(self, batch_size: int) -> Optional[List[Episode]]:
         """학습용 배치 샘플링"""
         if len(self.buffer) < batch_size:

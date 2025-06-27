@@ -15,18 +15,25 @@ class MuZeroConfig:
         self.max_num_gpus = None
 
         # 게임 관련 설정
-        self.observation_shape = (1, 1, 4)  # 게임 관찰의 차원 (channel, height, width)
         self.action_space = list(range(Action.get_action_space_size()))  # Position(8) x StopAndGo(2) = 16개 액션
         self.players = list(range(1))  # 플레이어 목록
         self.stacked_observations = 0  # 현재 관찰에 추가할 이전 관찰 및 이전 액션 수
 
+        # 환경 설정 (DrivingEnvironment에서 사용)
+        self.observation_shape = (1, 1, 4)  # 게임 관찰의 차원 (channel, height, width)
+        self.env_max_steps = 10  # 에피소드 최대 스텝 수
+        self.collision_threshold = 0.5  # 충돌 판정 거리
+        self.goal_threshold = 1.0  # 목표 도달 판정 거리
+
         # Self-Play 설정
         self.num_workers = 1
         self.selfplay_on_gpu = False
-        self.max_moves = 500
         self.num_simulations = 50
         self.discount = 0.997
         self.temperature_threshold = None
+        self.num_stochastic_steps = 30  # 초기 30스텝 동안 확률적 행동 선택
+        self.max_game_length = 500  # Self-play 안전장치 (무한루프 방지)
+        self.num_selfplay_games = 5  # Self-play로 실행할 게임 수
 
         # UCB 공식
         self.pb_c_base = 19652
