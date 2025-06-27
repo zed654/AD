@@ -50,7 +50,10 @@ def main():
     # 랜덤 관찰 생성
     observation = torch.rand(1, *config.observation_shape).to(device) # 추후 실제 관측값으로 입력 필요
     
-    result = mcts.run(observation)
+    """
+    Self-play 작업 수행
+    """
+    result = mcts.run(observation, debug=True) # Self-Play 샘플 (디버그 모드)
     selected_action_index = result['action']
     
     # Action 의 Index to String 작업 수행
@@ -61,6 +64,7 @@ def main():
     print(f"  Position: {selected_action.position.value}")
     print(f"  StopAndGo: {selected_action.stopgo.value}")
     print(f"Root value: {result['root_value']:.4f}")
+    print(f"Total nodes in tree: {result['total_nodes']}")
     
     # 정책 타겟을 보기 좋게 출력
     print("\nPolicy distribution:")

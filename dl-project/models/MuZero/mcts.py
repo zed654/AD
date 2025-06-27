@@ -68,6 +68,13 @@ class Node:
                 self.children[action].prior * (1 - exploration_fraction) +
                 n * exploration_fraction
             )
+    
+    def count_nodes(self) -> int:
+        """현재 노드를 포함한 서브트리의 전체 노드 개수 카운트"""
+        count = 1  # 자기 자신
+        for child in self.children.values():
+            count += child.count_nodes()
+        return count
 
 
 class MCTS:
@@ -94,12 +101,13 @@ class MCTS:
         self.device = device
         self.min_max_stats = MinMaxStats()
         
-    def run(self, observation: torch.Tensor, add_exploration_noise: bool = True) -> Dict:
+    def run(self, observation: torch.Tensor, add_exploration_noise: bool = True, debug: bool = False) -> Dict:
         """Self-play를 위한 MCTS 실행
         
         Args:
             observation: 현재 관측값
             add_exploration_noise: 루트 노드에 탐색 노이즈 추가 여부
+            debug: 시뮬레이션 진행 상황을 출력하는 옵션
             
         Returns:
             선택된 액션, 루트 가치, 정책 타겟 등을 포함한 딕셔너리
@@ -127,7 +135,10 @@ class MCTS:
         self.min_max_stats = MinMaxStats()
         
         # 시뮬레이션 실행
-        for _ in range(self.num_simulations):
+        for i in range(self.num_simulations):
+            if debug and i % 10 == 0:  # 10회마다 출력
+                print(f"시뮬레이션 {i}/{self.num_simulations}, 현재 노드 수: {root.count_nodes()}")
+                
             node = root
             search_path = [node]
             
@@ -151,15 +162,22 @@ class MCTS:
             # 백업 (역전파)
             self._backup(search_path, value)
             
+        if debug:
+            print(f"시뮬레이션 완료! 최종 노드 수: {root.count_nodes()}")
+            
         # 액션 선택 및 정책 타겟 계산
-        action = self._select_action(root, temperature=1.0)
+        action = self._select_action(root, temperature=1.0) # 시뮬레이션 종료 후 방문 횟수에 따른 액션 선택
         policy_targets = self._get_policy_targets(root)
+        
+        # 트리의 전체 노드 개수 (디버깅용)
+        total_nodes = root.count_nodes()
         
         return {
             'action': action,
             'root_value': root.value(),
             'policy_targets': policy_targets,
-            'root_node': root
+            'root_node': root,
+            'total_nodes': total_nodes  # 트리의 전체 노드 개수
         }
         
     def _select_child(self, node: Node) -> Tuple[int, Node]:
@@ -204,12 +222,13 @@ class MCTS:
         
     def _backup(self, search_path: List[Node], value: float):
         """검색 경로를 따라 가치 역전파"""
-        for node in reversed(search_path):
-            node.value_sum += value
-            node.visit_count += 1
-            self.min_max_stats.update(node.value())
+        for node in reversed(search_path):  # Leaf -> root 순서
+            node.value_sum += value         # W(s, a) 업데이트
+            node.visit_count += 1           # N(s, a) 업데이트
+            self.min_max_stats.update(node.value()) # Q 값 정규화
             
-            # 할인된 가치로 업데이트
+            # 다음 노드를 위한 value 계산 (할인된 가치로 업데이트)
+            #   즉, 현재 자신의 reward 와 자식 노드의 가치를 할인하여 업데이트
             value = node.reward + self.discount * value
             
     def _select_action(self, root: Node, temperature: float = 1.0) -> int:

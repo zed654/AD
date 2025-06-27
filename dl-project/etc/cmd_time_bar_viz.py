@@ -17,6 +17,11 @@ with Progress(
     )
 
     for f in files:
+        """
+        실제 작업 구현 부분 
+        
+        """
+        # 실제 작업 구현 부분 
         sleep(0.3)  # 처리하는 척
         data_count += 50  # 가령 50개씩 처리했다고 가정
 
