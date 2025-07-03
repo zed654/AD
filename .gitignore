@@ -50,6 +50,9 @@ log/
 *~
 .DS_Store
 
+# Model Result
+dl-project/models/MuZero/results/*
+
 # IDE and editor folders
 .idea/
 .vscode/
