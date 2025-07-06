@@ -43,6 +43,8 @@ def calculate_target_value(episode, start_idx, discount, n_steps=5):
     
     MuZero는 n-step return + bootstrap value를 사용합니다.
     target_value = sum(discount^k * reward_k) + discount^n * value_n
+    
+    * Bellman equation 원리임 - Baysian Theory 의 반대 개념으로, 미래의 가치를 현재에 대입하는 것
     """
     if start_idx >= len(episode):
         return 0.0
