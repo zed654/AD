@@ -8,6 +8,7 @@ MuZero 강화학습 알고리즘 구현
 - Models: 신경망 구현체
 - Config: 설정 클래스
 - ReplayBuffer: 경험 저장소
+- Train: 학습 모듈
 """
 
 from .mcts import MCTS, Node, MinMaxStats
@@ -16,6 +17,7 @@ from .network import AbstractNetwork
 from .models import MuZeroFullyConnectedNetwork
 from .config import MuZeroConfig
 from .replay_buffer import Episode, ReplayBuffer
+from .train import train_network
 
 __all__ = [
     'MCTS',
@@ -26,5 +28,6 @@ __all__ = [
     'MuZeroFullyConnectedNetwork',
     'MuZeroConfig',
     'Episode',
-    'ReplayBuffer'
+    'ReplayBuffer',
+    'train_network'
 ] 
