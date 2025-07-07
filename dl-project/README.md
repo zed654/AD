@@ -55,7 +55,7 @@ dl-train
 
 ### 모델 분석
 ```bash
-tensorboard --logdir ./results
+tensorboard --logdir models/MuZero/results
 ```
 
 ### 모델 추론

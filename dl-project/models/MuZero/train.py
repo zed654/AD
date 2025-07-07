@@ -26,13 +26,20 @@ def scalar_to_support(scalars, support_size):
     스칼라 값을 support distribution으로 변환 (cross_entropy용 인덱스 반환)
     """
     batch_size = scalars.shape[0]
+    # ex) support_size = 20
     
     # Clamp scalars to the valid support range
+    # 1. 범위 제한: -20 ~ +20 (support_size 만큼 범위 제한)
     scalars = torch.clamp(scalars, -support_size, support_size)
     
-    # Transform scalar to support index
+    # 2. 인덱스로 변환
     # This is a simplified version - MuZero paper uses a more sophisticated method
+    # -20.3 → -1, -19 → 1, ..., 0 → 20, ..., 19.4 → 39
     floor_idx = torch.floor(scalars + support_size).long()
+    
+    # 3. 범위 제한: 0 ~ 40 (2 * support_size)
+    # 최대치 제한: 양수의 최고치인 support_size * 2 를 넘어가면 범위 제한
+    # 최소치 제한: 음수를 제외하기위해 0으로 제한
     floor_idx = torch.clamp(floor_idx, 0, 2 * support_size)
     
     return floor_idx
@@ -43,6 +50,7 @@ def calculate_target_value(episode, start_idx, discount, n_steps=5):
     
     MuZero는 n-step return + bootstrap value를 사용합니다.
     target_value = sum(discount^k * reward_k) + discount^n * value_n
+    bootstrap value 는 n_steps 만큼 적용됨 (n_steps 만큼 미래의 가치를 현재에 대입하는 것)
     
     * Bellman equation 원리임 - Baysian Theory 의 반대 개념으로, 미래의 가치를 현재에 대입하는 것
     """
@@ -142,7 +150,7 @@ def train_network(network, replay_buffer, config, device):
             max_start = max(0, len(episode) - K)
             start_idx = np.random.randint(0, max_start + 1)
             
-            # 초기 관측값
+            # 초기 관측값 ... PyTorch 모델 배치형태 맞추려고 unsqueeze 함 ([B, C, H, W] -> [1, C, H, W])
             observation = episode.states[start_idx].unsqueeze(0).to(device)
             
             # 초기 추론 (representation + prediction)
@@ -210,6 +218,9 @@ def train_network(network, replay_buffer, config, device):
         policy_loss = policy_loss / (num_samples * (K + 1))
         
         # 총 손실
+        # value, reward, policy 손실을 합하지만, 내부적으로는 계산 히스토리가 남아있어서 문제없음
+        #   즉, value, policy 의 손실은 prediction(latent) 을 업데이트하고, reward 의 손실은 dynamics(latent, action) 를 업데이트함
+        #   또한, representation() 도 간접적으로 업데이트가 됨
         total_loss = value_loss + reward_loss + policy_loss
         
         # 역전파
