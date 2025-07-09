@@ -12,13 +12,16 @@ import json
 # MuZero 관련 import
 from models.MuZero.models import MuZeroFullyConnectedNetwork
 from models.MuZero.config import MuZeroConfig
-from models.MuZero.mcts import MCTS
+# MCTS는 SelfPlayManager 내부에서 사용됨
 from models.MuZero.action import Action
 from models.MuZero.environment import DrivingEnvironment
 from models.MuZero.observation_provider import GTObservationProvider, ROS2ObservationProvider, MockObservationProvider
 from models.MuZero.self_play import SelfPlayManager
 from models.MuZero.replay_buffer import ReplayBuffer
 from models.MuZero.train import train_network
+from models.MuZero.utils import calculate_game_statistics, print_game_statistics, print_episode_summary
+from models.MuZero.config_manager import load_config, save_config, print_config
+from models.MuZero.logger import get_logger
 
 
 def get_network(config, device):
@@ -62,6 +65,8 @@ def create_observation_provider(config, mode="train"):
 
 def train_mode(config, checkpoint_path=None):
     """학습 모드 실행"""
+    logger = get_logger("MuZero.Train", config.results_path / "logs")
+    
     print("\n" + "="*60)
     print("🎓 MuZero 학습 모드")
     print("="*60)
@@ -69,6 +74,7 @@ def train_mode(config, checkpoint_path=None):
     # 디바이스 설정
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"📱 Device: {device}")
+    logger.info(f"Device: {device}")
     
     # 결과 디렉토리 설정 (config.results_path 사용)
     print(f"📁 결과 저장 경로: {config.results_path}")
@@ -117,10 +123,10 @@ def train_mode(config, checkpoint_path=None):
         )
         
         # 게임 통계
-        game_lengths = [game.get_length() for game in games]
-        total_rewards = [sum(game.rewards) for game in games]
-        print(f"     - 평균 길이: {np.mean(game_lengths):.1f}")
-        print(f"     - 평균 보상: {np.mean(total_rewards):.2f}")
+        stats = calculate_game_statistics(games)
+        print(f"     - 평균 길이: {stats['avg_length']:.1f}")
+        print(f"     - 평균 보상: {stats['avg_reward']:.2f}")
+        logger.epoch_end(epoch + 1, stats)
         
         # Replay Buffer에 저장
         for game in games:
@@ -141,6 +147,7 @@ def train_mode(config, checkpoint_path=None):
                 'config': config.__dict__
             }, save_path)
             print(f"  💾 체크포인트 저장: {save_path}")
+            logger.checkpoint_saved(save_path)
     
     print("\n✅ 학습 완료!")
     
@@ -156,9 +163,7 @@ def train_mode(config, checkpoint_path=None):
     
     # 설정 파일 저장
     config_path = config.results_path / "config.json"
-    with open(config_path, 'w') as f:
-        json.dump(config.__dict__, f, indent=2, default=str)
-    print(f"📄 설정 파일 저장: {config_path}")
+    save_config(config, config_path)
     
     print(f"\n📊 TensorBoard 확인: tensorboard --logdir {config.results_path / 'logs'}")
 
@@ -191,71 +196,49 @@ def inference_mode(config, checkpoint_path, num_episodes=1, render=True):
     # 환경 생성
     environment = DrivingEnvironment(config, observation_provider)
     
-    # MCTS 생성 (추론용)
-    mcts = MCTS(config)
+    # SelfPlayManager 활용 (MCTS 포함)
+    self_play_manager = SelfPlayManager(
+        network=network,
+        environment=environment,
+        config=config,
+        device=device
+    )
     
     print(f"\n🎮 {num_episodes}개 에피소드 실행")
     
-    for episode in range(num_episodes):
-        print(f"\n📍 Episode {episode + 1}/{num_episodes}")
+    # 추론용 설정: temperature=0 (결정적 선택), 탐색 노이즈 없음
+    games = self_play_manager.play_games(
+        num_games=num_episodes,
+        temperature=0.0  # 결정적 선택
+    )
+    
+    # 결과 통계 출력
+    for i, game in enumerate(games):
+        print_episode_summary(i, game, show_actions=True)
         
-        # 환경 리셋
-        observation = environment.reset()
-        done = False
-        total_reward = 0
-        steps = 0
-        actions_taken = []
-        
-        while not done and steps < config.max_game_length:
-            # MCTS로 최적 액션 선택
-            with torch.no_grad():
-                # 네트워크 추론
-                network_output = network.initial_inference(observation.unsqueeze(0))
-                
-                # MCTS 실행
-                mcts_result = mcts.run(
-                    observation,
-                    add_exploration_noise=False  # 추론 시에는 탐색 노이즈 없음
-                )
-                
-                # 최적 액션 선택 (가장 높은 확률)
-                action = np.argmax(mcts_result['policy_targets'])
-            
-            # 액션 실행
-            observation, reward, done, info = environment.step(action)
-            
-            # 통계 업데이트
-            total_reward += reward
-            steps += 1
-            actions_taken.append(Action.from_index(action))
-            
-            # 렌더링 (옵션)
-            if render:
-                print(f"  Step {steps}: Action={Action.from_index(action)}, Reward={reward:.2f}")
-        
-        # 에피소드 결과
-        print(f"\n  📊 Episode {episode + 1} 결과:")
-        print(f"     - 총 스텝: {steps}")
-        print(f"     - 총 보상: {total_reward:.2f}")
-        print(f"     - 종료 이유: {info.get('done_reason', 'unknown')}")
-        
-        # 액션 통계
-        action_counts = {}
-        for action in actions_taken:
-            key = str(action)
-            action_counts[key] = action_counts.get(key, 0) + 1
-        print(f"     - 액션 분포: {json.dumps(action_counts, indent=8)}")
+        if render:
+            print("\n   상세 스텝:")
+            for step, (action_idx, reward) in enumerate(zip(game.actions, game.rewards)):
+                print(f"     Step {step+1}: Action={Action.from_index(action_idx)}, Reward={reward:.2f}")
     
     # 리소스 정리
     environment.close()
     print("\n✅ 추론 완료!")
 
 
-def evaluate_mode(config, checkpoint_path, num_episodes=100):
-    """평가 모드 - 모델 성능 평가"""
+def evaluate_mode(config, checkpoint_path, num_episodes=100, use_mcts=True):
+    """평가 모드 - 모델 성능 평가
+    
+    Args:
+        config: 설정 객체
+        checkpoint_path: 체크포인트 경로
+        num_episodes: 평가할 에피소드 수
+        use_mcts: MCTS 사용 여부 (True: MCTS 사용, False: 네트워크 출력만 사용)
+    """
     print("\n" + "="*60)
     print("📊 MuZero 평가 모드")
     print("="*60)
+    print(f"🎯 MCTS 사용: {'예' if use_mcts else '아니오'}")
     
     # 추론 모드와 유사하지만 통계 수집에 집중
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -272,37 +255,58 @@ def evaluate_mode(config, checkpoint_path, num_episodes=100):
     observation_provider = create_observation_provider(config, mode="train")  # GT나 Mock
     environment = DrivingEnvironment(config, observation_provider)
     
-    # 평가 통계
-    episode_rewards = []
-    episode_lengths = []
-    success_count = 0
-    
-    print(f"\n🎮 {num_episodes}개 에피소드로 평가 시작...")
-    
-    for episode in range(num_episodes):
-        observation = environment.reset()
-        done = False
-        total_reward = 0
-        steps = 0
+    if use_mcts:
+        # MCTS를 사용한 평가 (더 정확하지만 느림)
+        self_play_manager = SelfPlayManager(
+            network=network,
+            environment=environment,
+            config=config,
+            device=device
+        )
         
-        while not done and steps < config.max_game_length:
-            with torch.no_grad():
-                # 간단한 추론 (MCTS 없이)
-                network_output = network.initial_inference(observation.unsqueeze(0))
-                policy = torch.softmax(network_output.policy_logits, dim=1)
-                action = torch.argmax(policy).item()
+        print(f"\n🎮 MCTS를 사용하여 {num_episodes}개 에피소드 평가...")
+        games = self_play_manager.play_games(
+            num_games=num_episodes,
+            temperature=0.0  # 평가 시 결정적 선택
+        )
+        
+        # 통계 수집
+        episode_rewards = [sum(game.rewards) for game in games]
+        episode_lengths = [game.get_length() for game in games]
+        success_count = sum(1 for _ in games if environment.done_reason == 'goal_reached')
+        
+    else:
+        # 네트워크 출력만 사용한 빠른 평가
+        episode_rewards = []
+        episode_lengths = []
+        success_count = 0
+        
+        print(f"\n🎮 네트워크 직접 추론으로 {num_episodes}개 에피소드 평가...")
+        
+        for episode in range(num_episodes):
+            observation = environment.reset()
+            done = False
+            total_reward = 0
+            steps = 0
             
-            observation, reward, done, info = environment.step(action)
-            total_reward += reward
-            steps += 1
-        
-        episode_rewards.append(total_reward)
-        episode_lengths.append(steps)
-        if info.get('done_reason') == 'goal_reached':
-            success_count += 1
-        
-        if (episode + 1) % 10 == 0:
-            print(f"  진행: {episode + 1}/{num_episodes}")
+            while not done and steps < config.max_game_length:
+                with torch.no_grad():
+                    # 간단한 추론 (MCTS 없이)
+                    network_output = network.initial_inference(observation.unsqueeze(0))
+                    policy = torch.softmax(network_output.policy_logits, dim=1)
+                    action = torch.argmax(policy).item()
+                
+                observation, reward, done, info = environment.step(action)
+                total_reward += reward
+                steps += 1
+            
+            episode_rewards.append(total_reward)
+            episode_lengths.append(steps)
+            if info.get('done_reason') == 'goal_reached':
+                success_count += 1
+            
+            if (episode + 1) % 10 == 0:
+                print(f"  진행: {episode + 1}/{num_episodes}")
     
     # 최종 통계
     print(f"\n📈 평가 결과:")
@@ -384,14 +388,10 @@ def main():
     args = parser.parse_args()
     
     # 설정 로드
-    config = MuZeroConfig()
-    
-    # 설정 파일이 제공된 경우
     if args.config:
-        with open(args.config, 'r') as f:
-            custom_config = json.load(f)
-            for key, value in custom_config.items():
-                setattr(config, key, value)
+        config = load_config(Path(args.config))
+    else:
+        config = MuZeroConfig()
     
     # CLI 옵션으로 설정 덮어쓰기
     if args.provider:

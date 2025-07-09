@@ -58,8 +58,8 @@ class MuZeroConfig:
         # 학습 설정
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
-        self.training_steps = 30 #10000
-        self.batch_size = 8 #128
+        self.training_steps = 100 #10000
+        self.batch_size = 32 #128
         self.checkpoint_interval = 10
         self.value_loss_weight = 1
         self.train_on_gpu = torch.cuda.is_available()
