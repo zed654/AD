@@ -24,11 +24,15 @@ class MuZeroConfig:
         self.env_max_steps = 10  # 에피소드 최대 스텝 수
         self.collision_threshold = 0.5  # 충돌 판정 거리
         self.goal_threshold = 1.0  # 목표 도달 판정 거리
+        
+        # Observation Provider 설정
+        self.observation_provider_type = "mock"  # "mock", "gt", "ros2" 중 선택
+        self.gt_data_path = Path("data/db3_parser/results/matched_data.jsonl")  # GT 데이터 경로
 
         # Self-Play 설정
         self.num_workers = 1
         self.selfplay_on_gpu = False
-        self.num_simulations = 50
+        self.num_simulations = 10 #50
         self.discount = 0.997
         self.temperature_threshold = None
         self.num_stochastic_steps = 30  # 초기 30스텝 동안 확률적 행동 선택
@@ -54,8 +58,8 @@ class MuZeroConfig:
         # 학습 설정
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
-        self.training_steps = 10000
-        self.batch_size = 128
+        self.training_steps = 30 #10000
+        self.batch_size = 8 #128
         self.checkpoint_interval = 10
         self.value_loss_weight = 1
         self.train_on_gpu = torch.cuda.is_available()
@@ -68,6 +72,15 @@ class MuZeroConfig:
         self.lr_init = 0.02
         self.lr_decay_rate = 0.8
         self.lr_decay_steps = 1000
+        
+        # 추가 학습 설정 (개선된 인터페이스용)
+        self.num_training_epochs = 10 # 100  # 전체 학습 에폭 수
+        self.replay_buffer_size = 100  # Replay Buffer 크기
+        
+        # 체크포인트 저장 설정
+        self.checkpoint_save_dir = "checkpoints"  # 체크포인트 저장 디렉토리 이름
+        self.checkpoint_final_name = "muzero_final.pth"  # 최종 모델 파일명
+        self.checkpoint_epoch_prefix = "muzero_epoch_"  # 에폭별 체크포인트 파일명 접두사
 
     def visit_softmax_temperature_fn(self, trained_steps):
         """

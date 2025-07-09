@@ -127,6 +127,7 @@ def train_network(network, replay_buffer, config, device):
     writer = SummaryWriter(log_dir=config.results_path / "logs")
     
     # 학습 루프
+    print("\n=== MuZero 네트워크 학습 시작 ===")
     for step in range(training_steps):
         # 배치 샘플링
         batch = replay_buffer.get_batch(batch_size)

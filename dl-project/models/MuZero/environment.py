@@ -7,6 +7,7 @@ import numpy as np
 from typing import Tuple, Dict, Optional
 from abc import ABC, abstractmethod
 from .action import Action
+from .observation_provider import ObservationProvider, GTObservationProvider, ROS2ObservationProvider, MockObservationProvider
 
 
 class BaseEnvironment(ABC):
@@ -31,7 +32,7 @@ class BaseEnvironment(ABC):
 class DrivingEnvironment(BaseEnvironment):
     """자율주행 환경"""
     
-    def __init__(self, config=None):
+    def __init__(self, config=None, observation_provider: Optional[ObservationProvider] = None):
         # config가 없으면 기본값 사용
         if config is None:
             self.max_steps = 100
@@ -44,6 +45,14 @@ class DrivingEnvironment(BaseEnvironment):
             self.collision_threshold = config.collision_threshold
             self.goal_threshold = config.goal_threshold
             self.observation_shape = config.observation_shape
+            self.config = config
+        
+        # ObservationProvider 설정
+        if observation_provider is not None:
+            self.observation_provider = observation_provider
+        else:
+            # 기본값: Mock provider 사용
+            self.observation_provider = MockObservationProvider(config or self._create_default_config())
         
         # 상태 변수들
         self.current_step = 0
@@ -52,6 +61,7 @@ class DrivingEnvironment(BaseEnvironment):
         self.obstacles = []
         self.game_done = False  # 게임 종료 여부
         self.done_reason = None
+        self.last_action = None
         
     def reset(self) -> torch.Tensor:
         """환경 초기화"""
@@ -59,39 +69,58 @@ class DrivingEnvironment(BaseEnvironment):
         self.game_done = False
         self.done_reason = None
         
-        # TODO: 실제 시나리오에서 초기 상태 로드
-        # 임시로 랜덤 초기화
-        self.ego_position = np.array([0.0, 0.0])
-        self.goal_position = np.array([10.0, 10.0])  # 원래 설정으로 복원
+        # ObservationProvider로부터 초기 관측값 가져오기
+        observation_np = self.observation_provider.reset()
         
-        # 초기 관측값 생성
-        observation = self._get_observation()
+        # numpy array를 torch tensor로 변환
+        observation = torch.from_numpy(observation_np).float()
+        
+        # 차원 추가 (배치 차원)
+        if len(observation.shape) == len(self.observation_shape):
+            observation = observation.unsqueeze(0)
+        
+        # 임시: ego_position 초기화 (추후 observation에서 추출)
+        self.ego_position = np.array([0.0, 0.0])
+        self.goal_position = np.array([10.0, 10.0])
+        
         return observation
     
     def step(self, action_index: int) -> Tuple[torch.Tensor, float, bool, Dict]:
         """액션 수행"""
         self.current_step += 1
         
+        # 액션 저장
+        self.last_action = action_index
+        
         # Action 디코딩
         action = Action.from_index(action_index)
         
-        # 상태 업데이트 (간단한 예시)
-        self._update_state(action)
+        # ObservationProvider로부터 다음 상태 가져오기
+        observation_np, provider_reward, provider_done, provider_info = self.observation_provider.get_observation(action_index)
         
-        # 보상 계산
-        reward = self._calculate_reward(action)
+        # numpy array를 torch tensor로 변환
+        observation = torch.from_numpy(observation_np).float()
+        if len(observation.shape) == len(self.observation_shape):
+            observation = observation.unsqueeze(0)
         
-        # 종료 조건 확인 (게임이 끝났는지 체크)
-        self.game_done = self._check_termination()
+        # 상태 업데이트 (provider가 Mock인 경우를 위해)
+        if isinstance(self.observation_provider, MockObservationProvider):
+            self._update_state(action)
+            reward = self._calculate_reward(action)
+            self.game_done = self._check_termination()
+        else:
+            # GT나 ROS2 provider인 경우 provider의 정보 사용
+            reward = provider_reward
+            self.game_done = provider_done
+            if provider_done and 'episode_ended' in provider_info:
+                self.done_reason = "episode_ended"
         
-        # 다음 관측값
-        observation = self._get_observation()
-        
-        # 추가 정보
+        # 추가 정보 병합
         info = {
             'done_reason': self.done_reason,
-            'ego_position': self.ego_position.copy(),
-            'steps': self.current_step
+            'ego_position': self.ego_position.copy() if self.ego_position is not None else None,
+            'steps': self.current_step,
+            **provider_info  # provider의 추가 정보 포함
         }
         
         # observation, reward, 게임종료여부, 추가정보 반환
@@ -186,7 +215,28 @@ class DrivingEnvironment(BaseEnvironment):
         return reward
     
     def _get_observation(self) -> torch.Tensor:
-        """현재 상태의 관측값 생성"""
-        # TODO: 실제 관측값 생성 로직
-        # 임시로 랜덤 텐서 반환
-        return torch.rand(1, *self.observation_shape) 
+        """현재 상태의 관측값 생성 (레거시 메서드 - ObservationProvider 사용 권장)"""
+        # ObservationProvider를 사용하는 경우
+        if hasattr(self, 'observation_provider'):
+            observation_np, _, _, _ = self.observation_provider.get_observation(self.last_action)
+            observation = torch.from_numpy(observation_np).float()
+            if len(observation.shape) == len(self.observation_shape):
+                observation = observation.unsqueeze(0)
+            return observation
+        
+        # 기존 방식 (하위 호환성)
+        return torch.rand(1, *self.observation_shape)
+    
+    def _create_default_config(self):
+        """기본 설정 객체 생성"""
+        class DefaultConfig:
+            observation_shape = (10, 12)
+            env_max_steps = 100
+            collision_threshold = 0.5
+            goal_threshold = 1.0
+        return DefaultConfig()
+    
+    def close(self):
+        """환경 종료 시 리소스 정리"""
+        if hasattr(self, 'observation_provider'):
+            self.observation_provider.close() 

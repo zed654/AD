@@ -10,6 +10,7 @@ from models.MuZero.config import MuZeroConfig
 from models.MuZero.mcts import MCTS
 from models.MuZero.action import Action
 from models.MuZero.environment import DrivingEnvironment
+from models.MuZero.observation_provider import ObservationProvider, GTObservationProvider, ROS2ObservationProvider, MockObservationProvider
 from models.MuZero.self_play import SelfPlayManager
 from models.MuZero.replay_buffer import ReplayBuffer
 from models.MuZero.train import train_network
@@ -46,8 +47,19 @@ def main(debug_mode=False):
     # 네트워크 생성
     network = get_network(config).to(device)
     
-    # 환경 생성 (config 사용)
-    environment = DrivingEnvironment(config)
+    # Observation Provider 생성 (설정에 따라)
+    if config.observation_provider_type == "gt":
+        print(f"Using GT ObservationProvider from: {config.gt_data_path}")
+        observation_provider = GTObservationProvider(config, config.gt_data_path)
+    elif config.observation_provider_type == "ros2":
+        print("Using ROS2 ObservationProvider")
+        observation_provider = ROS2ObservationProvider(config)
+    else:  # mock
+        print("Using Mock ObservationProvider (임시 랜덤 데이터)")
+        observation_provider = MockObservationProvider(config)
+    
+    # 환경 생성 (config와 observation_provider 사용)
+    environment = DrivingEnvironment(config, observation_provider)
     
     # Self-play 매니저 생성
     self_play_manager = SelfPlayManager(
@@ -118,6 +130,7 @@ def main(debug_mode=False):
     # 모델 학습 수행
     print("\n=== MuZero 모델 학습 ===")
     train_network(network, replay_buffer, config, device)
+
 
 
 if __name__ == "__main__":
