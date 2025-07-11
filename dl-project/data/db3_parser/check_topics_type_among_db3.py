@@ -32,6 +32,11 @@ def check_db3_topics():
         print(f"  Topic: {topic_info.name}")
         print(f"  Type:  {topic_info.type}")
         print()
+        
+        # ldm_msg 토픽 강조
+        if 'ldm_msg' in topic_info.name.lower():
+            print(f"  >>> LDM_MSG topic found! <<<")
+            print()
 
 if __name__ == "__main__":
     check_db3_topics()
