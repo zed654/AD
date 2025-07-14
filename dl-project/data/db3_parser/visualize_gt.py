@@ -130,13 +130,16 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
                 circle = plt.Circle((x, y), 0.1, color=green_color, alpha=0.8)
                 ax.add_patch(circle)
                 
-                # 첫 번째와 마지막 포인트에 레이블 추가
-                if i == 0:
-                    ax.text(x + 1, y + 1, 'Start', fontsize=8, color='darkgreen',
+                # 마지막 포인트에 레이블 추가
+                if len(trajectory_points) > 0 and i == len(trajectory_points) - 1:
+                    ax.text(x + 0.5, y + 0.5, 'Future Pose', fontsize=6, color='darkgreen',
                            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7))
-                elif i == len(trajectory_points) - 1:
-                    ax.text(x + 1, y + 1, 'Goal', fontsize=8, color='darkgreen',
-                           bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7))
+                # if i == 0:
+                #     ax.text(x + 1, y + 1, 'Start', fontsize=6, color='darkgreen',
+                #            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7))
+                # elif i == len(trajectory_points) - 1:
+                #     ax.text(x + 0.5, y + 0.5, 'Future Pose', fontsize=6, color='darkgreen',
+                #            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7))
     
     # 자차는 항상 원점에 표시 (60cm x 60cm)
     ego_rect = patches.Rectangle(
