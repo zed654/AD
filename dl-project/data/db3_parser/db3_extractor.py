@@ -116,6 +116,42 @@ class DB3Extractor:
         
         return points
     
+    def interpolate_velocity(self, wheelodom_list, target_timestamp):
+        # 타겟 타임스탬프에서의 속도를 인터폴레이션
+        if not wheelodom_list:
+            return 0.0
+        
+        # 타겟 시간 전후의 wheelodom 찾기
+        before_odom = None
+        after_odom = None
+        
+        for i, odom in enumerate(wheelodom_list):
+            if odom["timestamp"] <= target_timestamp:
+                before_odom = odom
+            else:
+                after_odom = odom
+                break
+        
+        # 인터폴레이션
+        if before_odom and after_odom:
+            # 선형 인터폴레이션
+            t1 = before_odom["timestamp"]
+            t2 = after_odom["timestamp"]
+            v1 = before_odom["msg"].linear_vel
+            v2 = after_odom["msg"].linear_vel
+            
+            # 가중치 계산
+            weight = (target_timestamp - t1) / (t2 - t1)
+            return v1 * (1 - weight) + v2 * weight
+        elif before_odom:
+            # 이전 값만 있으면 그 값 사용
+            return before_odom["msg"].linear_vel
+        elif after_odom:
+            # 이후 값만 있으면 그 값 사용
+            return after_odom["msg"].linear_vel
+        else:
+            return 0.0
+    
     def extract_waypoint_vectors(self, global_waypoints, current_position, k_meters=10.0):
         # 전역경로에서 K미터 지점의 방위벡터와 목적지 방위벡터 추출
         if not global_waypoints or len(global_waypoints) < 2:
@@ -298,11 +334,14 @@ class DB3Extractor:
         odom_list = self.parse_topic(gt_topic, gt_type)
         # /planned_global_way_array 토픽 사용 (PointCloud2 타입)
         global_way_list = self.parse_topic("/planned_global_way_array", "sensor_msgs/msg/PointCloud2")
+        # /wheelodom 토픽 파싱 (20Hz)
+        wheelodom_list = self.parse_topic("/wheelodom", "autonomy_ros2_message/msg/MotorDriver")
         
         # 디버깅 로그 추가
         print(f"\n[DEBUG] obstacles_list 길이: {len(obstacles_list)}")
         print(f"[DEBUG] odom_list 길이: {len(odom_list)}")
         print(f"[DEBUG] global_way_list 길이: {len(global_way_list)}")
+        print(f"[DEBUG] wheelodom_list 길이: {len(wheelodom_list)}")
         
         if len(obstacles_list) > 0:
             print(f"[DEBUG] 첫 번째 obstacle timestamp: {obstacles_list[0]['timestamp']}")
@@ -329,7 +368,11 @@ class DB3Extractor:
                 for odom in odom_list:
                     t_odom = convert_ros2_timestamp_to_kst(odom["timestamp"])
                     if t_obs <= t_odom <= t_obs + timedelta(seconds=n_trajectory_sample_time):
-                        trajectory_data.append((odom["timestamp"], msg_to_dict(odom["msg"])))
+                        odom_dict = msg_to_dict(odom["msg"])
+                        # 해당 시점의 속도를 인터폴레이션하여 추가
+                        linear_vel = self.interpolate_velocity(wheelodom_list, odom["timestamp"])
+                        odom_dict["_linear_vel"] = linear_vel
+                        trajectory_data.append((odom["timestamp"], odom_dict))
                 
                 # 시간 순서로 정렬하여 올바른 trajectory 생성
                 trajectory_data.sort(key=lambda x: x[0])
@@ -415,9 +458,9 @@ if __name__ == "__main__":
     db3_files = glob.glob(os.path.join(db3_dir, "*.db3"))
     print(f"db3_files: {db3_files}")
 
-    n_trajectory_sample_time = 3.0 #5.0  # GT 매칭 구간(초) (정의한 시간 동안의 미래 위치를 Trajectory의 에 반영하여, 길이 조절할때 씀)
+    n_trajectory_sample_time = 1.0 #0.05 #5.0  # GT 매칭 구간(초) (정의한 시간 동안의 미래 위치를 Trajectory의 에 반영하여, 길이 조절할때 씀)
     sample_logging_interval_sec = 0.3 #0.3  # 로깅 샘플링 시간 설정 (제한된 시간 내에 같은 토픽의 값을 무시하게하는 시간; 0.03초면, 30 ms 간격 이내의 데이터는 날림)
-    k_meters = 10.0 #20.0  # 근접 방위벡터를 위한 거리(미터)
+    k_meters = 20.0 #20.0  # 근접 방위벡터를 위한 거리(미터)
     
     rclpy.init()
     for db3_path in db3_files:

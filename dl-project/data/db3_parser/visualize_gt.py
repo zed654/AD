@@ -42,10 +42,14 @@ def extract_objects_info(frame_data: Dict) -> Tuple[List[Dict], Dict, int, List[
         x, y, z, w = orientation.get('_x', 0), orientation.get('_y', 0), orientation.get('_z', 0), orientation.get('_w', 1)
         yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
         
+        # 속도 정보 추출 (_linear_vel 필드가 있으면 사용)
+        linear_vel = ego_trajectory[0].get('_linear_vel', 0.0)
+        
         ego_info = {
             'x': position.get('_x', 0),
             'y': position.get('_y', 0),
-            'yaw': yaw
+            'yaw': yaw,
+            'velocity': linear_vel
         }
     
     # 타임스탬프 추출
@@ -65,8 +69,8 @@ def extract_objects_info(frame_data: Dict) -> Tuple[List[Dict], Dict, int, List[
 def get_object_color(class_id: int) -> str:
     """클래스 ID에 따른 색상을 반환합니다."""
     color_map = {
-        100: 'red',      # 차량
-        202: 'blue',     # 보행자  
+        100: 'red',      # 보행자
+        202: 'blue',     # 차량  
         203: 'orange',   # 자전거
         204: 'purple',   # 트럭
         205: 'green',    # 버스
@@ -80,7 +84,7 @@ def get_object_color(class_id: int) -> str:
 def plot_bird_view(ax, objects: List[Dict], ego_info: Dict, 
                    view_range: float = 30.0, show_trajectory: bool = True,
                    gt_trajectory: List[Dict] = None, near_direction: Optional[Dict] = None,
-                   destination_direction: Optional[Dict] = None):
+                   destination_direction: Optional[Dict] = None, prev_objects: Dict = None):
     """Bird's eye view로 장면을 시각화합니다."""
     ax.clear()
     
@@ -184,7 +188,7 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
             
             # 라벨 추가 (화살표 끝 위쪽에 표시)
             ax.text(screen_x_near, screen_y_near + 1.0, 
-                   'Near\n(10m)', fontsize=9, color='darkgreen',
+                   'Near\n(20m)', fontsize=9, color='darkgreen',
                    ha='center', va='bottom',
                    bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7))
         
@@ -223,6 +227,8 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
     # 자차의 실제 위치 정보 표시
     if ego_info:
         info_text = f"Ego Position: ({ego_info['x']:.1f}, {ego_info['y']:.1f}), Yaw: {np.degrees(ego_info['yaw']):.1f}°"
+        if 'velocity' in ego_info and ego_info['velocity'] > 0:
+            info_text += f", Velocity: {ego_info['velocity']:.1f} m/s"
         ax.text(0.02, 0.98, info_text, transform=ax.transAxes, 
                 verticalalignment='top', bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
     
@@ -232,8 +238,12 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
         global_center = obj.get('_global_center', {})
         local_center = obj.get('_local_center', {})
         
+        # 글로벌 좌표 추출 (속도 벡터 계산에도 필요)
+        global_x = global_center.get('_x', 0)
+        global_y = global_center.get('_y', 0)
+        
         # 글로벌 좌표가 0,0,0인 경우 로컬 좌표 사용
-        if (global_center.get('_x', 0) == 0 and global_center.get('_y', 0) == 0 and 
+        if (global_x == 0 and global_y == 0 and 
             global_center.get('_z', 0) == 0 and local_center):
             # 로컬 좌표는 이미 자차 중심
             ego_x = local_center.get('_x', 0)
@@ -243,8 +253,6 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
             y = ego_x   # 전진이 화면의 위쪽
         else:
             # 글로벌 좌표를 자차 중심으로 변환
-            global_x = global_center.get('_x', 0)
-            global_y = global_center.get('_y', 0)
             if ego_info:
                 # 자차 위치를 기준으로 상대 좌표 계산
                 dx = global_x - ego_info['x']
@@ -273,26 +281,59 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
         # 객체 정보 표시
         obj_id = obj.get('_id', '')
         velocity = obj.get('_global_velocity', 0)
+        global_yaw = obj.get('_global_yaw_heading', 0)
         info = f"ID:{obj_id}"
         if velocity > 0.1:
             info += f"\nv:{velocity:.1f}m/s"
+            info += f"\nyaw:{np.degrees(global_yaw):.1f}°"
         ax.text(x + 1, y + 1, info, fontsize=8, color=color,
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7))
         
         # 속도 벡터 표시
         if velocity > 0.1:  # 0.1 m/s 이상일 때만 표시
-            yaw = obj.get('_global_yaw_heading', 0)
-            if ego_info:
-                # 자차 좌표계로 변환된 방향
-                yaw_relative = yaw - ego_info['yaw']
+            # 실제 속도 벡터가 있는지 확인 (옵션 1: 직접 속도 벡터 사용)
+            global_velocity_vector = obj.get('_global_velocity_vector', None)
+            if global_velocity_vector and isinstance(global_velocity_vector, dict):
+                # 실제 속도 벡터가 있으면 사용
+                global_vel_x = global_velocity_vector.get('_x', 0) * 3
+                global_vel_y = global_velocity_vector.get('_y', 0) * 3
             else:
-                yaw_relative = yaw
-            # 속도 벡터 계산
-            vel_x = velocity * np.cos(yaw_relative) * 3
-            vel_y = velocity * np.sin(yaw_relative) * 3
+                # 이전 프레임과의 위치 차이로 실제 이동 방향 계산 (더 정확함)
+                actual_heading = None
+                if prev_objects and obj_id in prev_objects:
+                    prev_obj = prev_objects[obj_id]
+                    prev_pos = prev_obj.get('_global_center', {})
+                    dx = global_x - prev_pos.get('_x', global_x)
+                    dy = global_y - prev_pos.get('_y', global_y)
+                    if abs(dx) > 0.01 or abs(dy) > 0.01:  # 최소 이동 거리
+                        actual_heading = math.atan2(dy, dx)
+                
+                if actual_heading is not None:
+                    # 실제 이동 방향 사용
+                    visualize_scale_factor = 3
+                    global_vel_x = velocity * np.cos(actual_heading) * visualize_scale_factor
+                    global_vel_y = velocity * np.sin(actual_heading) * visualize_scale_factor
+                else:
+                    # 이전 위치가 없으면 global_yaw_heading 사용 (차선책)
+                    yaw = obj.get('_global_yaw_heading', 0)
+                    # 글로벌 좌표계에서 속도 벡터 계산
+                    visualize_scale_factor = 3
+                    global_vel_x = velocity * np.cos(yaw) * visualize_scale_factor
+                    global_vel_y = velocity * np.sin(yaw) * visualize_scale_factor
+            
+            if ego_info:
+                # 자차 좌표계로 변환
+                cos_yaw = np.cos(-ego_info['yaw'])
+                sin_yaw = np.sin(-ego_info['yaw'])
+                ego_vel_x = global_vel_x * cos_yaw - global_vel_y * sin_yaw
+                ego_vel_y = global_vel_x * sin_yaw + global_vel_y * cos_yaw
+            else:
+                ego_vel_x = global_vel_x
+                ego_vel_y = global_vel_y
+            
             # 화면 좌표계로 변환
-            dx = -vel_y  # 우측이 화면의 오른쪽
-            dy = vel_x   # 전진이 화면의 위쪽
+            dx = -ego_vel_y  # 우측이 화면의 오른쪽
+            dy = ego_vel_x   # 전진이 화면의 위쪽
             ax.arrow(x, y, dx, dy, head_width=0.5, head_length=0.3, 
                     fc=color, ec=color, alpha=0.7, linewidth=2)
 
@@ -369,6 +410,7 @@ class InteractiveVisualizer:
         self.ax2 = None
         self.anim = None
         self.playing = False  # 애니메이션 일시정지 상태로 시작
+        self.prev_objects = {}  # 이전 프레임의 객체 정보 저장
         
     def on_key(self, event):
         """키보드 이벤트 핸들러"""
@@ -425,7 +467,15 @@ class InteractiveVisualizer:
         plot_bird_view(self.ax1, objects, ego_info, self.view_range, 
                       gt_trajectory=gt_trajectory, 
                       near_direction=near_direction,
-                      destination_direction=destination_direction)
+                      destination_direction=destination_direction,
+                      prev_objects=self.prev_objects)
+        
+        # 현재 프레임의 객체 정보를 다음 프레임을 위해 저장
+        self.prev_objects = {}
+        for obj in objects:
+            obj_id = obj.get('_id', '')
+            if obj_id:
+                self.prev_objects[obj_id] = obj
         
         # Camera view
         plot_camera_view(self.ax2, image_path)
