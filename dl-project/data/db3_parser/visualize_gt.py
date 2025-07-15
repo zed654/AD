@@ -234,39 +234,28 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
     
     # 객체들 그리기 (자차 중심 좌표계로 변환)
     for obj in objects:
-        # 글로벌 센터가 비어있는 경우 로컬 센터 사용
+        # 글로벌 센터 사용
         global_center = obj.get('_global_center', {})
-        local_center = obj.get('_local_center', {})
         
         # 글로벌 좌표 추출 (속도 벡터 계산에도 필요)
         global_x = global_center.get('_x', 0)
         global_y = global_center.get('_y', 0)
         
-        # 글로벌 좌표가 0,0,0인 경우 로컬 좌표 사용
-        if (global_x == 0 and global_y == 0 and 
-            global_center.get('_z', 0) == 0 and local_center):
-            # 로컬 좌표는 이미 자차 중심
-            ego_x = local_center.get('_x', 0)
-            ego_y = local_center.get('_y', 0)
+        # 글로벌 좌표를 자차 중심으로 변환
+        if ego_info:
+            # 자차 위치를 기준으로 상대 좌표 계산
+            dx = global_x - ego_info['x']
+            dy = global_y - ego_info['y']
+            # 자차 yaw를 고려한 좌표 변환
+            cos_yaw = np.cos(-ego_info['yaw'])
+            sin_yaw = np.sin(-ego_info['yaw'])
+            ego_x = dx * cos_yaw - dy * sin_yaw
+            ego_y = dx * sin_yaw + dy * cos_yaw
             # 화면 좌표계로 변환
             x = -ego_y  # 우측이 화면의 오른쪽
             y = ego_x   # 전진이 화면의 위쪽
         else:
-            # 글로벌 좌표를 자차 중심으로 변환
-            if ego_info:
-                # 자차 위치를 기준으로 상대 좌표 계산
-                dx = global_x - ego_info['x']
-                dy = global_y - ego_info['y']
-                # 자차 yaw를 고려한 좌표 변환
-                cos_yaw = np.cos(-ego_info['yaw'])
-                sin_yaw = np.sin(-ego_info['yaw'])
-                ego_x = dx * cos_yaw - dy * sin_yaw
-                ego_y = dx * sin_yaw + dy * cos_yaw
-                # 화면 좌표계로 변환
-                x = -ego_y  # 우측이 화면의 오른쪽
-                y = ego_x   # 전진이 화면의 위쪽
-            else:
-                x, y = global_x, global_y
+            x, y = global_x, global_y
         
         # view_range 내의 객체만 표시
         if abs(x) > view_range/2 or abs(y) > view_range/2:
@@ -275,8 +264,33 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
         class_id = obj.get('_class_id', -1)
         color = get_object_color(class_id)
         
-        # 객체 중심점
-        ax.plot(x, y, 'o', color=color, markersize=8)
+        # 글로벌 포인트들 그리기 (작은 원으로)
+        global_points = obj.get('_global_points', [])
+        for point in global_points:
+            pt_x = point.get('_x', 0)
+            pt_y = point.get('_y', 0)
+            
+            if ego_info:
+                # 자차 중심 좌표계로 변환
+                pt_dx = pt_x - ego_info['x']
+                pt_dy = pt_y - ego_info['y']
+                pt_ego_x = pt_dx * cos_yaw - pt_dy * sin_yaw
+                pt_ego_y = pt_dx * sin_yaw + pt_dy * cos_yaw
+                # 화면 좌표계로 변환
+                pt_screen_x = -pt_ego_y
+                pt_screen_y = pt_ego_x
+            else:
+                pt_screen_x, pt_screen_y = pt_x, pt_y
+            
+            # view_range 내의 포인트만 표시
+            if abs(pt_screen_x) <= view_range/2 and abs(pt_screen_y) <= view_range/2:
+                ax.plot(pt_screen_x, pt_screen_y, '.', color=color, markersize=3)
+        
+        # 객체 중심점 (포인트가 있으면 채워진 원, 없으면 빈 원)
+        if global_points:
+            ax.plot(x, y, 'o', color=color, markersize=8)  # 채워진 원
+        else:
+            ax.plot(x, y, 'o', color=color, markersize=8, fillstyle='none', markeredgewidth=2)  # 빈 원
         
         # 객체 정보 표시
         obj_id = obj.get('_id', '')
@@ -336,6 +350,18 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
             dy = ego_vel_x   # 전진이 화면의 위쪽
             ax.arrow(x, y, dx, dy, head_width=0.5, head_length=0.3, 
                     fc=color, ec=color, alpha=0.7, linewidth=2)
+    
+    # 범례 추가 (포인트 있음/없음 구분)
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='w', label='Object (with points)',
+               markerfacecolor='gray', markersize=8),
+        Line2D([0], [0], marker='o', color='w', label='Object (no points)',
+               markerfacecolor='none', markeredgecolor='gray', markeredgewidth=2, markersize=8),
+        Line2D([0], [0], marker='.', color='gray', label='Point cloud',
+               markersize=3, linestyle='None')
+    ]
+    ax.legend(handles=legend_elements, loc='lower right', fontsize=8)
 
 
 def plot_camera_view(ax, image_path: Optional[Path]):

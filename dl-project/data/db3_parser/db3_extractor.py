@@ -248,7 +248,8 @@ class DB3Extractor:
                         
                         result.append({"timestamp": timestamp, "msg": dummy_msg})
                         success_count += 1  # 더미 데이터도 성공으로 카운트
-                        # error_count는 증가시키지 않음 (더미 데이터로 대체했으므로)
+                        error_count += 1  # 에러 카운트도 증가시켜서 추적
+                        print(f"\n\033[33m[WARNING] obstacles_tracking_msg 파싱 실패, 더미 데이터 사용 (timestamp: {timestamp}): {e}\033[0m")
                     elif topic_name == "/planned_global_way_array":
                         # 더미 PointCloud2 생성
                         from sensor_msgs.msg import PointCloud2, PointField
