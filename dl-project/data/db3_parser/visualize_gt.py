@@ -525,7 +525,8 @@ class InteractiveVisualizer:
         
         # 기존 텍스트 삭제 후 새로 그리기
         for txt in self.fig.texts:
-            txt.remove()
+            if txt.get_position()[1] < 0.1:  # 하단 텍스트만 삭제
+                txt.remove()
         self.fig.text(0.02, 0.02, info_text, fontsize=10, 
                      bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.5))
         
@@ -647,7 +648,7 @@ def animate_frames(data: List[Dict], img_dir: Optional[Path] = None,
         for txt in fig.texts:
             if txt.get_position()[1] < 0.1:  # 하단 텍스트만
                 txt.remove()
-        fig.text(0.5, 0.02, info_text, fontsize=10, ha='center',
+        fig.text(0.5, 0.01, info_text, fontsize=10, ha='center',
                 bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.5))
     
     # 키보드 이벤트 연결
