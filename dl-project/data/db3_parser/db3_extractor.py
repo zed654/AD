@@ -78,8 +78,8 @@ class DB3Extractor:
         else:
             return {'x': 0.0, 'y': 0.0}
     
-    def extract_points_from_pointcloud2(self, pc2_msg):
-        # PointCloud2 메시지에서 포인트 추출
+    def extract_points_from_pointcloud2(self, pc2_msg, max_points=10):
+        # PointCloud2 메시지에서 포인트 추출 (최대 10개만)
         points = []
         
         # PointCloud2 메시지의 데이터 해석
@@ -87,32 +87,60 @@ class DB3Extractor:
         row_step = pc2_msg.row_step
         data = pc2_msg.data
         
-        # 필드 정보 추출
-        x_offset = None
-        y_offset = None
-        z_offset = None
-        
+        # 모든 필드 정보 수집
+        field_info = {}
         for field in pc2_msg.fields:
-            if field.name == 'x':
-                x_offset = field.offset
-            elif field.name == 'y':
-                y_offset = field.offset
-            elif field.name == 'z':
-                z_offset = field.offset
+            field_info[field.name] = {
+                'offset': field.offset,
+                'datatype': field.datatype,
+                'count': field.count
+            }
         
-        if x_offset is None or y_offset is None:
+        # 필수 필드 확인
+        if 'x' not in field_info or 'y' not in field_info:
             return points
         
-        # 포인트 추출
+        # 데이터 타입별 언팩 포맷
+        datatype_formats = {
+            1: 'b',  # INT8
+            2: 'B',  # UINT8
+            3: 'h',  # INT16
+            4: 'H',  # UINT16
+            5: 'i',  # INT32
+            6: 'I',  # UINT32
+            7: 'f',  # FLOAT32
+            8: 'd'   # FLOAT64
+        }
+        
+        # 포인트 추출 (최대 10개)
+        # max_points = 10
+        point_count = 0
+        
         for i in range(0, len(data), point_step):
-            if i + point_step > len(data):
+            if i + point_step > len(data) or point_count >= max_points:
                 break
-                
-            x = struct.unpack('f', data[i + x_offset:i + x_offset + 4])[0]
-            y = struct.unpack('f', data[i + y_offset:i + y_offset + 4])[0]
-            z = struct.unpack('f', data[i + z_offset:i + z_offset + 4])[0] if z_offset is not None else 0.0
             
-            points.append({'x': x, 'y': y, 'z': z})
+            point = {}
+            
+            # 모든 필드 추출
+            for field_name, info in field_info.items():
+                offset = info['offset']
+                datatype = info['datatype']
+                
+                if datatype in datatype_formats:
+                    fmt = datatype_formats[datatype]
+                    size = struct.calcsize(fmt)
+                    
+                    try:
+                        value = struct.unpack(fmt, data[i + offset:i + offset + size])[0]
+                        point[field_name] = value
+                    except:
+                        point[field_name] = None
+                else:
+                    point[field_name] = None
+            
+            points.append(point)
+            point_count += 1
         
         return points
     
@@ -329,20 +357,29 @@ class DB3Extractor:
         
         print(f"{topic_name}: 성공 {success_count}개, 실패 {error_count}개 → {output_path}에 저장했습니다.")
 
-    def make_gt(self, input_topic, input_type, gt_topic, gt_type, n_trajectory_sample_time, output_path, sample_logging_interval_sec=None, k_meters=10.0):
-        # input_topic(예: obstacles) 기준으로, n초 이내의 gt_topic(예: odom) 메시지들을 매칭하여 GT 데이터셋 생성
-        obstacles_list = self.parse_topic(input_topic, input_type)
-        odom_list = self.parse_topic(gt_topic, gt_type)
-        # /planned_global_way_array 토픽 사용 (PointCloud2 타입)
-        global_way_list = self.parse_topic("/planned_global_way_array", "sensor_msgs/msg/PointCloud2")
-        # /wheelodom 토픽 파싱 (20Hz)
-        wheelodom_list = self.parse_topic("/wheelodom", "autonomy_ros2_message/msg/MotorDriver")
+    def make_gt(self, topics_config, n_trajectory_sample_time, output_path, sample_logging_interval_sec=None, k_meters=10.0):
+        # topics_config 딕셔너리에서 토픽 정보 추출
+        # topics_config = {
+        #     'input': {'topic': '/obstacles_tracking_msg', 'type': 'autonomy_ros2_message/msg/DetectedObjectArray'},
+        #     'gt': {'topic': '/odomgyro', 'type': 'nav_msgs/msg/Odometry'},
+        #     'global_way': {'topic': '/planned_global_way_array', 'type': 'sensor_msgs/msg/PointCloud2'},
+        #     'wheelodom': {'topic': '/wheelodom', 'type': 'autonomy_ros2_message/msg/MotorDriver'},
+        #     'ldm': {'topic': '/ldm_msg', 'type': 'sensor_msgs/msg/PointCloud2'}
+        # }
+        
+        # 각 토픽 파싱
+        obstacles_list = self.parse_topic(topics_config['obstacles']['topic'], topics_config['obstacles']['type'])
+        odom_list = self.parse_topic(topics_config['ego_pos']['topic'], topics_config['ego_pos']['type'])
+        global_way_list = self.parse_topic(topics_config['global_way']['topic'], topics_config['global_way']['type'])
+        wheelodom_list = self.parse_topic(topics_config['ego_velocity']['topic'], topics_config['ego_velocity']['type'])
+        ldm_msg_list = self.parse_topic(topics_config['environment_info']['topic'], topics_config['environment_info']['type'])
         
         # 디버깅 로그 추가
         print(f"\n[DEBUG] obstacles_list 길이: {len(obstacles_list)}")
         print(f"[DEBUG] odom_list 길이: {len(odom_list)}")
         print(f"[DEBUG] global_way_list 길이: {len(global_way_list)}")
         print(f"[DEBUG] wheelodom_list 길이: {len(wheelodom_list)}")
+        print(f"[DEBUG] ldm_msg_list 길이: {len(ldm_msg_list)}")
         
         if len(obstacles_list) > 0:
             print(f"[DEBUG] 첫 번째 obstacle timestamp: {obstacles_list[0]['timestamp']}")
@@ -350,6 +387,8 @@ class DB3Extractor:
             print(f"[DEBUG] 첫 번째 odom timestamp: {odom_list[0]['timestamp']}")
         if len(global_way_list) > 0:
             print(f"[DEBUG] 첫 번째 global_way timestamp: {global_way_list[0]['timestamp']}")
+        if len(ldm_msg_list) > 0:
+            print(f"[DEBUG] 첫 번째 ldm_msg timestamp: {ldm_msg_list[0]['timestamp']}")
         
         with open(output_path, "w", encoding="utf-8") as f:
             last_sample_time = None
@@ -397,6 +436,15 @@ class DB3Extractor:
                         min_time_diff = time_diff
                         closest_global_way = gw
                 
+                # 현재 시점에서 가장 가까운 ldm_msg 찾기
+                closest_ldm_msg = None
+                min_time_diff = float('inf')
+                for ldm in ldm_msg_list:
+                    time_diff = abs(ldm["timestamp"] - obs["timestamp"])
+                    if time_diff < min_time_diff:
+                        min_time_diff = time_diff
+                        closest_ldm_msg = ldm
+                
                 if gt_dict_odom and current_odom and closest_global_way:  # 매칭된 GT가 있을 때만 저장
                     input_dict = msg_to_dict(obs["msg"])
                     
@@ -408,7 +456,7 @@ class DB3Extractor:
                     
                     # 전역경로에서 방위벡터 추출
                     # PointCloud2 메시지에서 포인트 추출
-                    global_waypoints = self.extract_points_from_pointcloud2(closest_global_way["msg"])
+                    global_waypoints = self.extract_points_from_pointcloud2(closest_global_way["msg"], max_points=999999)
                     near_direction, destination_direction = self.extract_waypoint_vectors(
                         global_waypoints, current_position, k_meters
                     )
@@ -417,6 +465,12 @@ class DB3Extractor:
                     if near_direction and destination_direction:
                         input_dict["near_direction_vector"] = near_direction
                         input_dict["destination_direction_vector"] = destination_direction
+                    
+                    # ldm_msg 정보를 input_environment에 추가
+                    if closest_ldm_msg:
+                        # PointCloud2 메시지에서 포인트 추출
+                        ldm_points = self.extract_points_from_pointcloud2(closest_ldm_msg["msg"], max_points=10)
+                        input_dict["_ldm_points"] = ldm_points
                     
                     # input_dict["timestamp"] = obs["timestamp"] # json 문구 추가하려면 이렇게 추가하면 됨
                     f.write(json.dumps({"input_environment": input_dict, "gt_trajectory": gt_dict_odom}) + "\n")
@@ -477,11 +531,18 @@ if __name__ == "__main__":
         # obstacles2odom GT 데이터셋 생성
         gt_output_path = os.path.join(results_dir, f"IO_GT_matching_{db3_name}.jsonl")
         print(f"\n[INFO] GT 생성: {db3_path} → {gt_output_path}")
+        
+        # 토픽 설정 딕셔너리
+        gt_topics_config = {
+            'obstacles': {'topic': '/obstacles_tracking_msg', 'type': 'autonomy_ros2_message/msg/DetectedObjectArray'},
+            'ego_pos': {'topic': '/odomgyro', 'type': 'nav_msgs/msg/Odometry'},
+            'global_way': {'topic': '/planned_global_way_array', 'type': 'sensor_msgs/msg/PointCloud2'},
+            'ego_velocity': {'topic': '/wheelodom', 'type': 'autonomy_ros2_message/msg/MotorDriver'},
+            'environment_info': {'topic': '/ldm_msg', 'type': 'sensor_msgs/msg/PointCloud2'}
+        }
+        
         extractor.make_gt(
-            "/obstacles_tracking_msg",
-            "autonomy_ros2_message/msg/DetectedObjectArray",
-            "/odomgyro",
-            "nav_msgs/msg/Odometry",
+            gt_topics_config,
             n_trajectory_sample_time,
             gt_output_path,
             sample_logging_interval_sec=sample_logging_interval_sec,
