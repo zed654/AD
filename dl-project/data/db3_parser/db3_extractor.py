@@ -474,7 +474,22 @@ class DB3Extractor:
                     if closest_ldm_msg:
                         # PointCloud2 메시지에서 포인트 추출
                         ldm_points = self.extract_points_from_pointcloud2(closest_ldm_msg["msg"], max_points=40000)
-                        input_dict["_ldm_points"] = ldm_points
+                        # 필요한 필드만 필터링 (class_id, obstacles_type, x, y, z)
+                        filtered_ldm_points = []
+                        for point in ldm_points:
+                            filtered_point = {}
+                            if 'class_id' in point:
+                                filtered_point['class_id'] = point['class_id']
+                            if 'obstacles_type' in point:
+                                filtered_point['obstacles_type'] = point['obstacles_type']
+                            if 'x' in point:
+                                filtered_point['x'] = point['x']
+                            if 'y' in point:
+                                filtered_point['y'] = point['y']
+                            if 'z' in point:
+                                filtered_point['z'] = point['z']
+                            filtered_ldm_points.append(filtered_point)
+                        input_dict["_ldm_points"] = filtered_ldm_points
                     
                     # input_dict["timestamp"] = obs["timestamp"] # json 문구 추가하려면 이렇게 추가하면 됨
                     f.write(json.dumps({"input_environment": input_dict, "gt_trajectory": gt_dict_odom}) + "\n")
@@ -517,7 +532,7 @@ if __name__ == "__main__":
     db3_files = glob.glob(os.path.join(db3_dir, "*.db3"))
     print(f"db3_files: {db3_files}")
 
-    n_trajectory_sample_time = 1.0 #0.05 #5.0  # GT 매칭 구간(초) (정의한 시간 동안의 미래 위치를 Trajectory의 에 반영하여, 길이 조절할때 씀)
+    n_trajectory_sample_time = 5.0 #0.05 #5.0  # GT 매칭 구간(초) (정의한 시간 동안의 미래 위치를 Trajectory의 에 반영하여, 길이 조절할때 씀)
     trajectory_interval_sec = 0.1  # Trajectory 샘플링 간격 (초) - 0.1이면 10Hz로 샘플링 ... sample_time 이 3.0 sec 이고 interval_sec 가 0.3 이면, 10개 뽑힘.
     sample_logging_interval_sec = 0.3 #0.3  # 로깅 샘플링 시간 설정 (제한된 시간 내에 같은 토픽의 값을 무시하게하는 시간; 0.03초면, 30 ms 간격 이내의 데이터는 날림)
     k_meters = 20.0 #20.0  # 근접 방위벡터를 위한 거리(미터)
