@@ -357,7 +357,7 @@ class DB3Extractor:
         
         print(f"{topic_name}: 성공 {success_count}개, 실패 {error_count}개 → {output_path}에 저장했습니다.")
 
-    def make_gt(self, topics_config, n_trajectory_sample_time, output_path, sample_logging_interval_sec=None, k_meters=10.0):
+    def make_gt(self, topics_config, n_trajectory_sample_time, output_path, sample_logging_interval_sec=None, k_meters=10.0, trajectory_interval_sec=0.1):
         # topics_config 딕셔너리에서 토픽 정보 추출
         # topics_config = {
         #     'input': {'topic': '/obstacles_tracking_msg', 'type': 'autonomy_ros2_message/msg/DetectedObjectArray'},
@@ -403,16 +403,20 @@ class DB3Extractor:
                 
                 gt_dict_odom = []
                 trajectory_data = []  # (timestamp, odom_data) 형태로 수집
+                last_sampled_time = None
                 
                 # 장애물 감지 시점 이후의 odom 메시지들을 수집 (미래 trajectory)
                 for odom in odom_list:
                     t_odom = convert_ros2_timestamp_to_kst(odom["timestamp"])
                     if t_obs <= t_odom <= t_obs + timedelta(seconds=n_trajectory_sample_time):
-                        odom_dict = msg_to_dict(odom["msg"])
-                        # 해당 시점의 속도를 인터폴레이션하여 추가
-                        linear_vel = self.interpolate_velocity(wheelodom_list, odom["timestamp"])
-                        odom_dict["_linear_vel"] = linear_vel
-                        trajectory_data.append((odom["timestamp"], odom_dict))
+                        # Trajectory 샘플링 적용
+                        if last_sampled_time is None or (t_odom - last_sampled_time).total_seconds() >= trajectory_interval_sec:
+                            odom_dict = msg_to_dict(odom["msg"])
+                            # 해당 시점의 속도를 인터폴레이션하여 추가
+                            linear_vel = self.interpolate_velocity(wheelodom_list, odom["timestamp"])
+                            odom_dict["_linear_vel"] = linear_vel
+                            trajectory_data.append((odom["timestamp"], odom_dict))
+                            last_sampled_time = t_odom
                 
                 # 시간 순서로 정렬하여 올바른 trajectory 생성
                 trajectory_data.sort(key=lambda x: x[0])
@@ -469,7 +473,7 @@ class DB3Extractor:
                     # ldm_msg 정보를 input_environment에 추가
                     if closest_ldm_msg:
                         # PointCloud2 메시지에서 포인트 추출
-                        ldm_points = self.extract_points_from_pointcloud2(closest_ldm_msg["msg"], max_points=10)
+                        ldm_points = self.extract_points_from_pointcloud2(closest_ldm_msg["msg"], max_points=40000)
                         input_dict["_ldm_points"] = ldm_points
                     
                     # input_dict["timestamp"] = obs["timestamp"] # json 문구 추가하려면 이렇게 추가하면 됨
@@ -514,6 +518,7 @@ if __name__ == "__main__":
     print(f"db3_files: {db3_files}")
 
     n_trajectory_sample_time = 1.0 #0.05 #5.0  # GT 매칭 구간(초) (정의한 시간 동안의 미래 위치를 Trajectory의 에 반영하여, 길이 조절할때 씀)
+    trajectory_interval_sec = 0.1  # Trajectory 샘플링 간격 (초) - 0.1이면 10Hz로 샘플링 ... sample_time 이 3.0 sec 이고 interval_sec 가 0.3 이면, 10개 뽑힘.
     sample_logging_interval_sec = 0.3 #0.3  # 로깅 샘플링 시간 설정 (제한된 시간 내에 같은 토픽의 값을 무시하게하는 시간; 0.03초면, 30 ms 간격 이내의 데이터는 날림)
     k_meters = 20.0 #20.0  # 근접 방위벡터를 위한 거리(미터)
     
@@ -546,7 +551,8 @@ if __name__ == "__main__":
             n_trajectory_sample_time,
             gt_output_path,
             sample_logging_interval_sec=sample_logging_interval_sec,
-            k_meters=k_meters
+            k_meters=k_meters,
+            trajectory_interval_sec=trajectory_interval_sec
         )
 
         # 이미지 저장

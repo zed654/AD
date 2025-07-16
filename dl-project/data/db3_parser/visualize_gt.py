@@ -25,7 +25,7 @@ def load_jsonl_data(filepath: Path) -> List[Dict]:
     return data
 
 
-def extract_objects_info(frame_data: Dict) -> Tuple[List[Dict], Dict, int, List[Dict], Optional[Dict], Optional[Dict]]:
+def extract_objects_info(frame_data: Dict) -> Tuple[List[Dict], Dict, int, List[Dict], Optional[Dict], Optional[Dict], List[Dict]]:
     """프레임 데이터에서 객체 정보를 추출합니다."""
     objects = frame_data.get('input_environment', {}).get('_objects', [])
     # gt_trajectory로 변경 (output_GT_trajectory가 아님)
@@ -63,7 +63,10 @@ def extract_objects_info(frame_data: Dict) -> Tuple[List[Dict], Dict, int, List[
     near_direction = frame_data.get('input_environment', {}).get('near_direction_vector')
     destination_direction = frame_data.get('input_environment', {}).get('destination_direction_vector')
     
-    return objects, ego_info, timestamp, ego_trajectory, near_direction, destination_direction
+    # LDM 포인트 추출
+    ldm_points = frame_data.get('input_environment', {}).get('_ldm_points', [])
+    
+    return objects, ego_info, timestamp, ego_trajectory, near_direction, destination_direction, ldm_points
 
 
 def get_object_color(class_id: int) -> str:
@@ -81,10 +84,58 @@ def get_object_color(class_id: int) -> str:
     return color_map.get(class_id, 'black')
 
 
+def get_ldm_color(obstacles_type: int) -> Optional[str]:
+    """LDM obstacles_type에 따른 색상을 반환합니다."""
+    color_map = {
+        1: 'lime',       # cliff - 연두색
+        2: 'yellow',     # static_obstacles - 노란색
+        3: 'purple'      # missing_points - 보라색
+    }
+    # obstacles_type이 1 이상일 때만 색상 반환
+    if obstacles_type >= 1:
+        return color_map.get(obstacles_type, 'gray')
+    return None
+
+
+def get_ldm_segmentation_color(class_id: int) -> str:
+    """LDM class_id (segmentation)에 따른 색상을 반환합니다."""
+    color_map = {
+        0: '#000000',   # Background
+        1: '#3D3DF5',   # Blocks
+        2: '#CC3366',   # Colored Road
+        3: '#F078F0',   # Cement Asphalt
+        4: '#008000',   # Crosswalk
+        5: '#733380',   # Speed Bumps
+        6: '#FF6A4D',   # Manhole
+        7: '#5986B3',   # Curbs
+        8: '#00FF00',   # Grass
+        9: '#CC9933',   # Soil/Gravel
+        10: '#34D1B7',  # Grating
+        11: '#FFCC33',  # Guide Blocks
+        12: '#DBDB8D',  # Rock
+        13: '#FF007C',  # Unidentified
+        14: '#942701',  # Wood
+        15: '#AEC7E8',  # Iron
+        16: '#A7FFD8',  # Artificial Turf
+        17: '#00498C',  # Water
+        18: '#000000',  # Mat
+        19: '#F7ECE6',  # Unlabeled
+        20: '#6000C0',  # Restricted
+        21: '#FFFFFF',  # Lane Straight White
+        22: '#F59331',  # Lane Straight Yellow
+        23: '#DBDB8D',  # Lane Dashed White
+        24: '#000000',  # Lane Dashed Yellow
+        25: '#FCE7A7',  # Guide Blocks Stop
+        99: '#808080'   # 기타/미분류
+    }
+    return color_map.get(class_id, '#808080')
+
+
 def plot_bird_view(ax, objects: List[Dict], ego_info: Dict, 
                    view_range: float = 30.0, show_trajectory: bool = True,
                    gt_trajectory: List[Dict] = None, near_direction: Optional[Dict] = None,
-                   destination_direction: Optional[Dict] = None, prev_objects: Dict = None):
+                   destination_direction: Optional[Dict] = None, prev_objects: Dict = None,
+                   ldm_points: List[Dict] = None, ldm_mode: int = 1):
     """Bird's eye view로 장면을 시각화합니다."""
     ax.clear()
     
@@ -95,7 +146,9 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
     ax.grid(True, alpha=0.3)
     ax.set_xlabel('Y (m) →')  # Y축이 오른쪽
     ax.set_ylabel('X (m) →')  # X축이 위쪽 (전진 방향)
-    ax.set_title('Bird\'s Eye View (Ego-centric, Forward: Up)')
+    # LDM 모드에 따른 타이틀 설정
+    ldm_mode_text = {1: "Obstacles Type", 2: "Class ID", 3: "Both (Priority: Obstacles)"}
+    ax.set_title(f'Bird\'s Eye View (Ego-centric, Forward: Up) - LDM Mode: {ldm_mode_text.get(ldm_mode, "Unknown")}')
     
     # GT trajectory 그리기 (자차 보다 먼저 그려서 배경에 위치)
     if gt_trajectory and show_trajectory and ego_info:
@@ -144,6 +197,52 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
                 # elif i == len(trajectory_points) - 1:
                 #     ax.text(x + 0.5, y + 0.5, 'Future Pose', fontsize=6, color='darkgreen',
                 #            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7))
+    
+    # LDM 포인트 시각화 (자차보다 먼저 그려서 배경에 위치)
+    if ldm_points:
+        for point in ldm_points:
+            obstacles_type = point.get('obstacles_type', 0)
+            class_id = point.get('class_id', 0)
+            
+            # LDM 모드에 따른 색상 결정
+            color = None
+            if ldm_mode == 1:  # Obstacles Type 모드
+                color = get_ldm_color(obstacles_type)
+            elif ldm_mode == 2:  # Class ID 모드
+                color = get_ldm_segmentation_color(class_id)
+            elif ldm_mode == 3:  # Both 모드 (Obstacles Type 우선)
+                if obstacles_type >= 1:
+                    color = get_ldm_color(obstacles_type)
+                else:
+                    color = get_ldm_segmentation_color(class_id)
+            
+            if color and (ldm_mode != 1 or obstacles_type >= 1):  # 모드에 따라 필터링
+                # 전역 좌표
+                global_x = point.get('x', 0)
+                global_y = point.get('y', 0)
+                
+                # 자차 좌표계로 변환
+                if ego_info:
+                    dx = global_x - ego_info['x']
+                    dy = global_y - ego_info['y']
+                    
+                    # 자차 yaw 고려한 회전
+                    cos_yaw = np.cos(-ego_info['yaw'])
+                    sin_yaw = np.sin(-ego_info['yaw'])
+                    ego_x = dx * cos_yaw - dy * sin_yaw
+                    ego_y = dx * sin_yaw + dy * cos_yaw
+                else:
+                    ego_x = global_x
+                    ego_y = global_y
+                
+                # 화면 좌표계로 변환 (x가 위쪽, y가 오른쪽)
+                screen_x = -ego_y
+                screen_y = ego_x
+                
+                # view_range 내에 있는 포인트만 그리기
+                if abs(screen_x) < view_range/2 and abs(screen_y) < view_range/2:
+                    # 작은 점으로 표시 (obstacles points와 같은 크기)
+                    ax.plot(screen_x, screen_y, 'o', color=color, markersize=2, alpha=0.8)
     
     # 자차는 항상 원점에 표시 (60cm x 60cm)
     ego_rect = patches.Rectangle(
@@ -351,7 +450,7 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
             ax.arrow(x, y, dx, dy, head_width=0.5, head_length=0.3, 
                     fc=color, ec=color, alpha=0.7, linewidth=2)
     
-    # 범례 추가 (포인트 있음/없음 구분)
+    # 범례 추가 (포인트 있음/없음 구분 + LDM)
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], marker='o', color='w', label='Object (with points)',
@@ -361,6 +460,35 @@ def plot_bird_view(ax, objects: List[Dict], ego_info: Dict,
         Line2D([0], [0], marker='.', color='gray', label='Point cloud',
                markersize=3, linestyle='None')
     ]
+    
+    # LDM 모드에 따른 범례 추가
+    if ldm_mode == 1:  # Obstacles Type
+        legend_elements.extend([
+            Line2D([0], [0], marker='o', color='w', label='LDM: Cliff',
+                   markerfacecolor='lime', markersize=4, linestyle='None'),
+            Line2D([0], [0], marker='o', color='w', label='LDM: Static Obstacle',
+                   markerfacecolor='yellow', markersize=4, linestyle='None'),
+            Line2D([0], [0], marker='o', color='w', label='LDM: Missing Points',
+                   markerfacecolor='purple', markersize=4, linestyle='None')
+        ])
+    elif ldm_mode == 2:  # Class ID
+        legend_elements.extend([
+            Line2D([0], [0], marker='o', color='w', label='LDM: Cement Asphalt',
+                   markerfacecolor='#F078F0', markersize=4, linestyle='None'),
+            Line2D([0], [0], marker='o', color='w', label='LDM: Grass',
+                   markerfacecolor='#00FF00', markersize=4, linestyle='None'),
+            Line2D([0], [0], marker='o', color='w', label='LDM: Crosswalk',
+                   markerfacecolor='#008000', markersize=4, linestyle='None'),
+            Line2D([0], [0], marker='o', color='w', label='LDM: Other Types',
+                   markerfacecolor='#808080', markersize=4, linestyle='None')
+        ])
+    elif ldm_mode == 3:  # Both
+        legend_elements.extend([
+            Line2D([0], [0], marker='o', color='w', label='LDM: Obstacles (Priority)',
+                   markerfacecolor='lime', markersize=4, linestyle='None'),
+            Line2D([0], [0], marker='o', color='w', label='LDM: Ground Types',
+                   markerfacecolor='#808080', markersize=4, linestyle='None')
+        ])
     ax.legend(handles=legend_elements, loc='lower right', fontsize=8)
 
 
@@ -437,6 +565,7 @@ class InteractiveVisualizer:
         self.anim = None
         self.playing = False  # 애니메이션 일시정지 상태로 시작
         self.prev_objects = {}  # 이전 프레임의 객체 정보 저장
+        self.ldm_mode = 1  # LDM 시각화 모드 (1: obstacles_type, 2: class_id, 3: both)
         
     def on_key(self, event):
         """키보드 이벤트 핸들러"""
@@ -467,13 +596,25 @@ class InteractiveVisualizer:
             self.interval = max(10, int(self.interval * 0.8))  # 최소 10ms
             if self.anim:
                 self.anim.interval = self.interval
-            print(f"재생 속도: {1000/self.interval:.1f} FPS (interval: {self.interval}ms)")
+            print(f"Playback speed: {1000/self.interval:.1f} FPS (interval: {self.interval}ms)")
         elif event.key == 'down':
             # 속도 감소 (interval 증가)
             self.interval = min(1000, int(self.interval * 1.25))  # 최대 1000ms
             if self.anim:
                 self.anim.interval = self.interval
-            print(f"재생 속도: {1000/self.interval:.1f} FPS (interval: {self.interval}ms)")
+            print(f"Playback speed: {1000/self.interval:.1f} FPS (interval: {self.interval}ms)")
+        elif event.key == '1':  # LDM obstacles_type 모드
+            self.ldm_mode = 1
+            self.update_frame()
+            print("LDM Mode: Obstacles Type")
+        elif event.key == '2':  # LDM class_id 모드
+            self.ldm_mode = 2
+            self.update_frame()
+            print("LDM Mode: Class ID")
+        elif event.key == '3':  # LDM both 모드
+            self.ldm_mode = 3
+            self.update_frame()
+            print("LDM Mode: Both (Priority: Obstacles)")
         elif event.key == 'escape' or event.key == 'q':
             if self.anim:
                 self.anim.pause()
@@ -482,7 +623,7 @@ class InteractiveVisualizer:
     def update_frame(self):
         """현재 프레임 업데이트"""
         frame_data = self.data[self.current_frame]
-        objects, ego_info, timestamp, gt_trajectory, near_direction, destination_direction = extract_objects_info(frame_data)
+        objects, ego_info, timestamp, gt_trajectory, near_direction, destination_direction, ldm_points = extract_objects_info(frame_data)
         
         # 타임스탬프 기반으로 이미지 찾기
         image_path = None
@@ -494,7 +635,9 @@ class InteractiveVisualizer:
                       gt_trajectory=gt_trajectory, 
                       near_direction=near_direction,
                       destination_direction=destination_direction,
-                      prev_objects=self.prev_objects)
+                      prev_objects=self.prev_objects,
+                      ldm_points=ldm_points,
+                      ldm_mode=self.ldm_mode)
         
         # 현재 프레임의 객체 정보를 다음 프레임을 위해 저장
         self.prev_objects = {}
@@ -617,13 +760,14 @@ def animate_frames(data: List[Dict], img_dir: Optional[Path] = None,
     def update(frame_idx):
         anim_state['current_frame'] = frame_idx
         frame_data = data[frame_idx]
-        objects, ego_info, timestamp, gt_trajectory, near_direction, destination_direction = extract_objects_info(frame_data)
+        objects, ego_info, timestamp, gt_trajectory, near_direction, destination_direction, ldm_points = extract_objects_info(frame_data)
         
         # Bird's eye view
         plot_bird_view(ax1, objects, ego_info, view_range, 
                       gt_trajectory=gt_trajectory,
                       near_direction=near_direction,
-                      destination_direction=destination_direction)
+                      destination_direction=destination_direction,
+                      ldm_points=ldm_points)
         
         # Camera view
         image_path = None
@@ -634,7 +778,7 @@ def animate_frames(data: List[Dict], img_dir: Optional[Path] = None,
         # 제목 업데이트
         status = "Playing" if anim_state['playing'] else "Paused"
         fig.suptitle(f'Frame {frame_idx} / {len(data)-1} [{status}] '
-                    f'(Space: 재생/일시정지, ←/→: 프레임 이동, ESC/Q: 종료)', 
+                    f'(Space: Play/Pause, ←/→: Frame, ESC/Q: Quit)', 
                     fontsize=16)
         
         # 추가 정보 표시
@@ -693,16 +837,16 @@ def main():
             if results_path.exists():
                 jsonl_path = results_path
             else:
-                print(f"파일을 찾을 수 없습니다: {args.jsonl_file}")
+                print(f"File not found: {args.jsonl_file}")
                 return
         jsonl_files = [jsonl_path]
     else:
         # 파일이 지정되지 않은 경우: results 디렉토리의 모든 JSONL 파일
         jsonl_files = sorted(results_dir.glob('IO_GT_matching_*.jsonl'))
         if not jsonl_files:
-            print(f"results 디렉토리에 JSONL 파일이 없습니다: {results_dir}")
+            print(f"No JSONL files found in results directory: {results_dir}")
             return
-        print(f"총 {len(jsonl_files)}개의 JSONL 파일을 찾았습니다:")
+        print(f"Found {len(jsonl_files)} JSONL files:")
     
     # 여러 파일 순차 재생을 위한 새로운 클래스
     class MultiFileVisualizer:
@@ -722,7 +866,7 @@ def main():
             # 모든 파일 로드
             total_frames = 0
             for i, jsonl_path in enumerate(jsonl_files):
-                print(f"\n[{i+1}/{len(jsonl_files)}] 로드 중: {jsonl_path.name}")
+                print(f"\n[{i+1}/{len(jsonl_files)}] Loading: {jsonl_path.name}")
                 data = load_jsonl_data(jsonl_path)
                 self.all_data.extend(data)
                 self.file_boundaries.append(total_frames)
@@ -734,9 +878,9 @@ def main():
                     db3_name = jsonl_path.name.replace('IO_GT_matching_', '').replace('.jsonl', '')
                 self.db3_names.append(db3_name)
                 
-                print(f"  - {len(data)}개 프레임 로드 완료")
+                print(f"  - {len(data)} frames loaded")
             
-            print(f"\n총 {total_frames}개 프레임 로드 완료")
+            print(f"\nTotal {total_frames} frames loaded")
             
         def get_current_db3_name(self, frame_idx: int) -> str:
             """현재 프레임이 속한 파일의 db3 이름 반환"""
@@ -799,9 +943,9 @@ def main():
         jsonl_path = jsonl_files[0]
         
         # 데이터 로드
-        print(f"데이터 로드 중: {jsonl_path}")
+        print(f"Loading data: {jsonl_path}")
         data = load_jsonl_data(jsonl_path)
-        print(f"총 {len(data)}개 프레임 로드 완료")
+        print(f"Total {len(data)} frames loaded")
         
         # db3 이름 추출 (타임스탬프 매칭용)
         db3_name = None
@@ -841,8 +985,8 @@ def main():
             visualize_single_frame(data, args.frame, img_dir, args.view_range, db3_name, args.debug, args.interval)
         else:
             # 애니메이션 모드 (기본 일시정지 상태로 시작)
-            print("시각화 준비 완료")
-            print("조작법: Space(재생/일시정지), ←/→(프레임 이동), ↑/↓(속도 조절), ESC/Q(종료)")
+            print("Visualization ready")
+            print("Controls: Space(Play/Pause), ←/→(Frame), ↑/↓(Speed), ESC/Q(Quit)")
             visualizer = InteractiveVisualizer(data, img_dir, args.view_range, db3_name, args.debug, args.interval)
             visualizer.show()
 

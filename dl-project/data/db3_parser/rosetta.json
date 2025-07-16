@@ -1,0 +1,342 @@
+{
+  "description": "ROS2 bag 파일에서 추출한 데이터의 구조와 의미를 설명하는 Rosetta Stone",
+  "version": "1.0",
+  "last_updated": "2025-07-16",
+  "topics": {
+    "obstacles_tracking_msg": {
+      "type": "autonomy_ros2_message/msg/DetectedObjectArray",
+      "description": "감지된 장애물 정보",
+      "fields": {
+        "_objects": {
+          "description": "감지된 객체 배열",
+          "sub_fields": {
+            "_id": "객체 고유 ID",
+            "_class_id": {
+              "description": "객체 클래스 ID",
+              "values": {
+                "99": "Unknown",
+                "98": "Unregistered",
+                "100": "Person (보행자)",
+                "200": "Bicycle (자전거)",
+                "201": "Bus (버스)",
+                "202": "Car (자동차)",
+                "203": "Motorcycle (오토바이)",
+                "204": "Scooter (스쿠터)",
+                "205": "Truck (트럭)",
+                "206": "Cart (카트)",
+                "300": "Bollard (볼라드 - 정적 장애물)",
+                "400": "Neubie (뉴비 - 동적 장애물)",
+                "500": "EV Close (전기차 충전구 닫힘)",
+                "501": "EV Open (전기차 충전구 열림)",
+                "502": "Warning Light (경고등)",
+                "503": "Traffic Light (신호등)",
+                "504": "Traffic Light Green (초록 신호등)",
+                "505": "Traffic Light Red (빨간 신호등)",
+                "506": "Traffic Light Other (기타 신호등)",
+                "507": "Barricade (바리케이드)",
+                "508": "Wheelchair Entrance (휠체어 진입로)",
+                "509": "Animal (동물)",
+                "510": "Wheelchair (휠체어)",
+                "511": "Stroller (유모차)",
+                "512": "Tree Trunk (나무 줄기)"
+              }
+            },
+            "_global_center": {
+              "description": "전역 좌표계에서의 객체 중심 위치",
+              "sub_fields": {
+                "_x": "X 좌표 (미터)",
+                "_y": "Y 좌표 (미터)",
+                "_z": "Z 좌표 (미터)"
+              }
+            },
+            "_global_velocity": "전역 좌표계에서의 속도 (m/s)",
+            "_global_yaw_heading": "전역 좌표계에서의 방향각 (라디안)",
+            "_global_points": "전역 좌표계에서의 포인트 클라우드",
+            "_local_center": "로컬 좌표계에서의 객체 중심 위치",
+            "_local_velocity": "로컬 좌표계에서의 속도",
+            "_local_yaw_heading": "로컬 좌표계에서의 방향각",
+            "_local_points": "로컬 좌표계에서의 포인트 클라우드",
+            "_tracking_age": "추적 프레임 수",
+            "_track_confidence": "추적 신뢰도 (0~1)",
+            "_status": {
+              "description": "객체 상태",
+              "values": {
+                "0": "비활성",
+                "1": "활성"
+              }
+            },
+            "_source_cam": "감지한 카메라 ID",
+            "_roi_detections": "이미지에서의 ROI 정보",
+            "_covariance": "위치 불확실성 공분산 행렬 (4x4)"
+          }
+        }
+      }
+    },
+    "ldm_msg": {
+      "type": "sensor_msgs/msg/PointCloud2",
+      "description": "Local Dynamic Map - 주변 환경 정보",
+      "fields": {
+        "x": "전역 좌표계 X 위치 (미터)",
+        "y": "전역 좌표계 Y 위치 (미터)",
+        "z": "전역 좌표계 Z 위치 (미터)",
+        "origin_x": "Ego 기준 좌측하단 10m 위치의 X 좌표",
+        "origin_y": "Ego 기준 좌측하단 10m 위치의 Y 좌표",
+        "obstacles_type": {
+          "description": "장애물 타입",
+          "values": {
+            "0": "없음 (None)",
+            "1": "절벽/낭떠러지 (Cliff)",
+            "2": "정적 장애물 (Static Obstacles)",
+            "3": "누락된 포인트 (Missing Points)"
+          }
+        },
+        "class_id": {
+          "description": "세부 클래스 ID (Segmentation)",
+          "values": {
+            "0": "Background (배경)",
+            "1": "Blocks (블록)",
+            "2": "Colored Road (색칠된 도로)",
+            "3": "Cement Asphalt (시멘트 아스팔트)",
+            "4": "Crosswalk (횡단보도)",
+            "5": "Speed Bumps (과속방지턱)",
+            "6": "Manhole (맨홀)",
+            "7": "Curbs (연석)",
+            "8": "Grass (잔디)",
+            "9": "Soil/Gravel (흙/자갈)",
+            "10": "Grating (격자)",
+            "11": "Guide Blocks (유도 블록)",
+            "12": "Rock (바위)",
+            "13": "Unidentified (미지정 타겟)",
+            "14": "Wood (나무재질)",
+            "15": "Iron (철 재질)",
+            "16": "Artificial Turf (인조잔디)",
+            "17": "Water (호수, 물 웅덩이)",
+            "18": "Mat (멍석)",
+            "19": "Unlabeled (라벨 없음)",
+            "20": "Restricted (제한 구역)",
+            "21": "Lane Straight White (흰색 실선)",
+            "22": "Lane Straight Yellow (노란색 실선)",
+            "23": "Lane Dashed White (흰색 점선)",
+            "24": "Lane Dashed Yellow (노란색 점선)",
+            "25": "Guide Blocks Stop (시각장애인 정지유도블록)",
+            "99": "기타/미분류"
+          }
+        },
+        "probability": "클래스 확률 (0~1)",
+        "occluded_point": "가려진 포인트 여부 (0: 아니오, 1: 예)",
+        "rgb": "색상 정보",
+        "slope": "경사도",
+        "step_height": "단차 높이"
+      }
+    },
+    "odomgyro": {
+      "type": "nav_msgs/msg/Odometry",
+      "description": "자차 위치 및 자세 정보",
+      "frequency": "100Hz",
+      "fields": {
+        "_pose": {
+          "description": "위치 및 자세",
+          "sub_fields": {
+            "_pose": {
+              "_position": {
+                "_x": "전역 X 좌표 (미터)",
+                "_y": "전역 Y 좌표 (미터)",
+                "_z": "전역 Z 좌표 (미터)"
+              },
+              "_orientation": {
+                "description": "쿼터니언 방향",
+                "_x": "쿼터니언 X",
+                "_y": "쿼터니언 Y",
+                "_z": "쿼터니언 Z",
+                "_w": "쿼터니언 W"
+              }
+            }
+          }
+        }
+      }
+    },
+    "wheelodom": {
+      "type": "autonomy_ros2_message/msg/MotorDriver",
+      "description": "휠 오도메트리 정보",
+      "frequency": "20Hz",
+      "fields": {
+        "linear_vel": "선속도 (m/s)"
+      }
+    },
+    "planned_global_way_array": {
+      "type": "sensor_msgs/msg/PointCloud2",
+      "description": "전역 경로 계획 웨이포인트",
+      "fields": {
+        "x": "웨이포인트 X 좌표 (미터)",
+        "y": "웨이포인트 Y 좌표 (미터)",
+        "z": "웨이포인트 Z 좌표 (미터)"
+      }
+    },
+    "cam_f/image/reduced/compressed": {
+      "type": "sensor_msgs/msg/CompressedImage",
+      "description": "전방 카메라 이미지 (압축)",
+      "frequency": "10Hz",
+      "format": "JPEG"
+    }
+  },
+  "coordinate_systems": {
+    "global": {
+      "description": "전역 좌표계 (World/Map frame)",
+      "origin": "맵의 원점",
+      "orientation": "ENU (East-North-Up)"
+    },
+    "local": {
+      "description": "자차 중심 좌표계 (Ego/Base_link frame)",
+      "origin": "자차 중심",
+      "orientation": "전진 방향이 X축 양의 방향"
+    }
+  },
+  "extracted_features": {
+    "near_direction_vector": {
+      "description": "현재 위치에서 K미터 앞 웨이포인트로의 방향 단위벡터",
+      "k_meters": "20.0 (기본값)"
+    },
+    "destination_direction_vector": {
+      "description": "현재 위치에서 최종 목적지로의 방향 단위벡터"
+    },
+    "_linear_vel": {
+      "description": "wheelodom에서 인터폴레이션한 현재 속도 (m/s)"
+    }
+  },
+  "sampling_parameters": {
+    "n_trajectory_sample_time": {
+      "description": "GT trajectory 수집 시간 구간 (초)",
+      "default": 1.0,
+      "usage": "현재 시점부터 이 시간동안의 미래 위치를 수집"
+    },
+    "trajectory_interval_sec": {
+      "description": "Trajectory 내부 샘플링 간격 (초)",
+      "default": 0.1,
+      "usage": "100Hz odom 데이터를 이 간격으로 다운샘플링"
+    },
+    "sample_logging_interval_sec": {
+      "description": "장애물 데이터 샘플링 간격 (초)",
+      "default": 0.3,
+      "usage": "이 시간 이내의 연속된 장애물 데이터는 무시"
+    }
+  },
+  "visualization_colors": {
+    "objects": {
+      "99": "#000000 (Unknown)",
+      "98": "#000001 (Unregistered)",
+      "100": "#DBDB8D (Person)",
+      "200": "#98DF8A (Bicycle)",
+      "201": "#FFBB78 (Bus)",
+      "202": "#1F77B4 (Car)",
+      "203": "#FF007C (Motorcycle)",
+      "204": "#C5B0D5 (Scooter)",
+      "205": "#031B81 (Truck)",
+      "206": "#6000C0 (Cart)",
+      "300": "#FAD4AE (Bollard)",
+      "400": "#F7ECE6 (Neubie)",
+      "500": "#763D74 (EV Close)",
+      "501": "#C49C94 (EV Open)",
+      "502": "#733380 (Warning Light)",
+      "503": "#FF6A4D (Traffic Light)",
+      "504": "#24B353 (Traffic Light Green)",
+      "505": "#CC3366 (Traffic Light Red)",
+      "506": "#FF6A4D (Traffic Light Other)",
+      "507": "#EF60B3 (Barricade)",
+      "508": "#FAFA37 (Wheelchair Entrance)",
+      "509": "#17BECF (Animal)",
+      "510": "#DDFF33 (Wheelchair)",
+      "511": "#008000 (Stroller)",
+      "512": "#FF9896 (Tree Trunk)"
+    },
+    "ldm_obstacles_type": {
+      "1": "lime (절벽)",
+      "2": "yellow (정적 장애물)",
+      "3": "purple (누락된 포인트)"
+    },
+    "ldm_segmentation": {
+      "0": "#000000 (Background)",
+      "1": "#3D3DF5 (Blocks)",
+      "2": "#CC3366 (Colored Road)",
+      "3": "#F078F0 (Cement Asphalt)",
+      "4": "#008000 (Crosswalk)",
+      "5": "#733380 (Speed Bumps)",
+      "6": "#FF6A4D (Manhole)",
+      "7": "#5986B3 (Curbs)",
+      "8": "#00FF00 (Grass)",
+      "9": "#CC9933 (Soil/Gravel)",
+      "10": "#34D1B7 (Grating)",
+      "11": "#FFCC33 (Guide Blocks)",
+      "12": "#DBDB8D (Rock)",
+      "13": "#FF007C (Unidentified)",
+      "14": "#942701 (Wood)",
+      "15": "#AEC7E8 (Iron)",
+      "16": "#A7FFD8 (Artificial Turf)",
+      "17": "#00498C (Water)",
+      "18": "#000000 (Mat)",
+      "19": "#F7ECE6 (Unlabeled)",
+      "20": "#6000C0 (Restricted)",
+      "21": "#FFFFFF (Lane Straight White)",
+      "22": "#F59331 (Lane Straight Yellow)",
+      "23": "#DBDB8D (Lane Dashed White)",
+      "24": "#000000 (Lane Dashed Yellow)",
+      "25": "#FCE7A7 (Guide Blocks Stop)"
+    }
+  },
+  "object_categories": {
+    "unknown": {
+      "ids": [
+        98,
+        99
+      ],
+      "description": "알 수 없는 객체"
+    },
+    "person": {
+      "ids": [
+        100
+      ],
+      "description": "사람"
+    },
+    "vehicle": {
+      "ids": [
+        200,
+        201,
+        202,
+        203,
+        204,
+        205,
+        206
+      ],
+      "description": "차량류 (자전거, 버스, 자동차, 오토바이, 스쿠터, 트럭, 카트)"
+    },
+    "static_obstacles": {
+      "ids": [
+        300
+      ],
+      "description": "정적 장애물 (볼라드)"
+    },
+    "dynamic_obstacles": {
+      "ids": [
+        400
+      ],
+      "description": "동적 장애물 (뉴비)"
+    },
+    "unclassified": {
+      "ids": [
+        500,
+        501,
+        502,
+        503,
+        504,
+        505,
+        506,
+        507,
+        508,
+        509,
+        510,
+        511,
+        512
+      ],
+      "description": "미분류 객체 (신호등, 바리케이드, 동물, 휠체어 등)"
+    }
+  }
+}
