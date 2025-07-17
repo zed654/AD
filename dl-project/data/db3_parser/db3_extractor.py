@@ -452,6 +452,65 @@ class DB3Extractor:
                 if gt_dict_odom and current_odom and closest_global_way:  # 매칭된 GT가 있을 때만 저장
                     input_dict = msg_to_dict(obs["msg"])
                     
+                    # obstacles_tracking_msg 필터링 - 필요한 필드만 하드코딩으로 추가
+                    if "_objects" in input_dict:
+                        filtered_objects = []
+                        for obj in input_dict["_objects"]:
+                            filtered_obj = {}
+                            # 필요한 필드만 하드코딩으로 추가
+                            if "_id" in obj:
+                                filtered_obj["_id"] = obj["_id"]
+                            if "_status" in obj:
+                                filtered_obj["_status"] = obj["_status"]
+                            if "_class_category" in obj:
+                                filtered_obj["_class_category"] = obj["_class_category"]
+                            if "_source_cam" in obj:
+                                filtered_obj["_source_cam"] = obj["_source_cam"]
+                            if "_tracking_age" in obj:
+                                filtered_obj["_tracking_age"] = obj["_tracking_age"]
+                            if "_class_id" in obj:
+                                filtered_obj["_class_id"] = obj["_class_id"]
+                            if "_model_image_detection_identificator" in obj:
+                                filtered_obj["_model_image_detection_identificator"] = obj["_model_image_detection_identificator"]
+                            if "_cluster_id" in obj:
+                                filtered_obj["_cluster_id"] = obj["_cluster_id"]
+                            if "_max_z" in obj:
+                                filtered_obj["_max_z"] = obj["_max_z"]
+                            if "_min_z" in obj:
+                                filtered_obj["_min_z"] = obj["_min_z"]
+                            if "_global_points" in obj:
+                                filtered_obj["_global_points"] = obj["_global_points"]
+                            if "_global_center" in obj:
+                                filtered_obj["_global_center"] = obj["_global_center"]
+                            if "_local_points" in obj:
+                                filtered_obj["_local_points"] = obj["_local_points"]
+                            if "_local_center" in obj:
+                                filtered_obj["_local_center"] = obj["_local_center"]
+                            if "_global_velocity" in obj:
+                                filtered_obj["_global_velocity"] = obj["_global_velocity"]
+                            if "_global_yaw_heading" in obj:
+                                filtered_obj["_global_yaw_heading"] = obj["_global_yaw_heading"]
+                            if "_local_velocity" in obj:
+                                filtered_obj["_local_velocity"] = obj["_local_velocity"]
+                            if "_local_yaw_heading" in obj:
+                                filtered_obj["_local_yaw_heading"] = obj["_local_yaw_heading"]
+                            if "_covariance" in obj:
+                                filtered_obj["_covariance"] = obj["_covariance"]
+                            if "_track_confidence" in obj:
+                                filtered_obj["_track_confidence"] = obj["_track_confidence"]
+                            if "_roi_detections" in obj:
+                                filtered_obj["_roi_detections"] = obj["_roi_detections"]
+                            if "_measurement_ids" in obj:
+                                filtered_obj["_measurement_ids"] = obj["_measurement_ids"]
+                            if "_cam_sources" in obj:
+                                filtered_obj["_cam_sources"] = obj["_cam_sources"]
+                            if "_gating_cost" in obj:
+                                filtered_obj["_gating_cost"] = obj["_gating_cost"]
+                            if "_class_covariance" in obj:
+                                filtered_obj["_class_covariance"] = obj["_class_covariance"]
+                            filtered_objects.append(filtered_obj)
+                        input_dict["_objects"] = filtered_objects
+                    
                     # 현재 위치 정보
                     current_position = {
                         'x': current_odom["msg"].pose.pose.position.x,
