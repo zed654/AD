@@ -6,6 +6,7 @@ dl-project/db3_parser/utility/__pycache__
 
 dl-project/data/db3_parser/db3/*.db3*
 dl-project/data/db3_parser/results/**
+dl-project/data/db3_parser/db3/*
 
 dl-project/results/*
 dl-project/venv_chp/*
