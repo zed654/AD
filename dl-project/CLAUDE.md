@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 This is a deep learning project for autonomous driving that processes ROS2 bag files (.db3) and implements reinforcement learning models, specifically MuZero for decision-making.
+Conda 환경을 사용해야하며, conda_init 실행 후 conda activate pytorch_2_2 로 설정 가능
 
 ## Common Commands
 
