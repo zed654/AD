@@ -1,178 +1,29 @@
 #!/usr/bin/env python3
 """
-GT(Ground Truth) 데이터 시각화 스크립트 - 성능 최적화 버전
+GT(Ground Truth) 데이터 시각화 스크립트 - 공통 파서 사용 버전
 db3_extractor.py로 추출한 JSONL 파일의 GT 데이터를 빠르게 시각화합니다.
 """
 
-import json
+import sys
+import os
+# MuZero 모듈을 import할 수 있도록 경로 추가
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
-from matplotlib.collections import LineCollection, PatchCollection
 import numpy as np
 import argparse
 from pathlib import Path
 import cv2
 from typing import List, Dict, Tuple, Optional
-import math
-from collections import defaultdict
 import time
 
-
-def load_jsonl_data(filepath: Path) -> List[Dict]:
-    """JSONL 파일에서 데이터를 로드합니다."""
-    data = []
-    with open(filepath, 'r') as f:
-        for line in f:
-            data.append(json.loads(line))
-    return data
-
-
-def preprocess_frame_data(frame_data: Dict, ego_info: Dict, view_range: float) -> Dict:
-    """프레임 데이터를 사전 처리하여 캐시합니다."""
-    cache = {
-        'objects': [],
-        'ldm_points': [],
-        'trajectory_points': []
-    }
-    
-    # 자차 정보가 없으면 기본값 사용
-    if not ego_info:
-        ego_info = {'x': 0, 'y': 0, 'yaw': 0}
-    
-    ego_x, ego_y, ego_yaw = ego_info['x'], ego_info['y'], ego_info['yaw']
-    cos_yaw = np.cos(-ego_yaw)
-    sin_yaw = np.sin(-ego_yaw)
-    
-    # 객체 처리
-    objects = frame_data.get('input_environment', {}).get('_objects', [])
-    for obj in objects:
-        global_center = obj.get('_global_center', {})
-        global_x = global_center.get('_x', 0)
-        global_y = global_center.get('_y', 0)
-        
-        # 자차 좌표계로 변환
-        dx = global_x - ego_x
-        dy = global_y - ego_y
-        ego_x_obj = dx * cos_yaw - dy * sin_yaw
-        ego_y_obj = dx * sin_yaw + dy * cos_yaw
-        
-        # 화면 좌표계로 변환
-        screen_x = -ego_y_obj
-        screen_y = ego_x_obj
-        
-        # view_range 내의 객체만 처리
-        if abs(screen_x) <= view_range/2 and abs(screen_y) <= view_range/2:
-            obj_data = {
-                'screen_x': screen_x,
-                'screen_y': screen_y,
-                'class_id': obj.get('_class_id', -1),
-                'id': obj.get('_id', ''),
-                'velocity': obj.get('_global_velocity', 0),
-                'global_yaw': obj.get('_global_yaw_heading', 0),
-                'global_points': [],
-                'global_x': global_x,
-                'global_y': global_y
-            }
-            
-            # 포인트 처리
-            for point in obj.get('_global_points', []):
-                pt_x = point.get('_x', 0)
-                pt_y = point.get('_y', 0)
-                pt_dx = pt_x - ego_x
-                pt_dy = pt_y - ego_y
-                pt_ego_x = pt_dx * cos_yaw - pt_dy * sin_yaw
-                pt_ego_y = pt_dx * sin_yaw + pt_dy * cos_yaw
-                pt_screen_x = -pt_ego_y
-                pt_screen_y = pt_ego_x
-                
-                if abs(pt_screen_x) <= view_range/2 and abs(pt_screen_y) <= view_range/2:
-                    obj_data['global_points'].append((pt_screen_x, pt_screen_y))
-            
-            cache['objects'].append(obj_data)
-    
-    # LDM 포인트 처리
-    ldm_points = frame_data.get('input_environment', {}).get('_ldm_points', [])
-    for point in ldm_points:
-        global_x = point.get('x', 0)
-        global_y = point.get('y', 0)
-        
-        dx = global_x - ego_x
-        dy = global_y - ego_y
-        ego_x_pt = dx * cos_yaw - dy * sin_yaw
-        ego_y_pt = dx * sin_yaw + dy * cos_yaw
-        screen_x = -ego_y_pt
-        screen_y = ego_x_pt
-        
-        if abs(screen_x) < view_range/2 and abs(screen_y) < view_range/2:
-            cache['ldm_points'].append({
-                'x': screen_x,
-                'y': screen_y,
-                'obstacles_type': point.get('obstacles_type', 0),
-                'class_id': point.get('class_id', 0)
-            })
-    
-    # GT trajectory 처리
-    gt_trajectory = frame_data.get('gt_trajectory', [])
-    for gt in gt_trajectory:
-        pose = gt.get('_pose', {}).get('_pose', {})
-        position = pose.get('_position', {})
-        gt_x = position.get('_x', 0)
-        gt_y = position.get('_y', 0)
-        
-        dx = gt_x - ego_x
-        dy = gt_y - ego_y
-        ego_x_traj = dx * cos_yaw - dy * sin_yaw
-        ego_y_traj = dx * sin_yaw + dy * cos_yaw
-        screen_x = -ego_y_traj
-        screen_y = ego_x_traj
-        
-        cache['trajectory_points'].append((screen_x, screen_y))
-    
-    return cache
-
-
-def extract_objects_info(frame_data: Dict) -> Tuple[List[Dict], Dict, int, List[Dict], Optional[Dict], Optional[Dict], List[Dict]]:
-    """프레임 데이터에서 객체 정보를 추출합니다."""
-    objects = frame_data.get('input_environment', {}).get('_objects', [])
-    ego_trajectory = frame_data.get('gt_trajectory', [])
-    
-    # 자차 위치 (첫 번째 trajectory 데이터의 pose)
-    ego_info = {}
-    if ego_trajectory and len(ego_trajectory) > 0:
-        pose = ego_trajectory[0].get('_pose', {}).get('_pose', {})
-        position = pose.get('_position', {})
-        orientation = pose.get('_orientation', {})
-        
-        # 쿼터니언에서 yaw 계산
-        x, y, z, w = orientation.get('_x', 0), orientation.get('_y', 0), orientation.get('_z', 0), orientation.get('_w', 1)
-        yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-        
-        # 속도 정보 추출
-        linear_vel = ego_trajectory[0].get('_linear_vel', 0.0)
-        
-        ego_info = {
-            'x': position.get('_x', 0),
-            'y': position.get('_y', 0),
-            'yaw': yaw,
-            'velocity': linear_vel
-        }
-    
-    # 타임스탬프 추출
-    timestamp = 0
-    header = frame_data.get('input_environment', {}).get('_header', {})
-    stamp = header.get('_stamp', {})
-    if stamp:
-        timestamp = stamp.get('_sec', 0) * 1_000_000_000 + stamp.get('_nanosec', 0)
-    
-    # 방위벡터 추출
-    near_direction = frame_data.get('input_environment', {}).get('near_direction_vector')
-    destination_direction = frame_data.get('input_environment', {}).get('destination_direction_vector')
-    
-    # LDM 포인트 추출
-    ldm_points = frame_data.get('input_environment', {}).get('_ldm_points', [])
-    
-    return objects, ego_info, timestamp, ego_trajectory, near_direction, destination_direction, ldm_points
+# 🔥 공통 데이터 파서 사용!
+from models.MuZero.data_parser import (
+    GTDataParser, CoordinateTransformer,
+    EgoInfo, ObjectInfo, LDMPoint, TrajectoryPoint
+)
 
 
 def get_object_color(class_id: int) -> str:
@@ -276,75 +127,220 @@ def find_matching_image(timestamp: int, img_dir: Path, db3_name: str = None) -> 
 
 
 class FastInteractiveVisualizer:
-    """성능 최적화된 인터렉티브 시각화 클래스"""
-    def __init__(self, data: List[Dict], img_dir: Optional[Path], 
+    """공통 파서를 사용하는 성능 최적화된 인터렉티브 시각화 클래스"""
+    def __init__(self, parser: GTDataParser, img_dir: Optional[Path], 
                  view_range: float, db3_name: Optional[str] = None, debug: bool = False,
                  interval: int = 100):
-        self.data = data
-        self.img_dir = img_dir
-        self.view_range = view_range
-        self.db3_name = db3_name
-        self.debug = debug
-        self.interval = interval
-        self.current_frame = 0
-        self.fig = None
-        self.ax1 = None
-        self.ax2 = None
-        self.anim = None
-        self.playing = False
-        self.prev_objects = {}
-        self.ldm_mode = 1
+        # ===== 1. 기본 설정 =====
+        self.parser = parser  # 🔥 공통 파서 사용! (JSONL 데이터를 파싱하는 객체)
+        self.img_dir = img_dir  # 카메라 이미지가 저장된 디렉토리
+        self.view_range = view_range  # Bird's eye view에서 보여줄 범위 (미터 단위, 기본 30m)
+        self.db3_name = db3_name  # db3 파일 이름 (이미지 매칭용)
+        self.debug = debug  # 디버그 모드 플래그
+        self.interval = interval  # 애니메이션 프레임 간격 (밀리초, 기본 100ms = 10fps)
         
-        # 캐시 및 성능 최적화 변수
-        self.frame_cache = {}
-        self.image_cache = {}
+        # ===== 2. 프레임 관리 =====
+        self.current_frame = 0  # 현재 표시 중인 프레임 인덱스
+        self.total_frames = parser.get_frame_count()  # 전체 프레임 수
         
-        # 그래픽 요소 저장
+        # ===== 3. matplotlib 그래픽 요소 =====
+        self.fig = None  # matplotlib Figure 객체
+        self.ax1 = None  # 왼쪽 축: Bird's eye view
+        self.ax2 = None  # 오른쪽 축: Camera view
+        self.anim = None  # FuncAnimation 객체 (재생/일시정지 제어용)
+        self.playing = False  # 재생 상태 플래그
+        
+        # ===== 4. 객체 추적 및 모드 설정 =====
+        self.prev_objects = {}  # 이전 프레임의 객체 정보 (속도 벡터 계산용)
+        self.ldm_mode = 1  # LDM 표시 모드 (1: 장애물 타입, 2: 세그멘테이션, 3: 둘 다)
+        
+        # ===== 5. 성능 최적화를 위한 캐시 =====
+        self.frame_cache = {}  # 전처리된 프레임 데이터 캐시
+        self.image_cache = {}  # 카메라 이미지 경로 캐시
+        
+        # ===== 6. 그래픽 요소 저장 (재사용을 위해) =====
         self.artists = {
-            'ego_rect': None,
-            'ego_center': None,
-            'ego_arrow': None,
-            'objects': [],
-            'object_points': None,
-            'object_labels': [],
-            'ldm_scatter': None,
-            'trajectory_circles': [],
-            'near_arrow': None,
-            'dest_arrow': None,
-            'info_text': None,
-            'ego_info_text': None,
-            'camera_image': None
+            # 자차(Ego vehicle) 관련
+            'ego_rect': None,        # 자차를 표현하는 사각형
+            'ego_center': None,      # 자차 중심점
+            'ego_arrow': None,       # 자차 방향 화살표
+            
+            # 주변 객체 관련
+            'objects': [],           # 객체들 (차량, 보행자 등)
+            'object_points': None,   # 객체들의 포인트 클라우드
+            'object_labels': [],     # 객체 ID, 속도 등 텍스트 라벨
+            
+            # LDM(Local Dynamic Map) 관련
+            'ldm_scatter': None,     # LDM 포인트들 (도로 표면 정보)
+            
+            # 경로 관련
+            'trajectory_circles': [],  # GT(Ground Truth) 경로 점들
+            'near_arrow': None,      # 근거리 방향 벡터
+            'dest_arrow': None,      # 목적지 방향 벡터
+            
+            # 텍스트 정보
+            'info_text': None,       # 프레임 정보 텍스트
+            'ego_info_text': None,   # 자차 상태 텍스트
+            
+            # 카메라 이미지
+            'camera_image': None     # 전방 카메라 이미지
         }
         
-        # 전처리
+        # ===== 7. 전처리 실행 =====
+        # 모든 프레임을 미리 처리해서 캐시에 저장 (성능 향상)
         self.preprocess_all_frames()
         
     def preprocess_all_frames(self):
-        """모든 프레임 데이터를 사전 처리하여 캐시합니다."""
+        """
+        모든 프레임 데이터를 사전 처리하여 캐시합니다.
+        
+        이 함수는 시각화 시작 전에 모든 프레임을 미리 처리하여:
+        1. JSON 파싱 시간을 줄이고
+        2. 좌표 변환을 미리 수행하여
+        3. 실시간 재생 시 부드러운 성능을 보장합니다.
+        """
         print("Preprocessing frames for better performance...")
         start_time = time.time()
         
-        for i, frame_data in enumerate(self.data):
-            objects, ego_info, timestamp, gt_trajectory, near_direction, destination_direction, ldm_points = extract_objects_info(frame_data)
+        # 모든 프레임을 순회하며 전처리
+        for i in range(self.total_frames):
+            # ===== 1. 원시 JSON 데이터 가져오기 =====
+            frame_data = self.parser.get_frame_data(i)
+            if not frame_data:
+                continue
+                
+            # ===== 2. 공통 파서로 데이터 추출 =====
+            # 🔥 여기서 공통 data_parser.py의 메서드들을 사용!
+            ego_info = self.parser.parse_ego_info(frame_data)          # 자차 정보 (위치, 속도, 방향)
+            objects = self.parser.parse_objects(frame_data)             # 주변 객체들 (차량, 보행자 등)
+            ldm_points = self.parser.parse_ldm_points(frame_data)       # LDM 포인트들 (도로 표면 정보)
+            trajectory = self.parser.parse_trajectory(frame_data)        # GT 경로 (자차가 따라갈 경로)
+            near_dir, dest_dir = self.parser.get_direction_vectors(frame_data)  # 방향 벡터들
+            timestamp = self.parser.get_timestamp(frame_data)           # 타임스탬프
             
-            # 프레임 캐시에 필요한 정보 저장
+            # ===== 3. 프레임 캐시에 저장 =====
             self.frame_cache[i] = {
+                # 파싱된 원본 데이터들
                 'ego_info': ego_info,
+                'objects': objects,
+                'ldm_points': ldm_points,
+                'trajectory': trajectory,
                 'timestamp': timestamp,
-                'near_direction': near_direction,
-                'destination_direction': destination_direction,
-                'preprocessed': preprocess_frame_data(frame_data, ego_info, self.view_range),
-                'raw_objects': objects  # 속도 벡터 계산용
+                'near_direction': near_dir,
+                'destination_direction': dest_dir,
+                
+                # 화면 좌표로 전처리된 데이터
+                # _preprocess_frame_data()는 글로벌 좌표를 화면 좌표로 변환
+                'preprocessed': self._preprocess_frame_data(
+                    ego_info, objects, ldm_points, trajectory
+                )
             }
             
-            # 이미지 경로 캐싱
-            if self.img_dir:
+            # ===== 4. 카메라 이미지 경로 캐싱 =====
+            # 타임스탬프와 매칭되는 이미지 파일을 찾아서 저장
+            if self.img_dir and timestamp:
                 image_path = find_matching_image(timestamp, self.img_dir, self.db3_name)
                 if image_path:
                     self.image_cache[i] = image_path
         
         elapsed = time.time() - start_time
         print(f"Preprocessing completed in {elapsed:.2f} seconds")
+    
+    def _preprocess_frame_data(self, ego_info: Optional[EgoInfo], 
+                             objects: List[ObjectInfo],
+                             ldm_points: List[LDMPoint],
+                             trajectory: List[TrajectoryPoint]) -> Dict:
+        """
+        프레임 데이터를 화면 좌표로 변환합니다.
+        
+        이 함수의 역할:
+        1. 글로벌 좌표계의 데이터를 자차 중심 좌표계로 변환
+        2. 자차 중심 좌표를 화면 좌표로 변환 (y축이 전방)
+        3. view_range를 벗어난 객체들은 필터링
+        
+        Args:
+            ego_info: 자차 정보 (위치, 방향)
+            objects: 주변 객체들 리스트
+            ldm_points: LDM 포인트들 리스트
+            trajectory: GT 경로 포인트들 리스트
+            
+        Returns:
+            화면 좌표로 변환된 데이터 딕셔너리
+        """
+        # 결과를 저장할 캐시 딕셔너리 초기화
+        cache = {
+            'objects': [],          # 화면 좌표로 변환된 객체들
+            'ldm_points': [],       # 화면 좌표로 변환된 LDM 포인트들
+            'trajectory_points': [] # 화면 좌표로 변환된 경로 포인트들
+        }
+        
+        # 자차 정보가 없으면 빈 캐시 반환
+        if not ego_info:
+            return cache
+        
+        # ===== 1. 객체(차량, 보행자 등) 처리 =====
+        for obj in objects:
+            # 🔥 공통 좌표 변환 사용! (글로벌 → 자차 중심 → 화면)
+            # global_to_screen()은 내부적으로:
+            # 1) 글로벌 좌표에서 자차 위치를 뺌
+            # 2) 자차 방향(yaw)만큼 회전
+            # 3) 화면 좌표계로 변환 (x,y 축 교체)
+            screen_x, screen_y = CoordinateTransformer.global_to_screen(
+                obj.global_x, obj.global_y, ego_info.x, ego_info.y, ego_info.yaw
+            )
+            
+            # view_range 내의 객체만 처리 (화면에 보이는 것만)
+            if abs(screen_x) <= self.view_range/2 and abs(screen_y) <= self.view_range/2:
+                # 화면에 표시할 객체 정보 구성
+                obj_data = {
+                    'screen_x': screen_x,      # 화면 x 좌표
+                    'screen_y': screen_y,      # 화면 y 좌표
+                    'class_id': obj.class_id,  # 객체 종류 (100:보행자, 202:차량 등)
+                    'id': obj.id,              # 객체 고유 ID
+                    'velocity': obj.velocity,  # 속도
+                    'global_yaw': obj.global_yaw,  # 글로벌 방향
+                    'global_x': obj.global_x,  # 글로벌 x (속도 벡터 계산용)
+                    'global_y': obj.global_y,  # 글로벌 y (속도 벡터 계산용)
+                    'global_points': []        # 객체의 포인트 클라우드
+                }
+                
+                # 객체의 포인트 클라우드도 화면 좌표로 변환
+                for pt_x, pt_y in obj.global_points:
+                    pt_screen_x, pt_screen_y = CoordinateTransformer.global_to_screen(
+                        pt_x, pt_y, ego_info.x, ego_info.y, ego_info.yaw
+                    )
+                    # 화면 범위 내의 포인트만 저장
+                    if abs(pt_screen_x) <= self.view_range/2 and abs(pt_screen_y) <= self.view_range/2:
+                        obj_data['global_points'].append((pt_screen_x, pt_screen_y))
+                
+                cache['objects'].append(obj_data)
+        
+        # ===== 2. LDM(Local Dynamic Map) 포인트 처리 =====
+        # LDM은 도로 표면 정보를 담고 있음 (장애물, 차선, 도로 유형 등)
+        for ldm in ldm_points:
+            screen_x, screen_y = CoordinateTransformer.global_to_screen(
+                ldm.x, ldm.y, ego_info.x, ego_info.y, ego_info.yaw
+            )
+            
+            # 화면 범위 내의 LDM 포인트만 저장
+            if abs(screen_x) < self.view_range/2 and abs(screen_y) < self.view_range/2:
+                cache['ldm_points'].append({
+                    'x': screen_x,
+                    'y': screen_y,
+                    'obstacles_type': ldm.obstacles_type,  # 장애물 타입 (1:절벽, 2:정적장애물, 3:미싱포인트)
+                    'class_id': ldm.class_id              # 세그멘테이션 클래스 (도로, 인도, 차선 등)
+                })
+        
+        # ===== 3. GT(Ground Truth) 경로 처리 =====
+        # 자차가 따라가야 할 정답 경로
+        for traj_pt in trajectory:
+            screen_x, screen_y = CoordinateTransformer.global_to_screen(
+                traj_pt.x, traj_pt.y, ego_info.x, ego_info.y, ego_info.yaw
+            )
+            # 경로는 모든 점을 저장 (화면 밖의 점도 방향 표시를 위해)
+            cache['trajectory_points'].append((screen_x, screen_y))
+        
+        return cache
         
     def on_key(self, event):
         """키보드 이벤트 핸들러"""
@@ -358,14 +354,20 @@ class FastInteractiveVisualizer:
                 print("⏸ Paused")
         elif event.key == 'right':
             # 다음 프레임
-            if self.current_frame < len(self.data) - 1:
+            if self.current_frame < self.total_frames - 1:
                 self.current_frame += 1
                 self.update_frame_fast()
+                # 일시정지 상태에서도 화면 갱신
+                if not self.playing:
+                    plt.draw()
         elif event.key == 'left':
             # 이전 프레임
             if self.current_frame > 0:
                 self.current_frame -= 1
                 self.update_frame_fast()
+                # 일시정지 상태에서도 화면 갱신
+                if not self.playing:
+                    plt.draw()
         elif event.key == 'up':
             # 속도 증가 (interval 감소)
             self.interval = max(10, int(self.interval * 0.8))
@@ -381,14 +383,20 @@ class FastInteractiveVisualizer:
         elif event.key == '1':  # LDM obstacles_type 모드
             self.ldm_mode = 1
             self.update_frame_fast()
+            if not self.playing:
+                plt.draw()
             print("LDM Mode: Obstacles Type")
         elif event.key == '2':  # LDM class_id 모드
             self.ldm_mode = 2
             self.update_frame_fast()
+            if not self.playing:
+                plt.draw()
             print("LDM Mode: Class ID")
         elif event.key == '3':  # LDM both 모드
             self.ldm_mode = 3
             self.update_frame_fast()
+            if not self.playing:
+                plt.draw()
             print("LDM Mode: Both (Priority: Obstacles)")
         elif event.key == 'escape' or event.key == 'q':
             if self.anim:
@@ -435,56 +443,125 @@ class FastInteractiveVisualizer:
         self.ax2.set_title('Camera View')
         
     def update_frame_fast(self):
-        """최적화된 프레임 업데이트"""
-        # 캐시된 데이터 가져오기
-        cache_data = self.frame_cache[self.current_frame]
-        ego_info = cache_data['ego_info']
-        preprocessed = cache_data['preprocessed']
+        """
+        최적화된 프레임 업데이트
         
-        # LDM 포인트 업데이트 (scatter plot 사용)
-        ldm_x = []
-        ldm_y = []
-        ldm_colors = []
+        이 함수는 매 프레임마다 호출되어 화면을 업데이트합니다.
+        캐시된 데이터를 사용하여 빠르게 그래픽을 갱신합니다.
+        """
+        # ===== 1. 캐시된 데이터 가져오기 =====
+        cache_data = self.frame_cache.get(self.current_frame, {})
+        if not cache_data:
+            return
+            
+        ego_info = cache_data.get('ego_info')           # 자차 정보
+        preprocessed = cache_data.get('preprocessed', {})  # 전처리된 화면 좌표 데이터
         
-        for ldm_pt in preprocessed['ldm_points']:
+        # ===== 2. LDM 포인트 업데이트 =====
+        # scatter plot을 사용하여 많은 점을 효율적으로 그림
+        ldm_x = []      # x 좌표 리스트
+        ldm_y = []      # y 좌표 리스트
+        ldm_colors = [] # 색상 리스트
+        
+        # LDM 모드에 따라 다른 색상 적용
+        for ldm_pt in preprocessed.get('ldm_points', []):
             color = None
+            
+            # 모드 1: 장애물 타입만 표시
             if self.ldm_mode == 1:
                 color = get_ldm_color(ldm_pt['obstacles_type'])
+                
+            # 모드 2: 세그멘테이션 클래스만 표시
             elif self.ldm_mode == 2:
                 color = get_ldm_segmentation_color(ldm_pt['class_id'])
+                
+            # 모드 3: 둘 다 표시 (장애물이 있으면 장애물 색상 우선)
             elif self.ldm_mode == 3:
                 if ldm_pt['obstacles_type'] >= 1:
                     color = get_ldm_color(ldm_pt['obstacles_type'])
                 else:
                     color = get_ldm_segmentation_color(ldm_pt['class_id'])
             
+            # 색상이 있고, 표시 조건을 만족하면 리스트에 추가
             if color and (self.ldm_mode != 1 or ldm_pt['obstacles_type'] >= 1):
                 ldm_x.append(ldm_pt['x'])
                 ldm_y.append(ldm_pt['y'])
                 ldm_colors.append(color)
         
-        # LDM scatter plot 업데이트
+        # 기존 LDM scatter plot 제거하고 새로 그리기
         if self.artists['ldm_scatter']:
             self.artists['ldm_scatter'].remove()
         if ldm_x:
-            self.artists['ldm_scatter'] = self.ax1.scatter(ldm_x, ldm_y, c=ldm_colors, s=4, alpha=0.8)
+            self.artists['ldm_scatter'] = self.ax1.scatter(
+                ldm_x, ldm_y, c=ldm_colors, s=4, alpha=0.8
+            )
         
-        # GT trajectory 업데이트
+        # ===== 3. GT 경로 업데이트 =====
+        # 기존 경로 원들을 제거
         for circle in self.artists['trajectory_circles']:
             circle.remove()
         self.artists['trajectory_circles'] = []
         
-        trajectory_points = preprocessed['trajectory_points']
+        # 경로를 따라 원을 그림 (가까운 곳은 진한 녹색, 먼 곳은 연한 녹색)
+        trajectory_points = preprocessed.get('trajectory_points', [])
         for i, (x, y) in enumerate(trajectory_points):
+            # 색상 그라데이션 계산 (0: 진한 녹색, 1: 연한 녹색)
             color_ratio = i / max(len(trajectory_points) - 1, 1)
-            green_color = (0.3 * (1 - color_ratio) + 0.0 * color_ratio,
-                          0.8 * (1 - color_ratio) + 0.5 * color_ratio,
-                          0.3 * (1 - color_ratio) + 0.0 * color_ratio)
+            green_color = (
+                0.3 * (1 - color_ratio) + 0.0 * color_ratio,  # R
+                0.8 * (1 - color_ratio) + 0.5 * color_ratio,  # G
+                0.3 * (1 - color_ratio) + 0.0 * color_ratio   # B
+            )
             circle = plt.Circle((x, y), 0.1, color=green_color, alpha=0.8)
             self.ax1.add_patch(circle)
             self.artists['trajectory_circles'].append(circle)
         
-        # 객체 업데이트
+        # ===== 4. 다른 요소들 업데이트 =====
+        # 객체 업데이트 (차량, 보행자 등)
+        self._update_objects(preprocessed, ego_info, cache_data.get('objects', []))
+        
+        # 방위벡터 업데이트 (근거리/목적지 방향)
+        self._update_direction_vectors(cache_data, ego_info)
+        
+        # 자차 정보 텍스트 업데이트
+        if ego_info:
+            info_text = f"Ego Position: ({ego_info.x:.1f}, {ego_info.y:.1f}), Yaw: {np.degrees(ego_info.yaw):.1f}°"
+            if ego_info.velocity > 0:
+                info_text += f", Velocity: {ego_info.velocity:.1f} m/s"
+            self.artists['ego_info_text'].set_text(info_text)
+        
+        # Camera view 업데이트
+        if self.current_frame in self.image_cache:
+            image_path = self.image_cache[self.current_frame]
+            img = cv2.imread(str(image_path))
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            self.artists['camera_image'].set_data(img)
+        else:
+            # 빈 이미지
+            self.artists['camera_image'].set_data(np.zeros((480, 640, 3), dtype=np.uint8))
+        
+        # 제목 업데이트
+        status = "[Playing]" if self.playing else "[Paused]"
+        fps = 1000 / self.interval
+        self.fig.suptitle(f'Frame {self.current_frame} / {self.total_frames-1} {status} [{fps:.1f} FPS]\n'
+                          f'(Space: 재생/일시정지, ←/→: 프레임, ↑/↓: 속도, ESC/Q: 종료)', fontsize=14)
+        
+        # 정보 텍스트 업데이트
+        info_text = f"Frame: {self.current_frame} / {self.total_frames-1}\nObjects: {len(preprocessed.get('objects', []))}"
+        if ego_info:
+            info_text += f"\nEgo: ({ego_info.x:.1f}, {ego_info.y:.1f})"
+        if self.current_frame in self.image_cache:
+            info_text += f"\nImage: {self.image_cache[self.current_frame].name}"
+        else:
+            info_text += f"\nImage: Not found"
+        self.artists['info_text'].set_text(info_text)
+        
+        # LDM 모드에 따른 타이틀 업데이트
+        ldm_mode_text = {1: "Obstacles Type", 2: "Class ID", 3: "Both (Priority: Obstacles)"}
+        self.ax1.set_title(f'Bird\'s Eye View (Ego-centric, Forward: Up) - LDM Mode: {ldm_mode_text.get(self.ldm_mode, "Unknown")}')
+        
+    def _update_objects(self, preprocessed, ego_info, raw_objects):
+        """객체 업데이트"""
         # 기존 객체 그래픽 제거
         for artist in self.artists['objects']:
             artist.remove()
@@ -503,7 +580,7 @@ class FastInteractiveVisualizer:
         all_points_y = []
         all_colors = []
         
-        for obj in preprocessed['objects']:
+        for obj in preprocessed.get('objects', []):
             color = get_object_color(obj['class_id'])
             
             # 포인트 수집
@@ -528,11 +605,10 @@ class FastInteractiveVisualizer:
                 actual_heading = None
                 if self.prev_objects and obj['id'] in self.prev_objects:
                     prev_obj = self.prev_objects[obj['id']]
-                    prev_pos = prev_obj.get('_global_center', {})
-                    dx = obj['global_x'] - prev_pos.get('_x', obj['global_x'])
-                    dy = obj['global_y'] - prev_pos.get('_y', obj['global_y'])
+                    dx = obj['global_x'] - prev_obj.global_x
+                    dy = obj['global_y'] - prev_obj.global_y
                     if abs(dx) > 0.01 or abs(dy) > 0.01:
-                        actual_heading = math.atan2(dy, dx)
+                        actual_heading = np.arctan2(dy, dx)
                 
                 if actual_heading is not None:
                     visualize_scale_factor = 3
@@ -546,8 +622,8 @@ class FastInteractiveVisualizer:
                 
                 # 자차 좌표계로 변환
                 if ego_info:
-                    cos_yaw = np.cos(-ego_info['yaw'])
-                    sin_yaw = np.sin(-ego_info['yaw'])
+                    cos_yaw = np.cos(-ego_info.yaw)
+                    sin_yaw = np.sin(-ego_info.yaw)
                     ego_vel_x = global_vel_x * cos_yaw - global_vel_y * sin_yaw
                     ego_vel_y = global_vel_x * sin_yaw + global_vel_y * cos_yaw
                 else:
@@ -584,13 +660,10 @@ class FastInteractiveVisualizer:
             )
         
         # 현재 프레임의 객체 정보를 다음 프레임을 위해 저장
-        self.prev_objects = {}
-        for obj in cache_data['raw_objects']:
-            obj_id = obj.get('_id', '')
-            if obj_id:
-                self.prev_objects[obj_id] = obj
+        self.prev_objects = {obj.id: obj for obj in raw_objects}
         
-        # 방위벡터 업데이트
+    def _update_direction_vectors(self, cache_data, ego_info):
+        """방위벡터 업데이트"""
         if self.artists['near_arrow']:
             self.artists['near_arrow'].remove()
             self.artists['near_arrow'] = None
@@ -598,8 +671,8 @@ class FastInteractiveVisualizer:
             self.artists['dest_arrow'].remove()
             self.artists['dest_arrow'] = None
         
-        near_direction = cache_data['near_direction']
-        destination_direction = cache_data['destination_direction']
+        near_direction = cache_data.get('near_direction')
+        destination_direction = cache_data.get('destination_direction')
         
         if near_direction and destination_direction and ego_info:
             # 근접 방위벡터
@@ -607,8 +680,8 @@ class FastInteractiveVisualizer:
                 dx_near = near_direction['x']
                 dy_near = near_direction['y']
                 
-                cos_yaw = np.cos(-ego_info['yaw'])
-                sin_yaw = np.sin(-ego_info['yaw'])
+                cos_yaw = np.cos(-ego_info.yaw)
+                sin_yaw = np.sin(-ego_info.yaw)
                 ego_dx_near = dx_near * cos_yaw - dy_near * sin_yaw
                 ego_dy_near = dx_near * sin_yaw + dy_near * cos_yaw
                 
@@ -627,8 +700,8 @@ class FastInteractiveVisualizer:
                 dx_dest = destination_direction['x']
                 dy_dest = destination_direction['y']
                 
-                cos_yaw = np.cos(-ego_info['yaw'])
-                sin_yaw = np.sin(-ego_info['yaw'])
+                cos_yaw = np.cos(-ego_info.yaw)
+                sin_yaw = np.sin(-ego_info.yaw)
                 ego_dx_dest = dx_dest * cos_yaw - dy_dest * sin_yaw
                 ego_dy_dest = dx_dest * sin_yaw + dy_dest * cos_yaw
                 
@@ -642,47 +715,10 @@ class FastInteractiveVisualizer:
                 )
                 self.ax1.add_patch(self.artists['dest_arrow'])
         
-        # 자차 정보 텍스트 업데이트
-        if ego_info:
-            info_text = f"Ego Position: ({ego_info['x']:.1f}, {ego_info['y']:.1f}), Yaw: {np.degrees(ego_info['yaw']):.1f}°"
-            if 'velocity' in ego_info and ego_info['velocity'] > 0:
-                info_text += f", Velocity: {ego_info['velocity']:.1f} m/s"
-            self.artists['ego_info_text'].set_text(info_text)
-        
-        # Camera view 업데이트
-        if self.current_frame in self.image_cache:
-            image_path = self.image_cache[self.current_frame]
-            img = cv2.imread(str(image_path))
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            self.artists['camera_image'].set_data(img)
-        else:
-            # 빈 이미지
-            self.artists['camera_image'].set_data(np.zeros((480, 640, 3), dtype=np.uint8))
-        
-        # 제목 업데이트
-        status = "[Playing]" if self.playing else "[Paused]"
-        fps = 1000 / self.interval
-        self.fig.suptitle(f'Frame {self.current_frame} / {len(self.data)-1} {status} [{fps:.1f} FPS]\n'
-                          f'(Space: 재생/일시정지, ←/→: 프레임, ↑/↓: 속도, ESC/Q: 종료)', fontsize=14)
-        
-        # 정보 텍스트 업데이트
-        info_text = f"Frame: {self.current_frame} / {len(self.data)-1}\nObjects: {len(preprocessed['objects'])}"
-        if ego_info:
-            info_text += f"\nEgo: ({ego_info['x']:.1f}, {ego_info['y']:.1f})"
-        if self.current_frame in self.image_cache:
-            info_text += f"\nImage: {self.image_cache[self.current_frame].name}"
-        else:
-            info_text += f"\nImage: Not found"
-        self.artists['info_text'].set_text(info_text)
-        
-        # LDM 모드에 따른 타이틀 업데이트
-        ldm_mode_text = {1: "Obstacles Type", 2: "Class ID", 3: "Both (Priority: Obstacles)"}
-        self.ax1.set_title(f'Bird\'s Eye View (Ego-centric, Forward: Up) - LDM Mode: {ldm_mode_text.get(self.ldm_mode, "Unknown")}')
-        
     def animate_update(self, frame_idx):
         """애니메이션 업데이트 함수"""
         if self.playing:
-            self.current_frame = (self.current_frame + 1) % len(self.data)
+            self.current_frame = (self.current_frame + 1) % self.total_frames
             self.update_frame_fast()
         return []
     
@@ -705,7 +741,7 @@ class FastInteractiveVisualizer:
         
         # 애니메이션 생성
         self.anim = FuncAnimation(self.fig, self.animate_update, 
-                                frames=len(self.data),
+                                frames=self.total_frames,
                                 interval=self.interval, 
                                 repeat=True,
                                 blit=False)
@@ -717,7 +753,7 @@ class FastInteractiveVisualizer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='GT 데이터 시각화 - 성능 최적화 버전')
+    parser = argparse.ArgumentParser(description='GT 데이터 시각화 - 공통 파서 사용 버전')
     parser.add_argument('jsonl_file', type=str, nargs='?', default=None,
                        help='시각화할 JSONL 파일 경로 (미지정시 results 디렉토리의 모든 파일 재생)')
     parser.add_argument('--frame', type=int, default=None,
@@ -771,10 +807,10 @@ def main():
     # 단일 파일 처리 (여러 파일 재생은 간단히 하기 위해 첫 번째 파일만)
     jsonl_path = jsonl_files[0]
     
-    # 데이터 로드
+    # 🔥 공통 파서 사용!
     print(f"Loading data: {jsonl_path}")
-    data = load_jsonl_data(jsonl_path)
-    print(f"Total {len(data)} frames loaded")
+    data_parser = GTDataParser(jsonl_path)
+    print(f"Total {data_parser.get_frame_count()} frames loaded")
     
     # db3 이름 추출
     db3_name = None
@@ -782,10 +818,12 @@ def main():
         db3_name = jsonl_path.name.replace('IO_GT_matching_', '').replace('.jsonl', '')
     
     # 시각화
-    print("\n=== 성능 최적화 버전 실행 중 ===")
+    print("\n=== 공통 파서 사용 버전 실행 중 ===")
     print("Controls: Space(Play/Pause), ←/→(Frame), ↑/↓(Speed), 1/2/3(LDM Mode), ESC/Q(Quit)")
     
-    visualizer = FastInteractiveVisualizer(data, img_dir, args.view_range, db3_name, args.debug, args.interval)
+    visualizer = FastInteractiveVisualizer(
+        data_parser, img_dir, args.view_range, db3_name, args.debug, args.interval
+    )
     visualizer.show(start_frame=args.frame if args.frame is not None else 0)
 
 

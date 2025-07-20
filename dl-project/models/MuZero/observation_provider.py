@@ -9,6 +9,10 @@ import torch
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 import json
+import random
+
+# 공통 데이터 파서 import
+from .data_parser import GTDataParser, ObservationBuilder, EgoInfo, ObjectInfo, LDMPoint
 
 
 class ObservationProvider(ABC):
@@ -54,105 +58,204 @@ class GTObservationProvider(ObservationProvider):
         self.data_path = data_path or Path("data/db3_parser/results/matched_data.jsonl")
         self.observation_shape = config.observation_shape
         
-        # GT 데이터 로드
-        self.episodes = []
-        self.current_episode = None
-        self.current_step = 0
+        # 데이터 파서 및 observation 빌더 초기화
+        try:
+            self.parser = GTDataParser(self.data_path)
+            self.obs_builder = ObservationBuilder(config)
+            print(f"GT 데이터 로드 완료: {self.parser.get_frame_count()}개 프레임")
+        except FileNotFoundError as e:
+            print(f"경고: {e}")
+            self.parser = None
+            self.obs_builder = None
         
-        self._load_gt_data()
+        # 에피소드 관리
+        self.current_frame_idx = 0
+        self.episode_start_idx = 0
+        self.steps_in_episode = 0
+        self.max_episode_length = getattr(config, 'max_episode_length', 50)
         
-    def _load_gt_data(self):
-        """GT 데이터를 로드"""
-        if not self.data_path.exists():
-            print(f"경고: GT 데이터 파일이 없습니다: {self.data_path}")
-            return
-            
-        with open(self.data_path, 'r') as f:
-            for line in f:
-                data = json.loads(line)
-                self.episodes.append(data)
+        # 이전 프레임 정보 (보상 계산용)
+        self.prev_ego_info = None
+        self.prev_distance_to_goal = None
         
-        if self.episodes:
-            print(f"GT 데이터 로드 완료: {len(self.episodes)}개 에피소드")
-        else:
-            print("경고: GT 데이터가 비어있습니다")
-    
     def reset(self) -> np.ndarray:
         """새로운 에피소드 시작"""
-        if not self.episodes:
+        if not self.parser:
             # GT 데이터가 없으면 임시로 랜덤 데이터 반환
             print("경고: GT 데이터가 없어 랜덤 관측값을 사용합니다")
             return np.random.rand(*self.observation_shape).astype(np.float32)
         
-        # 랜덤하게 에피소드 선택
-        import random
-        self.current_episode = random.choice(self.episodes)
-        self.current_step = 0
+        # 랜덤하게 시작 프레임 선택 (뒤에 충분한 프레임이 있는 곳에서)
+        max_start = max(0, self.parser.get_frame_count() - self.max_episode_length - 10)
+        self.episode_start_idx = random.randint(0, max_start)
+        self.current_frame_idx = self.episode_start_idx
+        self.steps_in_episode = 0
         
-        # 초기 관측값 생성
-        observation = self._extract_observation(self.current_episode)
+        # 초기 프레임 데이터 가져오기
+        frame_data = self.parser.get_frame_data(self.current_frame_idx)
+        if not frame_data:
+            return np.zeros(self.observation_shape, dtype=np.float32)
+        
+        # 관측값 생성
+        observation = self._create_observation(frame_data)
+        
+        # 초기 상태 저장
+        self.prev_ego_info = self.parser.parse_ego_info(frame_data)
+        trajectory = self.parser.parse_trajectory(frame_data)
+        if trajectory and len(trajectory) > 5:
+            goal = trajectory[5]  # 5번째 포인트를 목표로
+            if self.prev_ego_info:
+                self.prev_distance_to_goal = np.sqrt(
+                    (goal.x - self.prev_ego_info.x)**2 + 
+                    (goal.y - self.prev_ego_info.y)**2
+                )
+        
         return observation
     
     def get_observation(self, action: Optional[int] = None) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         """GT 데이터에서 다음 관측값 가져오기"""
-        if not self.current_episode:
-            # 에피소드가 없으면 리셋
-            observation = self.reset()
-            return observation, 0.0, False, {}
+        if not self.parser:
+            observation = np.random.rand(*self.observation_shape).astype(np.float32)
+            return observation, 0.0, False, {"simulated": True}
         
-        # 액션 수행 후 다음 상태로 전환
-        self.current_step += 1
+        # 다음 프레임으로 이동
+        self.current_frame_idx += 1
+        self.steps_in_episode += 1
         
-        # GT trajectory 길이 확인
-        gt_trajectory = self.current_episode.get("gt_trajectory", [])
-        if self.current_step >= len(gt_trajectory):
-            # 에피소드 종료
-            observation = self._extract_observation(self.current_episode)
-            return observation, 0.0, True, {"episode_ended": True}
+        # 프레임 데이터 가져오기
+        frame_data = self.parser.get_frame_data(self.current_frame_idx)
+        if not frame_data:
+            # 데이터 끝에 도달
+            return self.reset(), 0.0, True, {"reason": "data_end"}
         
-        # 관측값 추출
-        observation = self._extract_observation(self.current_episode)
+        # 관측값 생성
+        observation = self._create_observation(frame_data)
         
-        # 보상 계산 (TODO: 실제 보상 함수 구현 필요)
-        reward = self._calculate_reward(action, self.current_episode, self.current_step)
+        # 보상 계산
+        reward = self._calculate_reward(action, frame_data)
         
         # 종료 조건 확인
-        done = self._check_termination(self.current_episode, self.current_step)
+        done = self._check_termination(frame_data)
         
+        # 정보 딕셔너리
+        ego_info = self.parser.parse_ego_info(frame_data)
         info = {
-            "step": self.current_step,
-            "episode_id": self.current_episode.get("timestamp", "unknown")
+            "step": self.steps_in_episode,
+            "frame_idx": self.current_frame_idx,
+            "timestamp": self.parser.get_timestamp(frame_data),
+            "ego_velocity": ego_info.velocity if ego_info else 0.0
         }
+        
+        # 현재 상태를 이전 상태로 저장
+        self.prev_ego_info = ego_info
         
         return observation, reward, done, info
     
-    def _extract_observation(self, episode_data: Dict) -> np.ndarray:
-        """
-        에피소드 데이터에서 관측값 추출
+    def _create_observation(self, frame_data: Dict) -> np.ndarray:
+        """프레임 데이터에서 observation 생성"""
+        # 데이터 파싱
+        ego_info = self.parser.parse_ego_info(frame_data)
+        objects = self.parser.parse_objects(frame_data)
+        ldm_points = self.parser.parse_ldm_points(frame_data)
+        trajectory = self.parser.parse_trajectory(frame_data)
         
-        TODO: 실제 관측값 추출 로직 구현
-        - obstacle tracking 정보를 observation_shape에 맞게 변환
-        - 자차 상태 정보 포함
-        """
-        # 임시 구현: 랜덤 데이터 반환
-        return np.random.rand(*self.observation_shape).astype(np.float32)
-    
-    def _calculate_reward(self, action: Optional[int], episode_data: Dict, step: int) -> float:
-        """
-        보상 계산
+        # 데이터가 없으면 빈 observation
+        if not ego_info:
+            return np.zeros(self.observation_shape, dtype=np.float32)
         
-        TODO: 실제 보상 함수 구현
-        - 충돌 회피
-        - 목표 지점 도달
-        - 부드러운 주행
-        """
-        # 임시 구현
-        return 0.0
+        # Observation 생성
+        observation = self.obs_builder.build_observation(
+            ego_info, objects, ldm_points, trajectory
+        )
+        
+        return observation
     
-    def _check_termination(self, episode_data: Dict, step: int) -> bool:
+    def _calculate_reward(self, action: Optional[int], frame_data: Dict) -> float:
+        """보상 계산"""
+        reward = 0.0
+        
+        # 현재 상태 파싱
+        ego_info = self.parser.parse_ego_info(frame_data)
+        objects = self.parser.parse_objects(frame_data)
+        trajectory = self.parser.parse_trajectory(frame_data)
+        
+        if not ego_info or not self.prev_ego_info:
+            return 0.0
+        
+        # 1. 생존 보상 (매 스텝 작은 음수)
+        reward -= 0.1
+        
+        # 2. 전진 보상 (속도에 비례)
+        if ego_info.velocity > 0:
+            reward += min(ego_info.velocity / 10.0, 0.5)  # 최대 0.5
+        
+        # 3. 충돌 체크 (가까운 객체와의 거리)
+        min_distance = float('inf')
+        for obj in objects:
+            distance = np.sqrt(
+                (obj.global_x - ego_info.x)**2 + 
+                (obj.global_y - ego_info.y)**2
+            )
+            min_distance = min(min_distance, distance)
+        
+        if min_distance < 2.0:  # 2m 이내에 객체가 있으면 페널티
+            reward -= (2.0 - min_distance) * 2.0
+        
+        # 4. 경로 추종 보상
+        if trajectory and len(trajectory) > 5:
+            # 5번째 trajectory 포인트를 목표로
+            goal = trajectory[5]
+            distance_to_goal = np.sqrt(
+                (goal.x - ego_info.x)**2 + 
+                (goal.y - ego_info.y)**2
+            )
+            
+            # 목표에 가까워지면 보상
+            if self.prev_distance_to_goal:
+                progress = self.prev_distance_to_goal - distance_to_goal
+                reward += progress * 0.5
+            
+            self.prev_distance_to_goal = distance_to_goal
+            
+            # 목표 도달
+            if distance_to_goal < 3.0:
+                reward += 10.0
+        
+        # 5. 액션에 따른 보상 조정
+        if action is not None:
+            # Action space: 0-7 (positions), 8-15 (positions with stop)
+            if action >= 8:  # 정지 액션
+                if min_distance < 5.0:  # 가까운 곳에 객체가 있을 때 정지하면 보상
+                    reward += 0.2
+                else:  # 불필요한 정지는 페널티
+                    reward -= 0.3
+        
+        return reward
+    
+    def _check_termination(self, frame_data: Dict) -> bool:
         """에피소드 종료 조건 확인"""
-        gt_trajectory = episode_data.get("gt_trajectory", [])
-        return step >= len(gt_trajectory)
+        # 1. 최대 스텝 수 도달
+        if self.steps_in_episode >= self.max_episode_length:
+            return True
+        
+        # 2. 데이터 끝 근처 도달
+        if self.current_frame_idx >= self.parser.get_frame_count() - 5:
+            return True
+        
+        # 3. 충돌 감지 (매우 가까운 객체)
+        ego_info = self.parser.parse_ego_info(frame_data)
+        objects = self.parser.parse_objects(frame_data)
+        
+        if ego_info:
+            for obj in objects:
+                distance = np.sqrt(
+                    (obj.global_x - ego_info.x)**2 + 
+                    (obj.global_y - ego_info.y)**2
+                )
+                if distance < 1.0:  # 1m 이내 충돌로 간주
+                    return True
+        
+        return False
     
     def close(self):
         """리소스 정리"""
