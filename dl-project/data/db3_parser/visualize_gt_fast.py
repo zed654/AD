@@ -19,8 +19,9 @@ import cv2
 from typing import List, Dict, Tuple, Optional
 import time
 
-# 🔥 공통 데이터 파서 사용!
-from models.MuZero.data_parser import (
+# 🔥 공통 데이터 파서 사용! (직접 import로 __init__.py 우회)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'models', 'MuZero'))
+from data_parser import (
     GTDataParser, CoordinateTransformer,
     EgoInfo, ObjectInfo, LDMPoint, TrajectoryPoint
 )
@@ -530,15 +531,35 @@ class FastInteractiveVisualizer:
                 info_text += f", Velocity: {ego_info.velocity:.1f} m/s"
             self.artists['ego_info_text'].set_text(info_text)
         
-        # Camera view 업데이트
+        # Camera view 업데이트 (간단한 캐싱)
         if self.current_frame in self.image_cache:
             image_path = self.image_cache[self.current_frame]
-            img = cv2.imread(str(image_path))
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            self.artists['camera_image'].set_data(img)
+            # 이미지 캐싱
+            if not hasattr(self, '_loaded_images'):
+                self._loaded_images = {}
+                self._empty_image = np.zeros((480, 640, 3), dtype=np.uint8)
+            
+            if self.current_frame not in self._loaded_images:
+                img = cv2.imread(str(image_path))
+                if img is not None:
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    self._loaded_images[self.current_frame] = img
+                # 메모리 절약을 위해 최대 30개만 캐싱
+                if len(self._loaded_images) > 30:
+                    # 현재 프레임에서 가장 먼 프레임 제거
+                    frames = list(self._loaded_images.keys())
+                    frames.sort(key=lambda x: abs(x - self.current_frame))
+                    del self._loaded_images[frames[-1]]
+            
+            if self.current_frame in self._loaded_images:
+                self.artists['camera_image'].set_data(self._loaded_images[self.current_frame])
+            else:
+                self.artists['camera_image'].set_data(self._empty_image)
         else:
             # 빈 이미지
-            self.artists['camera_image'].set_data(np.zeros((480, 640, 3), dtype=np.uint8))
+            if not hasattr(self, '_empty_image'):
+                self._empty_image = np.zeros((480, 640, 3), dtype=np.uint8)
+            self.artists['camera_image'].set_data(self._empty_image)
         
         # 제목 업데이트
         status = "[Playing]" if self.playing else "[Paused]"
@@ -715,7 +736,7 @@ class FastInteractiveVisualizer:
                 )
                 self.ax1.add_patch(self.artists['dest_arrow'])
         
-    def animate_update(self, frame_idx):
+    def animate_update(self, _):
         """애니메이션 업데이트 함수"""
         if self.playing:
             self.current_frame = (self.current_frame + 1) % self.total_frames
