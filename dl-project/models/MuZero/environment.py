@@ -7,7 +7,7 @@ import numpy as np
 from typing import Tuple, Dict, Optional
 from abc import ABC, abstractmethod
 from .action import Action
-from .observation_provider import ObservationProvider, GTObservationProvider, ROS2ObservationProvider, MockObservationProvider
+from .observation_provider import ObservationProvider
 
 
 class BaseEnvironment(ABC):
@@ -52,6 +52,7 @@ class DrivingEnvironment(BaseEnvironment):
             self.observation_provider = observation_provider
         else:
             # 기본값: Mock provider 사용
+            from .observation_provider import MockObservationProvider
             self.observation_provider = MockObservationProvider(config or self._create_default_config())
         
         # 상태 변수들
@@ -79,6 +80,20 @@ class DrivingEnvironment(BaseEnvironment):
         if len(observation.shape) == len(self.observation_shape):
             observation = observation.unsqueeze(0)
         
+        # GT 데이터에서 ego 위치 초기화 (충돌 체크용)
+        if hasattr(self.observation_provider, 'get_current_frame_data'):
+            frame_data = self.observation_provider.get_current_frame_data()
+            if frame_data and hasattr(self.observation_provider, 'parser'):
+                ego_info = self.observation_provider.parser.parse_ego_info(frame_data)
+                if ego_info:
+                    self.ego_position = np.array([ego_info.x, ego_info.y])
+                    self.ego_yaw = ego_info.yaw
+                    
+                    # 목표 위치 설정 (trajectory의 5번째 포인트)
+                    trajectory = self.observation_provider.parser.parse_trajectory(frame_data)
+                    if trajectory and len(trajectory) > 5:
+                        self.goal_position = np.array([trajectory[5].x, trajectory[5].y])
+        
         # 임시: ego_position 초기화 (추후 observation에서 추출)
         self.ego_position = np.array([0.0, 0.0])
         self.goal_position = np.array([10.0, 10.0])
@@ -96,32 +111,35 @@ class DrivingEnvironment(BaseEnvironment):
         action = Action.from_index(action_index)
         
         # ObservationProvider로부터 다음 상태 가져오기
-        observation_np, provider_reward, provider_done, provider_info = self.observation_provider.get_observation(action_index)
+        observation_np = self.observation_provider.get_observation()
         
         # numpy array를 torch tensor로 변환
         observation = torch.from_numpy(observation_np).float()
         if len(observation.shape) == len(self.observation_shape):
             observation = observation.unsqueeze(0)
         
-        # 상태 업데이트 (provider가 Mock인 경우를 위해)
-        if isinstance(self.observation_provider, MockObservationProvider):
-            self._update_state(action)
-            reward = self._calculate_reward(action)
-            self.game_done = self._check_termination()
-        else:
-            # GT나 ROS2 provider인 경우 provider의 정보 사용
-            reward = provider_reward
-            self.game_done = provider_done
-            if provider_done and 'episode_ended' in provider_info:
-                self.done_reason = "episode_ended"
+        # 상태 업데이트
+        self._update_state(action)
         
-        # 추가 정보 병합
+        # 게임 로직 처리
+        reward = self._calculate_reward(action)
+        self.game_done = self._check_termination()
+        
+        # GT 데이터 종료 확인
+        if hasattr(self.observation_provider, 'is_data_ended') and self.observation_provider.is_data_ended():
+            self.game_done = True
+            self.done_reason = "data_ended"
+        
+        # 추가 정보
         info = {
             'done_reason': self.done_reason,
             'ego_position': self.ego_position.copy() if self.ego_position is not None else None,
-            'steps': self.current_step,
-            **provider_info  # provider의 추가 정보 포함
+            'steps': self.current_step
         }
+        
+        # GT 데이터 정보 추가
+        if hasattr(self.observation_provider, 'current_frame_idx'):
+            info['frame_idx'] = self.observation_provider.current_frame_idx
         
         # observation, reward, 게임종료여부, 추가정보 반환
         return observation, reward, self.game_done, info
@@ -161,7 +179,49 @@ class DrivingEnvironment(BaseEnvironment):
     
     def _check_collision(self) -> bool:
         """충돌 검사"""
-        # TODO: 실제 충돌 검사 로직
+        # ego_position이 없으면 충돌 없음
+        if self.ego_position is None:
+            return False
+        
+        # 충돌 판정 거리 (미터 단위, 약 0.6m = 60cm)
+        collision_distance = 0.6
+        
+        # GT 데이터가 있는 경우
+        if hasattr(self.observation_provider, 'get_current_frame_data'):
+            frame_data = self.observation_provider.get_current_frame_data()
+            if frame_data and hasattr(self.observation_provider, 'parser'):
+                objects = self.observation_provider.parser.parse_objects(frame_data)
+                ego_info = self.observation_provider.parser.parse_ego_info(frame_data)
+                
+                if ego_info:
+                    # 각 객체와의 거리 확인
+                    for obj in objects:
+                        distance = np.sqrt(
+                            (obj.global_x - ego_info.x)**2 + 
+                            (obj.global_y - ego_info.y)**2
+                        )
+                        if distance < collision_distance:
+                            return True
+        
+        # ROS2 데이터가 있는 경우
+        elif hasattr(self.observation_provider, 'latest_obstacles') and self.observation_provider.latest_obstacles:
+            # ROS2 메시지 형식에 따라 처리 (TODO: 실제 메시지 형식에 맞게 수정)
+            pass
+        
+        # Mock provider인 경우 간단한 충돌 체크
+        else:
+            # 예시: 특정 위치에 장애물이 있다고 가정
+            obstacle_positions = [
+                np.array([5.0, 5.0]),
+                np.array([8.0, 3.0]),
+                np.array([3.0, 8.0])
+            ]
+            
+            for obs_pos in obstacle_positions:
+                distance = np.linalg.norm(self.ego_position - obs_pos)
+                if distance < collision_distance:
+                    return True
+        
         return False
     
     def _check_off_road(self) -> bool:
@@ -172,7 +232,17 @@ class DrivingEnvironment(BaseEnvironment):
     
     def _update_state(self, action: Action):
         """액션에 따른 상태 업데이트"""
-        # 간단한 이동 로직
+        # GT 데이터가 있는 경우 프레임 데이터에서 업데이트
+        if hasattr(self.observation_provider, 'get_current_frame_data'):
+            frame_data = self.observation_provider.get_current_frame_data()
+            if frame_data and hasattr(self.observation_provider, 'parser'):
+                ego_info = self.observation_provider.parser.parse_ego_info(frame_data)
+                if ego_info:
+                    self.ego_position = np.array([ego_info.x, ego_info.y])
+                    self.ego_yaw = ego_info.yaw
+                    return
+        
+        # GT 데이터가 없는 경우 간단한 시뮬레이션
         if action.stopgo == Action.StopAndGo.GO:
             # Position에 따른 이동 방향 (8방향)
             direction_map = {
@@ -208,7 +278,7 @@ class DrivingEnvironment(BaseEnvironment):
         if self.done_reason == "goal_reached":
             reward += 100.0
         elif self.done_reason == "collision":
-            reward -= 100.0
+            reward = -1.0  # 충돌 시 즉시 -1 리워드
         elif self.done_reason == "off_road":
             reward -= 50.0
         

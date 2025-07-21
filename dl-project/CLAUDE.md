@@ -67,6 +67,7 @@ The `models/MuZero/` implements the MuZero algorithm for autonomous driving:
   - `self_play.py`: Generates training data through self-play
   - `replay_buffer.py`: Stores and samples game experiences
   - `train.py`: Training loop implementation
+  - `expert_data_loader.py` : 파싱한 Json 으로 Episode 구축
 - **Results**: Saved in `models/MuZero/results/` with timestamps
 
 ### SSR Models (Templates)

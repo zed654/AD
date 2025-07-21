@@ -20,14 +20,14 @@ class MuZeroConfig:
         self.stacked_observations = 0  # 현재 관찰에 추가할 이전 관찰 및 이전 액션 수
 
         # 환경 설정 (DrivingEnvironment에서 사용)
-        self.observation_shape = (1, 1, 4)  # 게임 관찰의 차원 (channel, height, width)
+        self.observation_shape = (1, 10, 12)  # 게임 관찰의 차원 (channel, height, width) - 전방 10m, 좌우 12m
         self.env_max_steps = 10  # 에피소드 최대 스텝 수
         self.collision_threshold = 0.5  # 충돌 판정 거리
         self.goal_threshold = 1.0  # 목표 도달 판정 거리
         
         # Observation Provider 설정
-        self.observation_provider_type = "mock"  # "mock", "gt", "ros2" 중 선택
-        self.gt_data_path = Path("data/db3_parser/results/matched_data.jsonl")  # GT 데이터 경로
+        self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
+        self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171526_94.jsonl")  # GT 데이터 경로
 
         # Self-Play 설정
         self.num_workers = 1

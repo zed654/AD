@@ -269,8 +269,14 @@ class ObservationBuilder:
         self.observation_shape = config.observation_shape
         
         # 그리드 설정 (예: 10x12 그리드, 각 셀은 3x3m)
-        self.grid_rows = self.observation_shape[0]  # 10
-        self.grid_cols = self.observation_shape[1]  # 12
+        if len(self.observation_shape) == 3:
+            self.channels = self.observation_shape[0]  # 1
+            self.grid_rows = self.observation_shape[1]  # 10
+            self.grid_cols = self.observation_shape[2]  # 12
+        else:
+            self.channels = 1
+            self.grid_rows = self.observation_shape[0]  # 10
+            self.grid_cols = self.observation_shape[1]  # 12
         self.cell_size = getattr(config, 'cell_size', 3.0)  # 각 셀의 크기 (m)
         
         # 자차 중심은 그리드의 하단 중앙
@@ -287,7 +293,10 @@ class ObservationBuilder:
             observation: shape이 config.observation_shape인 numpy 배열
         """
         # 빈 그리드 초기화
-        grid = np.zeros(self.observation_shape, dtype=np.float32)
+        if len(self.observation_shape) == 3:
+            grid = np.zeros((self.grid_rows, self.grid_cols), dtype=np.float32)
+        else:
+            grid = np.zeros(self.observation_shape, dtype=np.float32)
         
         # 1. 자차 위치 표시
         grid[self.ego_grid_row, self.ego_grid_col] = 1.0
@@ -338,6 +347,10 @@ class ObservationBuilder:
             if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
                 # 경로는 음수 값으로 표시 (구분을 위해)
                 grid[grid_row, grid_col] = -0.5
+        
+        # 3차원 shape이 필요한 경우 차원 추가
+        if len(self.observation_shape) == 3:
+            grid = grid[np.newaxis, :, :]  # (H, W) -> (1, H, W)
         
         return grid
     

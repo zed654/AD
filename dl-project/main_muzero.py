@@ -22,6 +22,7 @@ from models.MuZero.train import train_network
 from models.MuZero.utils import calculate_game_statistics, print_game_statistics, print_episode_summary
 from models.MuZero.config_manager import load_config, save_config, print_config
 from models.MuZero.logger import get_logger
+from models.MuZero.expert_data_loader import ExpertDataLoader
 
 
 def get_network(config, device):
@@ -94,10 +95,11 @@ def train_mode(config, checkpoint_path=None):
     
     # Observation Provider 생성 (학습용)
     observation_provider = create_observation_provider(config, mode="train")
-    
+    # parsing_result = observation_provider.get_observation()  # 디버깅용 - 불필요
+
     # 환경 생성
     environment = DrivingEnvironment(config, observation_provider)
-    
+
     # Self-play 매니저 생성
     self_play_manager = SelfPlayManager(
         network=network,
@@ -108,6 +110,22 @@ def train_mode(config, checkpoint_path=None):
     
     # Replay Buffer 생성
     replay_buffer = ReplayBuffer(capacity=config.replay_buffer_size)
+    
+    # 파싱한 Json 을 활용하여 Episode 구성 단계
+    if config.observation_provider_type == "gt":
+        print("\n📚 전문가 데이터 로드 중...")
+        expert_loader = ExpertDataLoader(config)
+        expert_episodes = expert_loader.create_episodes_from_json(
+            num_episodes=20,  # 20개 에피소드 생성
+            episode_length=50,  # 각 50 스텝
+            overlap=25  # 25 스텝 겹침
+        )
+        
+        # Replay Buffer에 추가
+        for episode in expert_episodes:
+            replay_buffer.save_episode(episode)
+        
+        print(f"   전문가 데이터 추가 완료: {len(expert_episodes)}개 에피소드")
     
     # 학습 루프
     print(f"\n🚀 학습 시작 (총 {config.num_training_epochs}회)")

@@ -88,20 +88,28 @@ class SelfPlayManager:
             # 액션 수행
             next_observation, reward, done, info = self.environment.step(action)
             
+            # 충돌 발생 시 value 조정
+            if done and info.get('done_reason') == 'collision':
+                # 충돌 발생 시 해당 상태의 value를 -1로 설정
+                adjusted_value = -1.0
+            else:
+                # 정상적인 경우 MCTS가 예측한 value 사용
+                adjusted_value = mcts_result['root_value']
+            
             # 히스토리 저장
             game_history.store(
                 observation=observation.cpu(),
                 action=action,
                 reward=reward,
                 policy=mcts_result['policy_targets'],
-                value=mcts_result['root_value']
+                value=adjusted_value
             )
             
             if render:
                 action_obj = Action.from_index(action)
                 print(f"Action: {action_obj}")
                 print(f"Reward: {reward:.2f}")
-                print(f"Value: {mcts_result['root_value']:.2f}")
+                print(f"Value: {adjusted_value:.2f} (MCTS: {mcts_result['root_value']:.2f})")
                 print(f"Done: {done}")
                 if done:
                     print(f"Done reason: {info['done_reason']}")
@@ -114,6 +122,10 @@ class SelfPlayManager:
             if step >= self.config.max_game_length:
                 break
         
+        # 충돌로 종료된 경우 마지막 value를 -1로 설정
+        if info.get('done_reason') == 'collision' and len(game_history.values) > 0:
+            game_history.values[-1] = -1.0
+        
         if render:
             print(f"\n게임 종료! 총 {step} 스텝")
             print(f"종료 이유: {info.get('done_reason', 'unknown')}")
@@ -124,7 +136,6 @@ class SelfPlayManager:
     def play_games(self, num_games: int, temperature: float = 1.0) -> List[GameHistory]:
         """여러 게임을 플레이"""
         games = []
-        
         for i in range(num_games):
             print(f"게임 {i+1}/{num_games} 플레이 중...")
             game = self.play_game(temperature=temperature, render=False)

@@ -6,7 +6,7 @@ MuZero Observation Provider 인터페이스 및 구현체
 from abc import ABC, abstractmethod
 import numpy as np
 import torch
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Optional, List
 from pathlib import Path
 import json
 import random
@@ -24,7 +24,7 @@ class ObservationProvider(ABC):
         pass
     
     @abstractmethod
-    def get_observation(self, action: Optional[int] = None) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+    def get_observation(self) -> np.ndarray:
         """
         현재 상태의 관측값을 반환
         
@@ -33,9 +33,6 @@ class ObservationProvider(ABC):
             
         Returns:
             observation: 현재 관측값
-            reward: 보상
-            done: 에피소드 종료 여부
-            info: 추가 정보
         """
         pass
     
@@ -55,7 +52,7 @@ class GTObservationProvider(ObservationProvider):
             data_path: GT 데이터 파일 경로 (JSONL 형식)
         """
         self.config = config
-        self.data_path = data_path or Path("data/db3_parser/results/matched_data.jsonl")
+        self.data_path = data_path or config.gt_data_path
         self.observation_shape = config.observation_shape
         
         # 데이터 파서 및 observation 빌더 초기화
@@ -112,11 +109,10 @@ class GTObservationProvider(ObservationProvider):
         
         return observation
     
-    def get_observation(self, action: Optional[int] = None) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+    def get_observation(self) -> np.ndarray:
         """GT 데이터에서 다음 관측값 가져오기"""
         if not self.parser:
-            observation = np.random.rand(*self.observation_shape).astype(np.float32)
-            return observation, 0.0, False, {"simulated": True}
+            return np.random.rand(*self.observation_shape).astype(np.float32)
         
         # 다음 프레임으로 이동
         self.current_frame_idx += 1
@@ -125,31 +121,18 @@ class GTObservationProvider(ObservationProvider):
         # 프레임 데이터 가져오기
         frame_data = self.parser.get_frame_data(self.current_frame_idx)
         if not frame_data:
-            # 데이터 끝에 도달
-            return self.reset(), 0.0, True, {"reason": "data_end"}
+            # 데이터 끝에 도달하면 리셋
+            return self.reset()
         
         # 관측값 생성
         observation = self._create_observation(frame_data)
         
-        # 보상 계산
-        reward = self._calculate_reward(action, frame_data)
-        
-        # 종료 조건 확인
-        done = self._check_termination(frame_data)
-        
-        # 정보 딕셔너리
+        # 현재 상태 저장 (나중에 사용 가능하도록)
+        self.current_frame_data = frame_data
         ego_info = self.parser.parse_ego_info(frame_data)
-        info = {
-            "step": self.steps_in_episode,
-            "frame_idx": self.current_frame_idx,
-            "timestamp": self.parser.get_timestamp(frame_data),
-            "ego_velocity": ego_info.velocity if ego_info else 0.0
-        }
-        
-        # 현재 상태를 이전 상태로 저장
         self.prev_ego_info = ego_info
         
-        return observation, reward, done, info
+        return observation
     
     def _create_observation(self, frame_data: Dict) -> np.ndarray:
         """프레임 데이터에서 observation 생성"""
@@ -170,92 +153,17 @@ class GTObservationProvider(ObservationProvider):
         
         return observation
     
-    def _calculate_reward(self, action: Optional[int], frame_data: Dict) -> float:
-        """보상 계산"""
-        reward = 0.0
-        
-        # 현재 상태 파싱
-        ego_info = self.parser.parse_ego_info(frame_data)
-        objects = self.parser.parse_objects(frame_data)
-        trajectory = self.parser.parse_trajectory(frame_data)
-        
-        if not ego_info or not self.prev_ego_info:
-            return 0.0
-        
-        # 1. 생존 보상 (매 스텝 작은 음수)
-        reward -= 0.1
-        
-        # 2. 전진 보상 (속도에 비례)
-        if ego_info.velocity > 0:
-            reward += min(ego_info.velocity / 10.0, 0.5)  # 최대 0.5
-        
-        # 3. 충돌 체크 (가까운 객체와의 거리)
-        min_distance = float('inf')
-        for obj in objects:
-            distance = np.sqrt(
-                (obj.global_x - ego_info.x)**2 + 
-                (obj.global_y - ego_info.y)**2
-            )
-            min_distance = min(min_distance, distance)
-        
-        if min_distance < 2.0:  # 2m 이내에 객체가 있으면 페널티
-            reward -= (2.0 - min_distance) * 2.0
-        
-        # 4. 경로 추종 보상
-        if trajectory and len(trajectory) > 5:
-            # 5번째 trajectory 포인트를 목표로
-            goal = trajectory[5]
-            distance_to_goal = np.sqrt(
-                (goal.x - ego_info.x)**2 + 
-                (goal.y - ego_info.y)**2
-            )
-            
-            # 목표에 가까워지면 보상
-            if self.prev_distance_to_goal:
-                progress = self.prev_distance_to_goal - distance_to_goal
-                reward += progress * 0.5
-            
-            self.prev_distance_to_goal = distance_to_goal
-            
-            # 목표 도달
-            if distance_to_goal < 3.0:
-                reward += 10.0
-        
-        # 5. 액션에 따른 보상 조정
-        if action is not None:
-            # Action space: 0-7 (positions), 8-15 (positions with stop)
-            if action >= 8:  # 정지 액션
-                if min_distance < 5.0:  # 가까운 곳에 객체가 있을 때 정지하면 보상
-                    reward += 0.2
-                else:  # 불필요한 정지는 페널티
-                    reward -= 0.3
-        
-        return reward
+    def get_current_frame_data(self) -> Optional[Dict]:
+        """현재 프레임 데이터 반환 (Environment에서 충돌 체크 등에 사용)"""
+        if hasattr(self, 'current_frame_data'):
+            return self.current_frame_data
+        return None
     
-    def _check_termination(self, frame_data: Dict) -> bool:
-        """에피소드 종료 조건 확인"""
-        # 1. 최대 스텝 수 도달
-        if self.steps_in_episode >= self.max_episode_length:
-            return True
-        
-        # 2. 데이터 끝 근처 도달
-        if self.current_frame_idx >= self.parser.get_frame_count() - 5:
-            return True
-        
-        # 3. 충돌 감지 (매우 가까운 객체)
-        ego_info = self.parser.parse_ego_info(frame_data)
-        objects = self.parser.parse_objects(frame_data)
-        
-        if ego_info:
-            for obj in objects:
-                distance = np.sqrt(
-                    (obj.global_x - ego_info.x)**2 + 
-                    (obj.global_y - ego_info.y)**2
-                )
-                if distance < 1.0:  # 1m 이내 충돌로 간주
-                    return True
-        
-        return False
+    def is_data_ended(self) -> bool:
+        """데이터가 끝났는지 확인"""
+        if not self.parser:
+            return False
+        return self.current_frame_idx >= self.parser.get_frame_count() - 5
     
     def close(self):
         """리소스 정리"""
@@ -285,8 +193,8 @@ class ROS2ObservationProvider(ObservationProvider):
     def _init_ros2(self):
         """ROS2 노드 및 구독자 초기화"""
         try:
-            import rclpy
-            from rclpy.node import Node
+            # import rclpy
+            # from rclpy.node import Node
             
             # TODO: ROS2 노드 초기화
             # rclpy.init()
@@ -314,12 +222,11 @@ class ROS2ObservationProvider(ObservationProvider):
         observation = self._create_observation_from_ros2()
         return observation
     
-    def get_observation(self, action: Optional[int] = None) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+    def get_observation(self) -> np.ndarray:
         """ROS2에서 실시간 관측값 가져오기"""
         if not self.ros2_initialized:
-            # ROS2가 없으면 시뮬레이션
-            observation = np.random.rand(*self.observation_shape).astype(np.float32)
-            return observation, 0.0, False, {"simulated": True}
+            # ROS2가 없으면 랜덤 데이터
+            return np.random.rand(*self.observation_shape).astype(np.float32)
         
         # ROS2 메시지 처리 (spin_once)
         # TODO: rclpy.spin_once(self.node, timeout_sec=0.1)
@@ -327,15 +234,7 @@ class ROS2ObservationProvider(ObservationProvider):
         # 최신 데이터로 관측값 생성
         observation = self._create_observation_from_ros2()
         
-        # 실시간 시스템에서는 보상과 종료 조건을 외부에서 결정
-        reward = 0.0
-        done = False
-        info = {
-            "has_obstacles": self.latest_obstacles is not None,
-            "has_odometry": self.latest_odometry is not None
-        }
-        
-        return observation, reward, done, info
+        return observation
     
     def _create_observation_from_ros2(self) -> np.ndarray:
         """
@@ -381,20 +280,10 @@ class MockObservationProvider(ObservationProvider):
         self.step_count = 0
         return np.random.rand(*self.observation_shape).astype(np.float32)
     
-    def get_observation(self, action: Optional[int] = None) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+    def get_observation(self) -> np.ndarray:
         self.step_count += 1
         observation = np.random.rand(*self.observation_shape).astype(np.float32)
-        
-        # 간단한 보상 함수
-        reward = -0.1  # 생존 페널티
-        if action is not None and action < 8:  # 전진 액션
-            reward += 0.5
-        
-        # 100 스텝 후 종료
-        done = self.step_count >= 100
-        
-        info = {"step": self.step_count}
-        return observation, reward, done, info
+        return observation
     
     def close(self):
         pass
