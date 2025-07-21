@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a deep learning project for autonomous driving that processes ROS2 bag files (.db3) and implements reinforcement learning models, specifically MuZero for decision-making.
 
 ## Common Commands
-프로그램을 실행하기 전에 Conda 환경을 사용해야해. 환경 활성화 방법은 커맨드라인에 $conda_init 입력(alias 등록되어있어)하여 conda 환경 불러온 후, $conda activate pytorch_2_2 입력하여 설정 가능해
+프로그램을 실행하기 전에 Conda 환경을 사용해야해. 환경 활성화 방법은 커맨드라인에 conda_init 입력(alias 등록되어있어)하여 conda 환경 불러온 후, conda activate pytorch_2_2 입력하여 설정 가능해
 
 작업 이후에는 항상 검증을해서 정상적인 동작이 가능한 상태인지 확인해야해
 

@@ -220,6 +220,104 @@ class GTDataParser:
         return 0
 
 
+def get_object_color(class_id: int) -> str:
+    """클래스 ID에 따른 색상을 반환합니다."""
+    color_map = {
+        100: 'red',      # 보행자
+        202: 'blue',     # 차량  
+        203: 'orange',   # 자전거
+        204: 'purple',   # 트럭
+        205: 'green',    # 버스
+        300: 'gray',     # 기타
+        0: 'darkred',    # Unknown
+        -1: 'black',     # 미분류
+    }
+    return color_map.get(class_id, 'black')
+
+
+def get_ldm_color(obstacles_type: int) -> Optional[str]:
+    """LDM obstacles_type에 따른 색상을 반환합니다."""
+    color_map = {
+        1: 'lime',       # cliff - 연두색
+        2: 'yellow',     # static_obstacles - 노란색
+        3: 'purple'      # missing_points - 보라색
+    }
+    if obstacles_type >= 1:
+        return color_map.get(obstacles_type, 'gray')
+    return None
+
+
+def get_ldm_segmentation_color(class_id: int) -> str:
+    """LDM class_id (segmentation)에 따른 색상을 반환합니다."""
+    color_map = {
+        0: '#000000',   # Background
+        1: '#3D3DF5',   # Blocks
+        2: '#CC3366',   # Colored Road
+        3: '#F078F0',   # Cement Asphalt
+        4: '#008000',   # Crosswalk
+        5: '#733380',   # Speed Bumps
+        6: '#FF6A4D',   # Manhole
+        7: '#5986B3',   # Curbs
+        8: '#00FF00',   # Grass
+        9: '#CC9933',   # Soil/Gravel
+        10: '#34D1B7',  # Grating
+        11: '#FFCC33',  # Guide Blocks
+        12: '#DBDB8D',  # Rock
+        13: '#FF007C',  # Unidentified
+        14: '#942701',  # Wood
+        15: '#AEC7E8',  # Iron
+        16: '#A7FFD8',  # Artificial Turf
+    }
+    return color_map.get(class_id, '#FFFFFF')
+
+
+# MuZero 그리드 값 상수 정의
+GRID_VALUE_EMPTY = 0.0
+GRID_VALUE_PEDESTRIAN = 0.3
+GRID_VALUE_OTHER_OBJECT = 0.4
+GRID_VALUE_VEHICLE = 0.6
+GRID_VALUE_EGO = 1.0
+
+
+def get_grid_value_from_class_id(class_id: int) -> float:
+    """
+    객체 클래스 ID를 MuZero 그리드 값으로 변환합니다.
+    
+    Args:
+        class_id: 객체 클래스 ID
+        
+    Returns:
+        그리드 값 (0.0 ~ 1.0)
+    """
+    if class_id == 100:  # 보행자
+        return GRID_VALUE_PEDESTRIAN
+    elif class_id in [202, 204, 205]:  # 차량류 (차량, 트럭, 버스)
+        return GRID_VALUE_VEHICLE
+    else:  # 기타 객체
+        return GRID_VALUE_OTHER_OBJECT
+
+
+def get_grid_value_info(value: float) -> Tuple[str, str]:
+    """
+    MuZero 그리드 값에 대한 정보를 반환합니다.
+    
+    Returns:
+        (객체 타입 이름, 색상 코드)
+    """
+    if value == GRID_VALUE_EMPTY:
+        return "Empty", "black"
+    elif value == GRID_VALUE_PEDESTRIAN:
+        return "Pedestrian", get_object_color(100)
+    elif value == GRID_VALUE_OTHER_OBJECT:
+        return "Other Object", get_object_color(300)
+    elif value == GRID_VALUE_VEHICLE:
+        return "Vehicle", get_object_color(202)
+    elif value == GRID_VALUE_EGO:
+        return "Ego Vehicle", "white"
+    else:
+        return f"Unknown ({value})", "gray"
+
+
 class CoordinateTransformer:
     """좌표 변환 유틸리티"""
     
@@ -271,16 +369,16 @@ class ObservationBuilder:
         # 그리드 설정 (예: 100x100 그리드, 각 셀은 0.2x0.2m)
         if len(self.observation_shape) == 3:
             self.channels = self.observation_shape[0]  # 1
-            self.grid_rows = self.observation_shape[1]  # 10
-            self.grid_cols = self.observation_shape[2]  # 10
+            self.grid_rows = self.observation_shape[1]  # 100
+            self.grid_cols = self.observation_shape[2]  # 100
         else:
             self.channels = 1
-            self.grid_rows = self.observation_shape[0]  # 10
-            self.grid_cols = self.observation_shape[1]  # 10
+            self.grid_rows = self.observation_shape[0]  # 100
+            self.grid_cols = self.observation_shape[1]  # 100
         self.cell_size = getattr(config, 'cell_size', 0.2)  # 각 셀의 크기 (m)
         
-        # 자차 중심은 그리드의 하단 중앙
-        self.ego_grid_row = self.grid_rows - 1
+        # 자차 중심은 그리드의 정중앙
+        self.ego_grid_row = self.grid_rows // 2
         self.ego_grid_col = self.grid_cols // 2
     
     def build_observation(self, ego_info: EgoInfo, objects: List[ObjectInfo], 
@@ -319,28 +417,33 @@ class ObservationBuilder:
         ego_grid_col = self.ego_grid_col + int(ego_rel_y / self.cell_size)
         
         if 0 <= ego_grid_row < self.grid_rows and 0 <= ego_grid_col < self.grid_cols:
-            grid[ego_grid_row, ego_grid_col] = 1.0
+            grid[ego_grid_row, ego_grid_col] = GRID_VALUE_EGO
         
         # 2. 객체들을 그리드에 배치 (episode 시작점 기준)
         for obj in objects:
-            # Episode 시작점 기준 상대 좌표 계산
+            # 객체의 중심점과 모든 꼭짓점을 그리드에 표시
+            grid_value = get_grid_value_from_class_id(obj.class_id)
+            
+            # 중심점 표시
             rel_x, rel_y = CoordinateTransformer.global_to_ego(
                 obj.global_x, obj.global_y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
             )
-            
-            # 그리드 인덱스 계산
             grid_row = self.ego_grid_row - int(rel_x / self.cell_size)
             grid_col = self.ego_grid_col + int(rel_y / self.cell_size)
             
-            # 그리드 범위 확인
             if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
-                # 클래스별로 다른 값 할당
-                if obj.class_id == 100:  # 보행자
-                    grid[grid_row, grid_col] = 0.3
-                elif obj.class_id in [202, 204, 205]:  # 차량류
-                    grid[grid_row, grid_col] = 0.6
-                else:
-                    grid[grid_row, grid_col] = 0.4
+                grid[grid_row, grid_col] = grid_value
+            
+            # 모든 꼭짓점(points) 표시
+            for point_x, point_y in obj.global_points:
+                rel_x, rel_y = CoordinateTransformer.global_to_ego(
+                    point_x, point_y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
+                )
+                grid_row = self.ego_grid_row - int(rel_x / self.cell_size)
+                grid_col = self.ego_grid_col + int(rel_y / self.cell_size)
+                
+                if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
+                    grid[grid_row, grid_col] = grid_value
         
         # 3. LDM 포인트 추가 (장애물 정보) - 추후 Transformer 모델에서 사용 예정
         # for ldm in ldm_points:

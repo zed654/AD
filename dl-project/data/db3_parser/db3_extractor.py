@@ -593,7 +593,7 @@ if __name__ == "__main__":
 
     n_trajectory_sample_time = 5.0 #0.05 #5.0  # GT 매칭 구간(초) (정의한 시간 동안의 미래 위치를 Trajectory의 에 반영하여, 길이 조절할때 씀)
     trajectory_interval_sec = 0.1  # Trajectory 샘플링 간격 (초) - 0.1이면 10Hz로 샘플링 ... sample_time 이 3.0 sec 이고 interval_sec 가 0.3 이면, 10개 뽑힘.
-    sample_logging_interval_sec = 0.3 #0.3  # 로깅 샘플링 시간 설정 (제한된 시간 내에 같은 토픽의 값을 무시하게하는 시간; 0.03초면, 30 ms 간격 이내의 데이터는 날림)
+    sample_logging_interval_sec = 0.1 #0.1  # 로깅 샘플링 시간 설정 (제한된 시간 내에 같은 토픽의 값을 무시하게하는 시간; 0.03초면, 30 ms 간격 이내의 데이터는 날림)
     k_meters = 20.0 #20.0  # 근접 방위벡터를 위한 거리(미터)
     
     rclpy.init()

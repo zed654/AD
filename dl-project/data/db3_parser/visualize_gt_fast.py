@@ -7,6 +7,11 @@ db3_extractor.py로 추출한 JSONL 파일의 GT 데이터를 빠르게 시각�
 import sys
 import os
 
+# matplotlib 백엔드 설정 (save 모드일 때는 Agg 사용)
+import matplotlib
+if '--save' in sys.argv:
+    matplotlib.use('Agg')
+
 # Qt 플랫폼 플러그인 충돌 방지를 위해 환경변수 설정 (OpenCV import 전에 설정)
 os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = ''
 
@@ -35,11 +40,12 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'models', 'MuZero'))
 from data_parser import (
     GTDataParser, CoordinateTransformer,
-    EgoInfo, ObjectInfo, LDMPoint, TrajectoryPoint
+    EgoInfo, ObjectInfo, LDMPoint, TrajectoryPoint,
+    get_object_color, get_ldm_color, get_ldm_segmentation_color
 )
 
 
-def get_object_color(class_id: int) -> str:
+def _get_object_color_old(class_id: int) -> str:  # 임시로 이름 변경 (공용 함수 사용)
     """클래스 ID에 따른 색상을 반환합니다."""
     color_map = {
         100: 'red',      # 보행자
@@ -54,7 +60,7 @@ def get_object_color(class_id: int) -> str:
     return color_map.get(class_id, 'black')
 
 
-def get_ldm_color(obstacles_type: int) -> Optional[str]:
+def _get_ldm_color_old(obstacles_type: int) -> Optional[str]:  # 임시로 이름 변경 (공용 함수 사용)
     """LDM obstacles_type에 따른 색상을 반환합니다."""
     color_map = {
         1: 'lime',       # cliff - 연두색
@@ -66,7 +72,7 @@ def get_ldm_color(obstacles_type: int) -> Optional[str]:
     return None
 
 
-def get_ldm_segmentation_color(class_id: int) -> str:
+def _get_ldm_segmentation_color_old(class_id: int) -> str:  # 임시로 이름 변경 (공용 함수 사용)
     """LDM class_id (segmentation)에 따른 색상을 반환합니다."""
     color_map = {
         0: '#000000',   # Background
@@ -755,6 +761,20 @@ class FastInteractiveVisualizer:
             self.update_frame_fast()
         return []
     
+    def save_frame(self, frame_idx: int, save_path: Path):
+        """특정 프레임을 파일로 저장"""
+        self.current_frame = frame_idx
+        self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(16, 8))
+        
+        # 프레임 초기화 및 렌더링
+        self.init_plot()
+        self.update_frame()
+        
+        # 파일로 저장
+        plt.tight_layout()
+        self.fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(self.fig)
+    
     def show(self, start_frame: int = 0):
         """시각화 시작 (애니메이션 모드)"""
         self.current_frame = start_frame
@@ -801,6 +821,8 @@ def main():
                        help='객체 궤적 표시 안함')
     parser.add_argument('--debug', action='store_true',
                        help='디버그 정보 출력')
+    parser.add_argument('--save', action='store_true',
+                       help='이미지 파일로 저장 (GUI 대신)')
     
     args = parser.parse_args()
     
@@ -857,7 +879,19 @@ def main():
     visualizer = FastInteractiveVisualizer(
         data_parser, img_dir, args.view_range, db3_name, args.debug, args.interval
     )
-    visualizer.show(start_frame=args.frame if args.frame is not None else 0)
+    
+    if args.save:
+        # 파일로 저장
+        if args.frame is not None:
+            # 특정 프레임만 저장
+            save_path = results_dir / f"visualize_frame_{args.frame}.png"
+            visualizer.save_frame(args.frame, save_path)
+            print(f"Saved: {save_path}")
+        else:
+            print("Error: --save 옵션은 --frame과 함께 사용해야 합니다.")
+    else:
+        # GUI 모드
+        visualizer.show(start_frame=args.frame if args.frame is not None else 0)
 
 
 if __name__ == '__main__':
