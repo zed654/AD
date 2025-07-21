@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 This is a deep learning project for autonomous driving that processes ROS2 bag files (.db3) and implements reinforcement learning models, specifically MuZero for decision-making.
-Conda 환경을 사용해야하며, conda_init 실행 후 conda activate pytorch_2_2 로 설정 가능
+Conda 환경을 사용해야하며, 커맨드라인ㅇ conda_init 입력하여 실행 후 conda activate pytorch_2_2 입력하여 설정 가능
 
 ## Common Commands
 
@@ -25,22 +25,31 @@ pip install -r requirements.txt
 python data/db3_parser/db3_extractor.py
 ```
 
+
 ### Model Training
+README.md 파일 내 기록
+<!-- 
 ```bash
 # Run MuZero training
-python muzero.py
+python main_muzero.py
 
 # Run with debug mode (includes visualization)
-python muzero.py --debug
-```
+python main_muzero.py --debug
+``` -->
 
 ### Monitoring Training
+README.md 파일 내 기록
+
 ```bash
 # View training progress in TensorBoard
 tensorboard --logdir models/MuZero/results
 ```
 
 ## Architecture Overview
+
+### Training/Evaluation Data Parsing
+/home/chp/ai_ws/AD/dl-project/models/MuZero/data_parser.py 를 통해 학습할 데이터들을 GT 인 Json 으로부터 가져온다.
+JSON GT 는 /home/chp/ai_ws/AD/dl-project/data/db3_parser/db3 의 db3 로부터 파싱되며, /home/chp/ai_ws/AD/dl-project/data/db3_parser/db3_extractor.py 를 통해 파싱된다.
 
 ### Data Processing Pipeline
 The `data/db3_parser/` module extracts data from ROS2 bag files:
