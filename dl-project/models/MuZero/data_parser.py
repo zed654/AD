@@ -37,8 +37,8 @@ class ObjectInfo:
     global_y: float
     global_yaw: float
     velocity: float
-    width: float = 0.0
-    height: float = 0.0
+    # width: float = 0.0
+    # height: float = 0.0
     global_points: List[Tuple[float, float]] = None
     
     def __post_init__(self):
@@ -152,8 +152,8 @@ class GTDataParser:
                 global_y=global_center.get('_y', 0),
                 global_yaw=obj_data.get('_global_yaw_heading', 0),
                 velocity=obj_data.get('_global_velocity', 0),
-                width=obj_data.get('_width', 0),
-                height=obj_data.get('_height', 0),
+                # width=obj_data.get('_width', 0),
+                # height=obj_data.get('_height', 0),
                 global_points=global_points
             )
             objects.append(obj)
@@ -268,16 +268,16 @@ class ObservationBuilder:
         self.config = config
         self.observation_shape = config.observation_shape
         
-        # 그리드 설정 (예: 10x12 그리드, 각 셀은 3x3m)
+        # 그리드 설정 (예: 100x100 그리드, 각 셀은 0.2x0.2m)
         if len(self.observation_shape) == 3:
             self.channels = self.observation_shape[0]  # 1
             self.grid_rows = self.observation_shape[1]  # 10
-            self.grid_cols = self.observation_shape[2]  # 12
+            self.grid_cols = self.observation_shape[2]  # 10
         else:
             self.channels = 1
             self.grid_rows = self.observation_shape[0]  # 10
-            self.grid_cols = self.observation_shape[1]  # 12
-        self.cell_size = getattr(config, 'cell_size', 3.0)  # 각 셀의 크기 (m)
+            self.grid_cols = self.observation_shape[1]  # 10
+        self.cell_size = getattr(config, 'cell_size', 0.2)  # 각 셀의 크기 (m)
         
         # 자차 중심은 그리드의 하단 중앙
         self.ego_grid_row = self.grid_rows - 1
@@ -285,12 +285,21 @@ class ObservationBuilder:
     
     def build_observation(self, ego_info: EgoInfo, objects: List[ObjectInfo], 
                          ldm_points: List[LDMPoint], 
-                         trajectory: List[TrajectoryPoint]) -> np.ndarray:
+                         trajectory: List[TrajectoryPoint],
+                         near_direction: Optional[Dict] = None,
+                         destination_direction: Optional[Dict] = None,
+                         episode_start_ego: Optional[EgoInfo] = None) -> Dict[str, np.ndarray]:
         """
         프레임 데이터로부터 MuZero 학습용 observation 생성
         
+        Args:
+            episode_start_ego: Episode 시작 시점의 ego 정보 (None이면 현재 ego를 기준으로 함)
+            
         Returns:
-            observation: shape이 config.observation_shape인 numpy 배열
+            observation_dict: 'grid', 'vectors', 'trajectory' 키를 가진 딕셔너리
+                - grid: shape이 config.observation_shape인 numpy 배열 (장애물 정보만)
+                - vectors: 방향 벡터들 (near_direction, destination_direction)
+                - trajectory: GT trajectory 정보 (별도 관리)
         """
         # 빈 그리드 초기화
         if len(self.observation_shape) == 3:
@@ -298,14 +307,25 @@ class ObservationBuilder:
         else:
             grid = np.zeros(self.observation_shape, dtype=np.float32)
         
-        # 1. 자차 위치 표시
-        grid[self.ego_grid_row, self.ego_grid_col] = 1.0
+        # Episode 시작점 기준 좌표계 설정
+        if episode_start_ego is None:
+            episode_start_ego = ego_info
+            
+        # 1. 자차 위치 표시 (episode 시작점 기준)
+        ego_rel_x, ego_rel_y = CoordinateTransformer.global_to_ego(
+            ego_info.x, ego_info.y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
+        )
+        ego_grid_row = self.ego_grid_row - int(ego_rel_x / self.cell_size)
+        ego_grid_col = self.ego_grid_col + int(ego_rel_y / self.cell_size)
         
-        # 2. 객체들을 그리드에 배치
+        if 0 <= ego_grid_row < self.grid_rows and 0 <= ego_grid_col < self.grid_cols:
+            grid[ego_grid_row, ego_grid_col] = 1.0
+        
+        # 2. 객체들을 그리드에 배치 (episode 시작점 기준)
         for obj in objects:
-            # 자차 기준 상대 좌표 계산
+            # Episode 시작점 기준 상대 좌표 계산
             rel_x, rel_y = CoordinateTransformer.global_to_ego(
-                obj.global_x, obj.global_y, ego_info.x, ego_info.y, ego_info.yaw
+                obj.global_x, obj.global_y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
             )
             
             # 그리드 인덱스 계산
@@ -322,58 +342,115 @@ class ObservationBuilder:
                 else:
                     grid[grid_row, grid_col] = 0.4
         
-        # 3. LDM 포인트 추가 (장애물 정보)
-        for ldm in ldm_points:
-            rel_x, rel_y = CoordinateTransformer.global_to_ego(
-                ldm.x, ldm.y, ego_info.x, ego_info.y, ego_info.yaw
-            )
-            
-            grid_row = self.ego_grid_row - int(rel_x / self.cell_size)
-            grid_col = self.ego_grid_col + int(rel_y / self.cell_size)
-            
-            if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
-                if ldm.obstacles_type >= 1:  # 장애물이 있는 경우
-                    grid[grid_row, grid_col] = max(grid[grid_row, grid_col], 0.2)
+        # 3. LDM 포인트 추가 (장애물 정보) - 추후 Transformer 모델에서 사용 예정
+        # for ldm in ldm_points:
+        #     rel_x, rel_y = CoordinateTransformer.global_to_ego(
+        #         ldm.x, ldm.y, ego_info.x, ego_info.y, ego_info.yaw
+        #     )
+        #     
+        #     grid_row = self.ego_grid_row - int(rel_x / self.cell_size)
+        #     grid_col = self.ego_grid_col + int(rel_y / self.cell_size)
+        #     
+        #     if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
+        #         if ldm.obstacles_type >= 1:  # 장애물이 있는 경우
+        #             grid[grid_row, grid_col] = max(grid[grid_row, grid_col], 0.2)
         
-        # 4. GT trajectory 표시 (목표 경로)
-        for i, traj_point in enumerate(trajectory[:5]):  # 처음 5개 포인트만
+        # 4. GT trajectory 별도 처리 (grid에 표시하지 않음)
+        trajectory_array = np.zeros((len(trajectory), 4), dtype=np.float32)  # [x, y, yaw, velocity]
+        for i, traj_point in enumerate(trajectory):
+            # Episode 시작점 기준 상대 좌표
             rel_x, rel_y = CoordinateTransformer.global_to_ego(
-                traj_point.x, traj_point.y, ego_info.x, ego_info.y, ego_info.yaw
+                traj_point.x, traj_point.y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
             )
+            # 상대 yaw (Episode 시작점 기준)
+            rel_yaw = traj_point.yaw - episode_start_ego.yaw
+            trajectory_array[i] = [rel_x, rel_y, rel_yaw, traj_point.velocity]
+        
+        # 5. 방향 벡터 정보 준비 (별도 벡터로 저장)
+        direction_vectors = np.zeros(4, dtype=np.float32)  # [near_x, near_y, dest_x, dest_y]
+        
+        if near_direction:
+            near_x = near_direction.get('x', 0)
+            near_y = near_direction.get('y', 0)
             
-            grid_row = self.ego_grid_row - int(rel_x / self.cell_size)
-            grid_col = self.ego_grid_col + int(rel_y / self.cell_size)
+            # 방향 벡터를 자차 좌표계로 변환 (벡터이므로 회전만 적용)
+            cos_yaw = np.cos(-ego_info.yaw)
+            sin_yaw = np.sin(-ego_info.yaw)
+            ego_near_x = near_x * cos_yaw - near_y * sin_yaw
+            ego_near_y = near_x * sin_yaw + near_y * cos_yaw
             
-            if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
-                # 경로는 음수 값으로 표시 (구분을 위해)
-                grid[grid_row, grid_col] = -0.5
+            # 정규화 (단위 벡터로)
+            length = np.sqrt(ego_near_x**2 + ego_near_y**2)
+            if length > 0.01:
+                direction_vectors[0] = ego_near_x / length
+                direction_vectors[1] = ego_near_y / length
+        
+        if destination_direction:
+            dest_x = destination_direction.get('x', 0)
+            dest_y = destination_direction.get('y', 0)
+            
+            # 방향 벡터를 자차 좌표계로 변환
+            cos_yaw = np.cos(-ego_info.yaw)
+            sin_yaw = np.sin(-ego_info.yaw)
+            ego_dest_x = dest_x * cos_yaw - dest_y * sin_yaw
+            ego_dest_y = dest_x * sin_yaw + dest_y * cos_yaw
+            
+            # 정규화 (단위 벡터로)
+            length = np.sqrt(ego_dest_x**2 + ego_dest_y**2)
+            if length > 0.01:
+                direction_vectors[2] = ego_dest_x / length
+                direction_vectors[3] = ego_dest_y / length
         
         # 3차원 shape이 필요한 경우 차원 추가
         if len(self.observation_shape) == 3:
             grid = grid[np.newaxis, :, :]  # (H, W) -> (1, H, W)
         
-        return grid
+        return {
+            'grid': grid,
+            'vectors': direction_vectors,
+            'trajectory': trajectory_array
+        }
     
-    def decode_observation(self, observation: np.ndarray) -> Dict[str, Any]:
+    def decode_observation(self, observation: Dict[str, np.ndarray]) -> Dict[str, Any]:
         """observation을 디버깅용으로 디코드"""
         info = {
-            'ego_position': (self.ego_grid_row, self.ego_grid_col),
+            'ego_position': None,  # Episode 시작점 기준이므로 ego 위치는 별도 계산 필요
             'objects': [],
             'trajectory': [],
-            'obstacles': []
+            'obstacles': [],
+            'near_direction': None,
+            'destination_direction': None
         }
         
+        # 그리드 정보 디코드
+        grid = observation['grid']
+        vectors = observation['vectors']
+        trajectory = observation.get('trajectory', np.array([]))
+        
+        # 3D observation을 2D로 변환 (채널이 있는 경우)
+        if len(grid.shape) == 3:
+            grid = grid[0]  # 첫 번째 채널만 사용
+        
+        # Ego 위치 찾기
         for row in range(self.grid_rows):
             for col in range(self.grid_cols):
-                value = observation[row, col]
-                if value > 0 and (row, col) != (self.ego_grid_row, self.ego_grid_col):
-                    if value >= 0.6:
-                        info['objects'].append(('vehicle', row, col))
-                    elif value >= 0.3:
-                        info['objects'].append(('pedestrian', row, col))
-                    elif value >= 0.2:
-                        info['obstacles'].append((row, col))
-                elif value < 0:
-                    info['trajectory'].append((row, col))
+                value = grid[row, col]
+                if abs(value - 1.0) < 0.01:  # Ego vehicle
+                    info['ego_position'] = (row, col)
+                elif value >= 0.6:
+                    info['objects'].append(('vehicle', row, col))
+                elif value >= 0.3:
+                    info['objects'].append(('pedestrian', row, col))
+                elif value >= 0.2:
+                    info['obstacles'].append((row, col))
+        
+        # 방향 벡터 정보 디코드
+        if vectors is not None and len(vectors) >= 4:
+            info['near_direction'] = (vectors[0], vectors[1]) if abs(vectors[0]) > 0.01 or abs(vectors[1]) > 0.01 else None
+            info['destination_direction'] = (vectors[2], vectors[3]) if abs(vectors[2]) > 0.01 or abs(vectors[3]) > 0.01 else None
+        
+        # GT trajectory 정보 디코드
+        if len(trajectory) > 0:
+            info['trajectory'] = [(pt[0], pt[1], pt[2], pt[3]) for pt in trajectory]  # (x, y, yaw, velocity)
         
         return info

@@ -8,16 +8,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 This is a deep learning project for autonomous driving that processes ROS2 bag files (.db3) and implements reinforcement learning models, specifically MuZero for decision-making.
-Conda 환경을 사용해야하며, 커맨드라인ㅇ conda_init 입력하여 실행 후 conda activate pytorch_2_2 입력하여 설정 가능
 
 ## Common Commands
+프로그램을 실행하기 전에 Conda 환경을 사용해야해. 환경 활성화 방법은 커맨드라인에 $conda_init 입력(alias 등록되어있어)하여 conda 환경 불러온 후, $conda activate pytorch_2_2 입력하여 설정 가능해
 
-### Environment Setup
+작업 이후에는 항상 검증을해서 정상적인 동작이 가능한 상태인지 확인해야해
+
+<!-- ### Environment Setup
 ```bash
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-```
+``` -->
 
 ### Data Extraction from ROS2 Bags
 ```bash
@@ -25,6 +27,7 @@ pip install -r requirements.txt
 python data/db3_parser/db3_extractor.py
 ```
 
+ROS2 Bags 인 db3 는 raw 파일이고, 이를 학습하기위해 가공한 파일은 json 파일이야. json 파일은 data/db3_parser/results 폴더 안에 있어.
 
 ### Model Training
 README.md 파일 내 기록
@@ -61,13 +64,15 @@ The `data/db3_parser/` module extracts data from ROS2 bag files:
 The `models/MuZero/` implements the MuZero algorithm for autonomous driving:
 - **Action Space**: 16 actions (8 positions × 2 stop/go states)
 - **Components**:
-  - `environment.py`: Driving simulation environment
-  - `mcts.py`: Monte Carlo Tree Search for action selection
+  - `environment.py`: Driving simulation environment with collision detection (60cm threshold)
+  - `mcts.py`: Monte Carlo Tree Search for action selection in latent space
   - `network.py`: Neural network with representation, dynamics, and prediction functions
-  - `self_play.py`: Generates training data through self-play
-  - `replay_buffer.py`: Stores and samples game experiences
-  - `train.py`: Training loop implementation
-  - `expert_data_loader.py` : 파싱한 Json 으로 Episode 구축
+  - `self_play.py`: Generates training data through self-play with collision value adjustment (-1 for collision)
+  - `replay_buffer.py`: Stores and samples game experiences in Episode format
+  - `train.py`: Training loop implementation with target value calculation
+  - `expert_data_loader.py`: Converts GT JSON data to training episodes (used when observation_provider_type="gt")
+  - `observation_provider.py`: Interface for different data sources (GT/Mock/ROS2) - only provides observations
+  - `data_parser.py`: Common JSON parsing utilities for GT data
 - **Results**: Saved in `models/MuZero/results/` with timestamps
 
 ### SSR Models (Templates)
@@ -76,9 +81,18 @@ The `models/SSR/` contains template implementations for Structured State Represe
 ## Key Implementation Details
 
 1. **MuZero Network**: Uses fully connected layers by default, configured in `models/MuZero/config.py`
-2. **Training Data**: Generated through self-play, stored in replay buffer
-3. **Observation Shape**: Configured as (10, 12) representing the driving environment state
+2. **Training Data**: 
+   - Self-play: Generated through MCTS simulations
+   - Expert data: Loaded from GT JSON when using observation_provider_type="gt"
+3. **Observation Shape**: Configured as (1, 10, 12) representing the driving environment state (channel, height, width)
 4. **Time Matching**: Data extraction uses 100ms time windows to match inputs with ground truth
+5. **Collision Handling**: 
+   - Environment detects collisions when objects are within 60cm of ego vehicle
+   - Collision episodes get value=-1 for the final state
+   - MCTS operates in latent space and cannot detect real-world collisions
+6. **Value vs Reward**: 
+   - Reward: Immediate reward for single step
+   - Value: Expected sum of future rewards (used for training targets)
 
 ## Development Notes
 

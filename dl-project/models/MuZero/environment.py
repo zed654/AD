@@ -71,9 +71,10 @@ class DrivingEnvironment(BaseEnvironment):
         self.done_reason = None
         
         # ObservationProvider로부터 초기 관측값 가져오기
-        observation_np = self.observation_provider.reset()
+        observation_dict = self.observation_provider.reset()
         
-        # numpy array를 torch tensor로 변환
+        # dict에서 grid만 추출하여 torch tensor로 변환
+        observation_np = observation_dict['grid']
         observation = torch.from_numpy(observation_np).float()
         
         # 차원 추가 (배치 차원)
@@ -111,9 +112,10 @@ class DrivingEnvironment(BaseEnvironment):
         action = Action.from_index(action_index)
         
         # ObservationProvider로부터 다음 상태 가져오기
-        observation_np = self.observation_provider.get_observation()
+        observation_dict = self.observation_provider.get_observation()
         
-        # numpy array를 torch tensor로 변환
+        # dict에서 grid만 추출하여 torch tensor로 변환
+        observation_np = observation_dict['grid']
         observation = torch.from_numpy(observation_np).float()
         if len(observation.shape) == len(self.observation_shape):
             observation = observation.unsqueeze(0)
@@ -183,8 +185,8 @@ class DrivingEnvironment(BaseEnvironment):
         if self.ego_position is None:
             return False
         
-        # 충돌 판정 거리 (미터 단위, 약 0.6m = 60cm)
-        collision_distance = 0.6
+        # 충돌 판정 거리 (미터 단위, 약 1.5m)
+        collision_distance = 1.5
         
         # GT 데이터가 있는 경우
         if hasattr(self.observation_provider, 'get_current_frame_data'):
@@ -243,44 +245,61 @@ class DrivingEnvironment(BaseEnvironment):
                     return
         
         # GT 데이터가 없는 경우 간단한 시뮬레이션
-        if action.stopgo == Action.StopAndGo.GO:
-            # Position에 따른 이동 방향 (8방향)
-            direction_map = {
-                0: np.array([0, 1]),     # 북
-                1: np.array([1, 1]),     # 북동
-                2: np.array([1, 0]),     # 동
-                3: np.array([1, -1]),    # 남동
-                4: np.array([0, -1]),    # 남
-                5: np.array([-1, -1]),   # 남서
-                6: np.array([-1, 0]),    # 서
-                7: np.array([-1, 1]),    # 북서
-            }
-            
-            pos_idx = int(action.position.name[3:])  # POS0 -> 0
-            direction = direction_map.get(pos_idx, np.array([0, 0]))
-            
-            # 이동 (속도는 고정값으로 가정)
-            self.ego_position += direction * 0.5
+        # 액션의 이동 벡터 가져오기 (그리드 단위)
+        dx, dy = action.get_movement_vector()
+        
+        # 실제 이동량 계산 (0.2m 셀 크기 * 그리드 이동량)
+        cell_size = 0.2
+        actual_dx = dx * cell_size
+        actual_dy = dy * cell_size
+        
+        # 위치 업데이트
+        if self.ego_position is not None:
+            self.ego_position[0] += actual_dx
+            self.ego_position[1] += actual_dy
     
     def _calculate_reward(self, action: Action) -> float:
         """보상 계산"""
         reward = 0.0
         
-        # 목표 지점에 가까워지면 양의 보상
-        distance_to_goal = np.linalg.norm(self.ego_position - self.goal_position)
-        reward += -0.1 * distance_to_goal
+        # 기본 생존 보상 (작은 음수)
+        reward -= 0.01
         
-        # 정지하면 작은 페널티
-        if action.stopgo == Action.StopAndGo.STOP:
-            reward -= 0.1
+        # 이동에 대한 보상 (POS0이 아닌 경우)
+        if action.position != Action.Position.POS0:
+            reward += 0.1
         
         # 종료 상태에 따른 보상
         if self.done_reason == "goal_reached":
             reward += 100.0
         elif self.done_reason == "collision":
-            reward = -1.0  # 충돌 시 즉시 -1 리워드
+            reward = -10.0  # 충돌 시 큰 페널티
         elif self.done_reason == "off_road":
-            reward -= 50.0
+            reward -= 5.0
+        
+        # GT 데이터가 있는 경우 추가 보상
+        if hasattr(self.observation_provider, 'get_current_frame_data'):
+            frame_data = self.observation_provider.get_current_frame_data()
+            if frame_data and hasattr(self.observation_provider, 'parser'):
+                ego_info = self.observation_provider.parser.parse_ego_info(frame_data)
+                objects = self.observation_provider.parser.parse_objects(frame_data)
+                
+                if ego_info:
+                    # 속도 보상
+                    if ego_info.velocity > 0.5:
+                        reward += min(ego_info.velocity * 0.1, 0.5)
+                    
+                    # 너무 가까운 장애물에 대한 페널티
+                    min_distance = float('inf')
+                    for obj in objects:
+                        distance = np.sqrt(
+                            (obj.global_x - ego_info.x)**2 + 
+                            (obj.global_y - ego_info.y)**2
+                        )
+                        min_distance = min(min_distance, distance)
+                    
+                    if min_distance < 3.0:  # 3m 이내
+                        reward -= (3.0 - min_distance) * 0.5
         
         return reward
     
@@ -288,7 +307,8 @@ class DrivingEnvironment(BaseEnvironment):
         """현재 상태의 관측값 생성 (레거시 메서드 - ObservationProvider 사용 권장)"""
         # ObservationProvider를 사용하는 경우
         if hasattr(self, 'observation_provider'):
-            observation_np, _, _, _ = self.observation_provider.get_observation(self.last_action)
+            observation_dict = self.observation_provider.get_observation()
+            observation_np = observation_dict['grid']
             observation = torch.from_numpy(observation_np).float()
             if len(observation.shape) == len(self.observation_shape):
                 observation = observation.unsqueeze(0)

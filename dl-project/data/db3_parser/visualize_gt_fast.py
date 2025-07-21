@@ -6,8 +6,20 @@ db3_extractor.py로 추출한 JSONL 파일의 GT 데이터를 빠르게 시각�
 
 import sys
 import os
+
+# Qt 플랫폼 플러그인 충돌 방지를 위해 환경변수 설정 (OpenCV import 전에 설정)
+os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = ''
+
 # MuZero 모듈을 import할 수 있도록 경로 추가
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+import matplotlib
+# Qt 백엔드 충돌 방지를 위해 Agg 백엔드 사용 (또는 TkAgg)
+try:
+    matplotlib.use('TkAgg')
+except ImportError:
+    # 헤드리스 환경에서는 Agg 백엔드 사용
+    matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches

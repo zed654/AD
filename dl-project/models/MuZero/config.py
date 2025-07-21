@@ -15,15 +15,20 @@ class MuZeroConfig:
         self.max_num_gpus = None
 
         # 게임 관련 설정
-        self.action_space = list(range(Action.get_action_space_size()))  # Position(8) x StopAndGo(2) = 16개 액션
+        self.action_space = list(range(Action.get_action_space_size()))  # Position 9개 액션 (POS0~POS8)
         self.players = list(range(1))  # 플레이어 목록
         self.stacked_observations = 0  # 현재 관찰에 추가할 이전 관찰 및 이전 액션 수
 
         # 환경 설정 (DrivingEnvironment에서 사용)
-        self.observation_shape = (1, 10, 12)  # 게임 관찰의 차원 (channel, height, width) - 전방 10m, 좌우 12m
-        self.env_max_steps = 10  # 에피소드 최대 스텝 수
+        # 원본: 200x200 (10cm 셀) -> 100x100 (20cm 셀)로 다운샘플링
+        self.observation_shape = (1, 100, 100)  # 게임 관찰의 차원 (channel, height, width) - 20m x 20m 영역 (20cm 셀)
+        self.original_resolution = 0.1  # 원본 데이터 해상도 (10cm)
+        self.downsample_factor = 2  # 다운샘플링 비율 (2x2 셀을 1개로)
+        self.env_max_steps = 50  # 에피소드 최대 스텝 수 (약 10초, 5Hz 기준)
+        self.max_episode_length = 50  # GT 데이터에서 사용할 에피소드 길이
         self.collision_threshold = 0.5  # 충돌 판정 거리
         self.goal_threshold = 1.0  # 목표 도달 판정 거리
+        self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
         
         # Observation Provider 설정
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택

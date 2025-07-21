@@ -19,12 +19,12 @@ class ObservationProvider(ABC):
     """관측값 제공자 인터페이스"""
     
     @abstractmethod
-    def reset(self) -> np.ndarray:
+    def reset(self) -> Dict[str, np.ndarray]:
         """환경을 리셋하고 초기 관측값을 반환"""
         pass
     
     @abstractmethod
-    def get_observation(self) -> np.ndarray:
+    def get_observation(self) -> Dict[str, np.ndarray]:
         """
         현재 상태의 관측값을 반환
         
@@ -32,7 +32,7 @@ class ObservationProvider(ABC):
             action: 이전에 수행한 액션 (첫 번째 호출 시 None)
             
         Returns:
-            observation: 현재 관측값
+            observation: 현재 관측값 딕셔너리 (grid, vectors)
         """
         pass
     
@@ -71,16 +71,23 @@ class GTObservationProvider(ObservationProvider):
         self.steps_in_episode = 0
         self.max_episode_length = getattr(config, 'max_episode_length', 50)
         
+        # Episode 시작 위치 추적
+        self.episode_start_ego = None
+        
         # 이전 프레임 정보 (보상 계산용)
         self.prev_ego_info = None
         self.prev_distance_to_goal = None
         
-    def reset(self) -> np.ndarray:
+    def reset(self) -> Dict[str, np.ndarray]:
         """새로운 에피소드 시작"""
         if not self.parser:
             # GT 데이터가 없으면 임시로 랜덤 데이터 반환
             print("경고: GT 데이터가 없어 랜덤 관측값을 사용합니다")
-            return np.random.rand(*self.observation_shape).astype(np.float32)
+            return {
+                'grid': np.random.rand(*self.observation_shape).astype(np.float32),
+                'vectors': np.zeros(4, dtype=np.float32),
+                'trajectory': np.zeros((5, 4), dtype=np.float32)
+            }
         
         # 랜덤하게 시작 프레임 선택 (뒤에 충분한 프레임이 있는 곳에서)
         max_start = max(0, self.parser.get_frame_count() - self.max_episode_length - 10)
@@ -91,13 +98,20 @@ class GTObservationProvider(ObservationProvider):
         # 초기 프레임 데이터 가져오기
         frame_data = self.parser.get_frame_data(self.current_frame_idx)
         if not frame_data:
-            return np.zeros(self.observation_shape, dtype=np.float32)
+            return {
+                'grid': np.zeros(self.observation_shape, dtype=np.float32),
+                'vectors': np.zeros(4, dtype=np.float32),
+                'trajectory': np.zeros((0, 4), dtype=np.float32)
+            }
+        
+        # Episode 시작 위치 설정
+        self.episode_start_ego = self.parser.parse_ego_info(frame_data)
         
         # 관측값 생성
         observation = self._create_observation(frame_data)
         
         # 초기 상태 저장
-        self.prev_ego_info = self.parser.parse_ego_info(frame_data)
+        self.prev_ego_info = self.episode_start_ego
         trajectory = self.parser.parse_trajectory(frame_data)
         if trajectory and len(trajectory) > 5:
             goal = trajectory[5]  # 5번째 포인트를 목표로
@@ -109,10 +123,14 @@ class GTObservationProvider(ObservationProvider):
         
         return observation
     
-    def get_observation(self) -> np.ndarray:
+    def get_observation(self) -> Dict[str, np.ndarray]:
         """GT 데이터에서 다음 관측값 가져오기"""
         if not self.parser:
-            return np.random.rand(*self.observation_shape).astype(np.float32)
+            return {
+                'grid': np.random.rand(*self.observation_shape).astype(np.float32),
+                'vectors': np.zeros(4, dtype=np.float32),
+                'trajectory': np.zeros((5, 4), dtype=np.float32)
+            }
         
         # 다음 프레임으로 이동
         self.current_frame_idx += 1
@@ -134,21 +152,28 @@ class GTObservationProvider(ObservationProvider):
         
         return observation
     
-    def _create_observation(self, frame_data: Dict) -> np.ndarray:
+    def _create_observation(self, frame_data: Dict) -> Dict[str, np.ndarray]:
         """프레임 데이터에서 observation 생성"""
         # 데이터 파싱
         ego_info = self.parser.parse_ego_info(frame_data)
         objects = self.parser.parse_objects(frame_data)
-        ldm_points = self.parser.parse_ldm_points(frame_data)
+        # ldm_points = self.parser.parse_ldm_points(frame_data)  # 추후 Transformer 모델에서 사용 예정
+        ldm_points = []  # 임시로 빈 리스트
         trajectory = self.parser.parse_trajectory(frame_data)
+        near_direction, destination_direction = self.parser.get_direction_vectors(frame_data)
         
         # 데이터가 없으면 빈 observation
         if not ego_info:
-            return np.zeros(self.observation_shape, dtype=np.float32)
+            return {
+                'grid': np.zeros(self.observation_shape, dtype=np.float32),
+                'vectors': np.zeros(4, dtype=np.float32),
+                'trajectory': np.zeros((0, 4), dtype=np.float32)
+            }
         
-        # Observation 생성
+        # Observation 생성 (episode 시작 위치 기준)
         observation = self.obs_builder.build_observation(
-            ego_info, objects, ldm_points, trajectory
+            ego_info, objects, ldm_points, trajectory, near_direction, destination_direction,
+            episode_start_ego=self.episode_start_ego
         )
         
         return observation
@@ -212,21 +237,29 @@ class ROS2ObservationProvider(ObservationProvider):
             print("경고: ROS2가 설치되지 않았습니다. 시뮬레이션 모드로 동작합니다.")
             self.ros2_initialized = False
     
-    def reset(self) -> np.ndarray:
+    def reset(self) -> Dict[str, np.ndarray]:
         """환경 리셋 (ROS2에서는 현재 상태 반환)"""
         if not self.ros2_initialized:
             # ROS2가 없으면 랜덤 데이터
-            return np.random.rand(*self.observation_shape).astype(np.float32)
+            return {
+                'grid': np.random.rand(*self.observation_shape).astype(np.float32),
+                'vectors': np.zeros(4, dtype=np.float32),
+                'trajectory': np.zeros((5, 4), dtype=np.float32)
+            }
         
         # 현재 ROS2 topic에서 받은 최신 관측값 반환
         observation = self._create_observation_from_ros2()
         return observation
     
-    def get_observation(self) -> np.ndarray:
+    def get_observation(self) -> Dict[str, np.ndarray]:
         """ROS2에서 실시간 관측값 가져오기"""
         if not self.ros2_initialized:
             # ROS2가 없으면 랜덤 데이터
-            return np.random.rand(*self.observation_shape).astype(np.float32)
+            return {
+                'grid': np.random.rand(*self.observation_shape).astype(np.float32),
+                'vectors': np.zeros(4, dtype=np.float32),
+                'trajectory': np.zeros((5, 4), dtype=np.float32)
+            }
         
         # ROS2 메시지 처리 (spin_once)
         # TODO: rclpy.spin_once(self.node, timeout_sec=0.1)
@@ -236,7 +269,7 @@ class ROS2ObservationProvider(ObservationProvider):
         
         return observation
     
-    def _create_observation_from_ros2(self) -> np.ndarray:
+    def _create_observation_from_ros2(self) -> Dict[str, np.ndarray]:
         """
         ROS2 메시지에서 관측값 생성
         
@@ -245,7 +278,10 @@ class ROS2ObservationProvider(ObservationProvider):
         - 자차 속도, 위치 정보 포함
         """
         # 임시 구현
-        return np.random.rand(*self.observation_shape).astype(np.float32)
+        return {
+            'grid': np.random.rand(*self.observation_shape).astype(np.float32),
+            'vectors': np.zeros(4, dtype=np.float32)
+        }
     
     def _obstacle_callback(self, msg):
         """장애물 검출 메시지 콜백"""
@@ -275,15 +311,21 @@ class MockObservationProvider(ObservationProvider):
         self.config = config
         self.observation_shape = config.observation_shape
         self.step_count = 0
+        self.episode_start_ego = EgoInfo(x=0, y=0, yaw=0, velocity=0)
         
-    def reset(self) -> np.ndarray:
+    def reset(self) -> Dict[str, np.ndarray]:
         self.step_count = 0
-        return np.random.rand(*self.observation_shape).astype(np.float32)
+        return {
+            'grid': np.random.rand(*self.observation_shape).astype(np.float32),
+            'vectors': np.zeros(4, dtype=np.float32)
+        }
     
-    def get_observation(self) -> np.ndarray:
+    def get_observation(self) -> Dict[str, np.ndarray]:
         self.step_count += 1
-        observation = np.random.rand(*self.observation_shape).astype(np.float32)
-        return observation
+        return {
+            'grid': np.random.rand(*self.observation_shape).astype(np.float32),
+            'vectors': np.zeros(4, dtype=np.float32)
+        }
     
     def close(self):
         pass
