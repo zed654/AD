@@ -11,16 +11,18 @@ class Episode:
     
     def __init__(self):
         self.states = []      # 상태 목록
-        self.actions = []     # 액션 목록  
+        self.actions = []     # 액션 목록 (self-play로 선택된 action)
+        self.expert_ego_pos = []  # 전문가 ego 위치 목록 (GT 그리드 좌표 (row, col) 튜플) 
         self.rewards = []     # 보상 목록
         self.policies = []    # MCTS 정책 목록
         self.values = []      # MCTS 가치 목록
         self.dones = []       # 종료 여부 목록
         
-    def add_step(self, state, action, reward, policy=None, value=None, done=False):
+    def add_step(self, state, action, reward, policy=None, value=None, done=False, expert_ego_pos=None):
         """한 스텝의 데이터 추가"""
         self.states.append(state)
         self.actions.append(action)
+        self.expert_ego_pos.append(expert_ego_pos)
         self.rewards.append(reward)
         self.policies.append(policy)
         self.values.append(value)

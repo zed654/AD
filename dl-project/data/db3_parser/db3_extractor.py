@@ -357,15 +357,9 @@ class DB3Extractor:
         
         print(f"{topic_name}: 성공 {success_count}개, 실패 {error_count}개 → {output_path}에 저장했습니다.")
 
-    def make_gt(self, topics_config, n_trajectory_sample_time, output_path, sample_logging_interval_sec=None, k_meters=10.0, trajectory_interval_sec=0.1):
+    def make_gt(self, topics_config, n_trajectory_sample_time, output_path, k_meters=10.0, trajectory_interval_sec=0.1):
         # topics_config 딕셔너리에서 토픽 정보 추출
-        # topics_config = {
-        #     'input': {'topic': '/obstacles_tracking_msg', 'type': 'autonomy_ros2_message/msg/DetectedObjectArray'},
-        #     'gt': {'topic': '/odomgyro', 'type': 'nav_msgs/msg/Odometry'},
-        #     'global_way': {'topic': '/planned_global_way_array', 'type': 'sensor_msgs/msg/PointCloud2'},
-        #     'wheelodom': {'topic': '/wheelodom', 'type': 'autonomy_ros2_message/msg/MotorDriver'},
-        #     'ldm': {'topic': '/ldm_msg', 'type': 'sensor_msgs/msg/PointCloud2'}
-        # }
+        # 각 토픽의 threshold와 required 설정은 topics_config 내부에 정의됨
         
         # 각 토픽 파싱
         obstacles_list = self.parse_topic(topics_config['obstacles']['topic'], topics_config['obstacles']['type'])
@@ -393,64 +387,117 @@ class DB3Extractor:
         with open(output_path, "w", encoding="utf-8") as f:
             last_sample_time = None
             matched_count = 0
-            for obs in tqdm(obstacles_list, desc="IO_GT_matching"):
-                t_obs = convert_ros2_timestamp_to_kst(obs["timestamp"])
-                # 샘플 간격 조건 추가
-                if sample_logging_interval_sec is not None and last_sample_time is not None:
-                    if (t_obs - last_sample_time).total_seconds() < sample_logging_interval_sec:
-                        continue
-                last_sample_time = t_obs
+            skipped_count = 0
+            timeout_count = 0
+            
+            # Ego(odom) 기준으로 순회
+            for i, odom in enumerate(tqdm(odom_list, desc="Ego-based GT matching")):
+                t_ego = convert_ros2_timestamp_to_kst(odom["timestamp"])
                 
-                gt_dict_odom = []
-                trajectory_data = []  # (timestamp, odom_data) 형태로 수집
+                # trajectory_interval_sec 간격으로 샘플링
+                if last_sample_time is not None:
+                    if (t_ego - last_sample_time).total_seconds() < trajectory_interval_sec:
+                        continue
+                last_sample_time = t_ego
+                
+                # 현재 Ego 위치
+                current_odom = odom
+                current_position = {
+                    'x': current_odom["msg"].pose.pose.position.x,
+                    'y': current_odom["msg"].pose.pose.position.y
+                }
+                
+                # 미래 trajectory 수집 (현재 시점부터 n_trajectory_sample_time 동안)
+                trajectory_data = []
                 last_sampled_time = None
                 
-                # 장애물 감지 시점 이후의 odom 메시지들을 수집 (미래 trajectory)
-                for odom in odom_list:
-                    t_odom = convert_ros2_timestamp_to_kst(odom["timestamp"])
-                    if t_obs <= t_odom <= t_obs + timedelta(seconds=n_trajectory_sample_time):
+                for future_odom in odom_list[i:]:  # 현재 인덱스부터 시작
+                    t_future = convert_ros2_timestamp_to_kst(future_odom["timestamp"])
+                    if t_ego <= t_future <= t_ego + timedelta(seconds=n_trajectory_sample_time):
                         # Trajectory 샘플링 적용
-                        if last_sampled_time is None or (t_odom - last_sampled_time).total_seconds() >= trajectory_interval_sec:
-                            odom_dict = msg_to_dict(odom["msg"])
+                        if last_sampled_time is None or (t_future - last_sampled_time).total_seconds() >= trajectory_interval_sec:
+                            odom_dict = msg_to_dict(future_odom["msg"])
                             # 해당 시점의 속도를 인터폴레이션하여 추가
-                            linear_vel = self.interpolate_velocity(wheelodom_list, odom["timestamp"])
+                            linear_vel = self.interpolate_velocity(wheelodom_list, future_odom["timestamp"])
                             odom_dict["_linear_vel"] = linear_vel
-                            trajectory_data.append((odom["timestamp"], odom_dict))
-                            last_sampled_time = t_odom
+                            trajectory_data.append((future_odom["timestamp"], odom_dict))
+                            last_sampled_time = t_future
                 
                 # 시간 순서로 정렬하여 올바른 trajectory 생성
                 trajectory_data.sort(key=lambda x: x[0])
                 gt_dict_odom = [data for _, data in trajectory_data]
                 
-                # 현재 시점에서 가장 가까운 odom 찾기 (현재 위치)
-                current_odom = None
-                min_time_diff = float('inf')
-                for odom in odom_list:
-                    time_diff = abs(odom["timestamp"] - obs["timestamp"])
-                    if time_diff < min_time_diff:
-                        min_time_diff = time_diff
-                        current_odom = odom
+                # 현재 시점에서 시간 범위 내의 obstacles 찾기
+                obstacles_threshold = topics_config.get('obstacles', {}).get('threshold', 0.3)  # 기본값 0.3초
+                obstacles_in_range = []
+                for obs in obstacles_list:
+                    time_diff = abs(obs["timestamp"] - odom["timestamp"]) / 1_000_000_000.0  # 나노초를 초로 변환
+                    if time_diff <= obstacles_threshold:
+                        obstacles_in_range.append(obs)
                 
-                # 현재 시점에서 가장 가까운 전역경로 찾기
+                # 가장 가까운 것 선택 (범위 내에 여러 개 있을 경우)
+                closest_obstacles = None
+                if obstacles_in_range:
+                    closest_obstacles = min(obstacles_in_range, key=lambda x: abs(x["timestamp"] - odom["timestamp"]))
+                
+                # 현재 시점에서 시간 범위 내의 전역경로 찾기
+                global_way_threshold = topics_config.get('global_way', {}).get('threshold', 0.3)  # 기본값 0.3초
                 closest_global_way = None
-                min_time_diff = float('inf')
                 for gw in global_way_list:
-                    time_diff = abs(gw["timestamp"] - obs["timestamp"])
-                    if time_diff < min_time_diff:
-                        min_time_diff = time_diff
-                        closest_global_way = gw
+                    time_diff = abs(gw["timestamp"] - odom["timestamp"]) / 1_000_000_000.0
+                    if time_diff <= global_way_threshold:
+                        if closest_global_way is None or abs(gw["timestamp"] - odom["timestamp"]) < abs(closest_global_way["timestamp"] - odom["timestamp"]):
+                            closest_global_way = gw
                 
-                # 현재 시점에서 가장 가까운 ldm_msg 찾기
+                # 현재 시점에서 시간 범위 내의 ldm_msg 찾기
+                ldm_threshold = topics_config.get('environment_info', {}).get('threshold', 0.3)  # 기본값 0.3초
                 closest_ldm_msg = None
-                min_time_diff = float('inf')
                 for ldm in ldm_msg_list:
-                    time_diff = abs(ldm["timestamp"] - obs["timestamp"])
-                    if time_diff < min_time_diff:
-                        min_time_diff = time_diff
-                        closest_ldm_msg = ldm
+                    time_diff = abs(ldm["timestamp"] - odom["timestamp"]) / 1_000_000_000.0
+                    if time_diff <= ldm_threshold:
+                        if closest_ldm_msg is None or abs(ldm["timestamp"] - odom["timestamp"]) < abs(closest_ldm_msg["timestamp"] - odom["timestamp"]):
+                            closest_ldm_msg = ldm
                 
-                if gt_dict_odom and current_odom and closest_global_way:  # 매칭된 GT가 있을 때만 저장
-                    input_dict = msg_to_dict(obs["msg"])
+                # 필수 토픽 체크 (각 토픽별 설정 사용)
+                skip_due_to_timeout = False
+                missing_topics = []
+                
+                # obstacles 체크
+                if topics_config.get('obstacles', {}).get('required', False):
+                    if len(obstacles_in_range) == 0:
+                        missing_topics.append(f"obstacles (threshold: {obstacles_threshold}s)")
+                
+                # ldm_msg 체크
+                if topics_config.get('environment_info', {}).get('required', False):
+                    if closest_ldm_msg is None:
+                        missing_topics.append(f"ldm_msg (threshold: {ldm_threshold}s)")
+                
+                # global_way 체크
+                if topics_config.get('global_way', {}).get('required', False):
+                    if closest_global_way is None:
+                        missing_topics.append(f"global_way (threshold: {global_way_threshold}s)")
+                
+                # 필수 토픽이 누락되면 skip
+                if missing_topics:
+                    skip_due_to_timeout = True
+                    timeout_count += 1
+                    if timeout_count <= 5:  # 처음 5개만 상세 로그 출력
+                        print(f"\n[WARNING] Ego timestamp {odom['timestamp']} (t={t_ego}) - 필수 토픽 누락:")
+                        for topic in missing_topics:
+                            print(f"  - {topic}")
+                
+                # 필수 데이터 체크 및 저장
+                if gt_dict_odom and not skip_due_to_timeout:  # trajectory가 있고 timeout이 아닐 때만 저장
+                    # input_environment 구성
+                    input_dict = {}
+                    
+                    # obstacles 정보 추가
+                    if closest_obstacles:
+                        input_dict.update(msg_to_dict(closest_obstacles["msg"]))
+                    else:
+                        # obstacles가 없으면 빈 리스트로 설정
+                        input_dict["_objects"] = []
+                        skipped_count += 1
                     
                     # obstacles_tracking_msg 필터링 - 필요한 필드만 하드코딩으로 추가
                     if "_objects" in input_dict:
@@ -511,23 +558,22 @@ class DB3Extractor:
                             filtered_objects.append(filtered_obj)
                         input_dict["_objects"] = filtered_objects
                     
-                    # 현재 위치 정보
-                    current_position = {
-                        'x': current_odom["msg"].pose.pose.position.x,
-                        'y': current_odom["msg"].pose.pose.position.y
-                    }
-                    
                     # 전역경로에서 방위벡터 추출
-                    # PointCloud2 메시지에서 포인트 추출
-                    global_waypoints = self.extract_points_from_pointcloud2(closest_global_way["msg"], max_points=999999)
-                    near_direction, destination_direction = self.extract_waypoint_vectors(
-                        global_waypoints, current_position, k_meters
-                    )
-                    
-                    # 방위벡터 정보를 input_environment에 추가
-                    if near_direction and destination_direction:
-                        input_dict["near_direction_vector"] = near_direction
-                        input_dict["destination_direction_vector"] = destination_direction
+                    if closest_global_way:
+                        # PointCloud2 메시지에서 포인트 추출
+                        global_waypoints = self.extract_points_from_pointcloud2(closest_global_way["msg"], max_points=999999)
+                        near_direction, destination_direction = self.extract_waypoint_vectors(
+                            global_waypoints, current_position, k_meters
+                        )
+                        
+                        # 방위벡터 정보를 input_environment에 추가
+                        if near_direction and destination_direction:
+                            input_dict["near_direction_vector"] = near_direction
+                            input_dict["destination_direction_vector"] = destination_direction
+                    else:
+                        # global_way가 없으면 기본값 설정
+                        input_dict["near_direction_vector"] = {'x': 0.0, 'y': 0.0}
+                        input_dict["destination_direction_vector"] = {'x': 0.0, 'y': 0.0}
                     
                     # ldm_msg 정보를 input_environment에 추가
                     if closest_ldm_msg:
@@ -549,24 +595,41 @@ class DB3Extractor:
                                 filtered_point['z'] = point['z']
                             filtered_ldm_points.append(filtered_point)
                         input_dict["_ldm_points"] = filtered_ldm_points
+                    else:
+                        # ldm_msg가 없으면 빈 리스트로 설정
+                        input_dict["_ldm_points"] = []
                     
-                    # input_dict["timestamp"] = obs["timestamp"] # json 문구 추가하려면 이렇게 추가하면 됨
+                    # 타임스탬프 정보 추가 (디버깅용)
+                    input_dict["_ego_timestamp"] = odom["timestamp"]
+                    if closest_obstacles:
+                        input_dict["_obstacles_timestamp"] = closest_obstacles["timestamp"]
+                    
                     f.write(json.dumps({"input_environment": input_dict, "gt_trajectory": gt_dict_odom}) + "\n")
                     matched_count += 1
         
         print(f"\n[DEBUG] 매칭된 샘플 수: {matched_count}")
+        print(f"[DEBUG] 시간 범위 밖으로 스킵된 obstacles 수: {skipped_count}")
+        print(f"[DEBUG] 필수 토픽 누락으로 스킵된 샘플 수: {timeout_count}")
         print(f"{matched_count}개의 GT 샘플을 {output_path}에 저장했습니다.")
+        
+        # 통계 반환
+        return {
+            'matched_count': matched_count,
+            'skipped_count': skipped_count,
+            'timeout_count': timeout_count,
+            'success': matched_count > 0
+        }
 
-    def save_images(self, topic_name, msg_type_str, output_dir, db3_name, sample_logging_interval_sec=None):
-        # 이미지 토픽의 메시지를 파싱하여 jpg로 저장 (샘플 간격 적용)
+    def save_images(self, topic_name, msg_type_str, output_dir, db3_name, image_interval_sec=0.1):
+        # 이미지 토픽의 메시지를 파싱하여 jpg로 저장 (Ego 시간 기준 샘플링)
         os.makedirs(output_dir, exist_ok=True)
         image_msgs = self.parse_topic(topic_name, msg_type_str)
         last_sample_time = None
         for msg in tqdm(image_msgs, desc=f"Extracting images {topic_name}"):
             timestamp = msg["timestamp"]
             t_img = convert_ros2_timestamp_to_kst(timestamp)
-            if sample_logging_interval_sec is not None and last_sample_time is not None:
-                if (t_img - last_sample_time).total_seconds() < sample_logging_interval_sec:
+            if last_sample_time is not None:
+                if (t_img - last_sample_time).total_seconds() < image_interval_sec:
                     continue
             last_sample_time = t_img
             img_msg = msg["msg"]
@@ -593,8 +656,18 @@ if __name__ == "__main__":
 
     n_trajectory_sample_time = 5.0 #0.05 #5.0  # GT 매칭 구간(초) (정의한 시간 동안의 미래 위치를 Trajectory의 에 반영하여, 길이 조절할때 씀)
     trajectory_interval_sec = 0.1  # Trajectory 샘플링 간격 (초) - 0.1이면 10Hz로 샘플링 ... sample_time 이 3.0 sec 이고 interval_sec 가 0.3 이면, 10개 뽑힘.
-    sample_logging_interval_sec = 0.1 #0.1  # 로깅 샘플링 시간 설정 (제한된 시간 내에 같은 토픽의 값을 무시하게하는 시간; 0.03초면, 30 ms 간격 이내의 데이터는 날림)
     k_meters = 20.0 #20.0  # 근접 방위벡터를 위한 거리(미터)
+    
+    # 전체 통계 초기화
+    total_stats = {
+        'total_files': len(db3_files),
+        'success_files': [],
+        'failed_files': [],
+        'total_matched_samples': 0,
+        'total_skipped_samples': 0,
+        'total_timeout_samples': 0,
+        'file_details': []
+    }
     
     rclpy.init()
     for db3_path in db3_files:
@@ -611,23 +684,73 @@ if __name__ == "__main__":
         gt_output_path = os.path.join(results_dir, f"IO_GT_matching_{db3_name}.jsonl")
         print(f"\n[INFO] GT 생성: {db3_path} → {gt_output_path}")
         
-        # 토픽 설정 딕셔너리
+        # 토픽 설정 딕셔너리 (threshold: 해당 토픽의 시간 매칭 임계값, required: 필수 여부)
         gt_topics_config = {
-            'obstacles': {'topic': '/obstacles_tracking_msg', 'type': 'autonomy_ros2_message/msg/DetectedObjectArray'},
-            'ego_pos': {'topic': '/odomgyro', 'type': 'nav_msgs/msg/Odometry'},
-            'global_way': {'topic': '/planned_global_way_array', 'type': 'sensor_msgs/msg/PointCloud2'},
-            'ego_velocity': {'topic': '/wheelodom', 'type': 'autonomy_ros2_message/msg/MotorDriver'},
-            'environment_info': {'topic': '/ldm_msg', 'type': 'sensor_msgs/msg/PointCloud2'}
+            'obstacles': {
+                'topic': '/obstacles_tracking_msg', 
+                'type': 'autonomy_ros2_message/msg/DetectedObjectArray',
+                'threshold': 0.3,  # 300ms
+                'required': True # 선택사항 (인터폴레이션 가능)
+            },
+            'ego_pos': {
+                'topic': '/odomgyro', 
+                'type': 'nav_msgs/msg/Odometry'
+            },
+            'global_way': {
+                'topic': '/planned_global_way_array', 
+                'type': 'sensor_msgs/msg/PointCloud2',
+                'threshold': 3.0,  # 3초 (발행 주기가 5초라서)
+                'required': True # 선택사항 (인터폴레이션 가능)
+            },
+            'ego_velocity': {
+                'topic': '/wheelodom', 
+                'type': 'autonomy_ros2_message/msg/MotorDriver',
+                'threshold': 0.1,  # 100ms (20Hz 발행 주기)
+                'required': False  # 선택사항 (인터폴레이션 가능)
+            },
+            'environment_info': {
+                'topic': '/ldm_msg', 
+                'type': 'sensor_msgs/msg/PointCloud2',
+                'threshold': 0.3,  # 300ms
+                'required': True # 선택사항 (인터폴레이션 가능)
+            }
         }
         
-        extractor.make_gt(
-            gt_topics_config,
-            n_trajectory_sample_time,
-            gt_output_path,
-            sample_logging_interval_sec=sample_logging_interval_sec,
-            k_meters=k_meters,
-            trajectory_interval_sec=trajectory_interval_sec
-        )
+        try:
+            result = extractor.make_gt(
+                gt_topics_config,
+                n_trajectory_sample_time,
+                gt_output_path,
+                k_meters=k_meters,
+                trajectory_interval_sec=trajectory_interval_sec
+            )
+            
+            # 파일별 통계 저장
+            file_stat = {
+                'file': db3_name,
+                'matched': result['matched_count'],
+                'skipped': result['skipped_count'],
+                'timeout': result['timeout_count'],
+                'success': result['success']
+            }
+            total_stats['file_details'].append(file_stat)
+            
+            if result['success']:
+                total_stats['success_files'].append(db3_name)
+                total_stats['total_matched_samples'] += result['matched_count']
+                total_stats['total_skipped_samples'] += result['skipped_count']
+                total_stats['total_timeout_samples'] += result['timeout_count']
+            else:
+                total_stats['failed_files'].append(db3_name)
+                
+        except Exception as e:
+            print(f"\n[ERROR] {db3_name} 처리 중 오류 발생: {str(e)}")
+            total_stats['failed_files'].append(db3_name)
+            total_stats['file_details'].append({
+                'file': db3_name,
+                'error': str(e),
+                'success': False
+            })
 
         # 이미지 저장
         img_output_dir = os.path.join(results_dir, "img")
@@ -636,11 +759,38 @@ if __name__ == "__main__":
             "sensor_msgs/msg/CompressedImage",
             img_output_dir,
             db3_name,
-            sample_logging_interval_sec=sample_logging_interval_sec
+            image_interval_sec=trajectory_interval_sec  # Ego 시간 기준과 동일한 간격 사용
         )
 
         extractor.close()
+    
+    # 최종 통계 출력
+    print("\n" + "="*80)
+    print("                          최종 처리 결과 요약")
+    print("="*80)
+    print(f"전체 DB3 파일 수: {total_stats['total_files']}")
+    print(f"성공한 파일 수: {len(total_stats['success_files'])}")
+    print(f"실패한 파일 수: {len(total_stats['failed_files'])}")
+    print(f"\n전체 통계:")
+    print(f"  - 총 매칭된 샘플: {total_stats['total_matched_samples']}")
+    print(f"  - 총 스킵된 샘플 (obstacles 범위 밖): {total_stats['total_skipped_samples']}")
+    print(f"  - 총 timeout 샘플 (필수 토픽 누락): {total_stats['total_timeout_samples']}")
+    
+    if total_stats['success_files']:
+        print(f"\n✅ 성공한 파일들:")
+        for file in total_stats['success_files']:
+            detail = next(d for d in total_stats['file_details'] if d['file'] == file and d.get('success', False))
+            print(f"  - {file}: {detail['matched']}개 매칭")
+    
+    if total_stats['failed_files']:
+        print(f"\n❌ 실패한 파일들:")
+        for file in total_stats['failed_files']:
+            detail = next(d for d in total_stats['file_details'] if d['file'] == file and not d.get('success', True))
+            error_msg = detail.get('error', '알 수 없는 오류')
+            print(f"  - {file}: {error_msg}")
+    
+    print("="*80)
+    print(f"처리 완료: 성공률 {len(total_stats['success_files'])/total_stats['total_files']*100:.1f}%")
+    print("="*80)
+    
     rclpy.shutdown()
-
-    # Time 변환 테스트 코드
-    print(convert_ros2_timestamp_to_kst(1736146965483111085))

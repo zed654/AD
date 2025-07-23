@@ -391,14 +391,28 @@ class FastInteractiveVisualizer:
             # 속도 증가 (interval 감소)
             self.interval = max(10, int(self.interval * 0.8))
             if self.anim:
-                self.anim.interval = self.interval
-            print(f"Playback speed: {1000/self.interval:.1f} FPS (interval: {self.interval}ms)")
+                # 애니메이션을 재시작해야 interval이 적용됨
+                was_playing = self.playing
+                if was_playing:
+                    self.anim.pause()
+                self.anim._interval = self.interval
+                self.anim.event_source.interval = self.interval
+                if was_playing:
+                    self.anim.resume()
+            print(f"⏩ Playback speed: {1000/self.interval:.1f} FPS (interval: {self.interval}ms)")
         elif event.key == 'down':
             # 속도 감소 (interval 증가)
             self.interval = min(1000, int(self.interval * 1.25))
             if self.anim:
-                self.anim.interval = self.interval
-            print(f"Playback speed: {1000/self.interval:.1f} FPS (interval: {self.interval}ms)")
+                # 애니메이션을 재시작해야 interval이 적용됨
+                was_playing = self.playing
+                if was_playing:
+                    self.anim.pause()
+                self.anim._interval = self.interval
+                self.anim.event_source.interval = self.interval
+                if was_playing:
+                    self.anim.resume()
+            print(f"⏪ Playback speed: {1000/self.interval:.1f} FPS (interval: {self.interval}ms)")
         elif event.key == '1':  # LDM obstacles_type 모드
             self.ldm_mode = 1
             self.update_frame_fast()
@@ -777,6 +791,16 @@ class FastInteractiveVisualizer:
     
     def show(self, start_frame: int = 0):
         """시각화 시작 (애니메이션 모드)"""
+        # 키보드 단축키 안내
+        print("\n" + "="*60)
+        print("🎮 키보드 단축키:")
+        print("  Space   : 재생/일시정지")
+        print("  →/←     : 다음/이전 프레임")
+        print("  ↑/↓     : 재생 속도 증가/감소")
+        print("  1/2/3   : LDM 모드 (장애물/세그멘테이션/둘다)")
+        print("  q       : 종료")
+        print("="*60 + "\n")
+        
         self.current_frame = start_frame
         self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(16, 8))
         

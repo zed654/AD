@@ -152,7 +152,13 @@ def train_network(network, replay_buffer, config, device):
             start_idx = np.random.randint(0, max_start + 1)
             
             # 초기 관측값 ... PyTorch 모델 배치형태 맞추려고 unsqueeze 함 ([B, C, H, W] -> [1, C, H, W])
-            observation = episode.states[start_idx].unsqueeze(0).to(device)
+            state = episode.states[start_idx]
+            # state가 dict인 경우 obstacles 추출 (이전 이름 grid도 지원)
+            if isinstance(state, dict):
+                obstacles = state.get('obstacles', state.get('grid'))  # obstacles 우선, 없으면 grid
+                observation = obstacles.unsqueeze(0).to(device)
+            else:
+                observation = state.unsqueeze(0).to(device)
             
             # 초기 추론 (representation + prediction)
             # latent_0 = representation(observation)

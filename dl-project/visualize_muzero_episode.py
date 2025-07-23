@@ -117,8 +117,15 @@ class EpisodeInteractiveVisualizer:
         start_time = time.time()
         
         for ep_idx, episode in enumerate(self.episodes):
-            for step_idx, obs in enumerate(episode.states):
+            for step_idx, state in enumerate(episode.states):
                 cache_key = (ep_idx, step_idx)
+                
+                # state가 dict인 경우 obstacles 추출 (이전 이름 grid도 지원)
+                if isinstance(state, dict):
+                    obs = state.get('obstacles', state.get('grid'))  # obstacles 우선, 없으면 grid
+                else:
+                    # 기존 tensor 형태 (하위 호환성)
+                    obs = state
                 
                 # Torch tensor를 numpy로 변환
                 if hasattr(obs, 'numpy'):
@@ -283,11 +290,27 @@ class EpisodeInteractiveVisualizer:
         # ===== 3. 스텝 정보 업데이트 =====
         step_text = "Step Information:\n" + "="*30 + "\n"
         
-        # Action
+        # Action (Self-play)
         if self.current_step < len(episode.actions):
             action_idx = episode.actions[self.current_step]
             action = Action.from_index(action_idx)
             step_text += f"Action: {action_idx} ({action.position.value})\n"
+        
+        # Expert Ego Position (GT 그리드 좌표)
+        if hasattr(episode, 'expert_ego_pos') and self.current_step < len(episode.expert_ego_pos):
+            expert_pos = episode.expert_ego_pos[self.current_step]
+            if expert_pos is not None:
+                if isinstance(expert_pos, tuple) and len(expert_pos) == 2:
+                    # 그리드 좌표 (row, col)
+                    step_text += f"Expert Ego Pos: Grid({expert_pos[0]}, {expert_pos[1]})\n"
+                else:
+                    # 기타 형식
+                    step_text += f"Expert Ego Pos: {expert_pos}\n"
+        # 이전 버전 호환성 (expert_actions)
+        elif hasattr(episode, 'expert_actions') and self.current_step < len(episode.expert_actions):
+            expert_action = episode.expert_actions[self.current_step]
+            if expert_action is not None:
+                step_text += f"Expert Action: {expert_action}\n"
         
         # Reward
         if self.current_step < len(episode.rewards):
@@ -305,7 +328,7 @@ class EpisodeInteractiveVisualizer:
             step_text += f"Done: {done}\n"
         
         # Policy (Top 5)
-        if self.current_step < len(episode.policies):
+        if self.current_step < len(episode.policies) and episode.policies[self.current_step] is not None:
             policy = episode.policies[self.current_step]
             step_text += f"\nPolicy (Top 5):\n"
             top_actions = np.argsort(policy)[-5:][::-1]
@@ -313,6 +336,8 @@ class EpisodeInteractiveVisualizer:
                 action = Action.from_index(action_idx)
                 prob = policy[action_idx]
                 step_text += f"  {i+1}. Action {action_idx} ({action.position.value}): {prob:.3f}\n"
+        else:
+            step_text += f"\nPolicy: None (GT data)\n"
         
         # Grid 통계 및 객체 타입
         if grid is not None:
@@ -323,13 +348,42 @@ class EpisodeInteractiveVisualizer:
                     name, _ = get_grid_value_info(val)
                     step_text += f"  {name} ({val}): {count} cells\n"
         
+        # 추가 정보 표시 (state가 dict인 경우)
+        if self.current_step < len(episode.states) and isinstance(episode.states[self.current_step], dict):
+            state = episode.states[self.current_step]
+            
+            # Ego 위치
+            if 'ego_pos' in state:
+                ego_x, ego_y = state['ego_pos']
+                step_text += f"\nEgo Position: ({ego_x:.2f}, {ego_y:.2f})\n"
+            
+            # 객체 수
+            if 'objects' in state and state['objects']:
+                step_text += f"Objects: {len(state['objects'])} detected\n"
+            
+            # 방향 정보
+            if 'near_direction' in state and state['near_direction']:
+                step_text += f"Near Direction: {state['near_direction']}\n"
+            if 'destination_direction' in state and state['destination_direction']:
+                step_text += f"Dest Direction: {state['destination_direction']}\n"
+            
+            # Static Environment 정보
+            if 'static_environment' in state and state['static_environment']:
+                static_env = state['static_environment']
+                step_text += f"\nStatic Environment:\n"
+                for env_type, grid in static_env.items():
+                    if isinstance(grid, np.ndarray):
+                        count = np.sum(grid > 0)
+                        if count > 0:
+                            step_text += f"  {env_type}: {count} cells\n"
+        
         self.artists['step_text'].set_text(step_text)
         
         # ===== 4. Policy 막대 그래프 업데이트 =====
         if self.artists['policy_bars'] is not None:
             self.artists['policy_bars'].remove()
         
-        if self.current_step < len(episode.policies):
+        if self.current_step < len(episode.policies) and episode.policies[self.current_step] is not None:
             policy = episode.policies[self.current_step]
             # 상위 9개 액션만 표시
             top_actions = np.argsort(policy)[-9:]
@@ -437,7 +491,14 @@ def save_episode_frames(episodes: List[Episode], config: MuZeroConfig,
         for i, step_idx in enumerate(step_indices):
             # 상단: Grid
             ax_grid = axes[0, i]
-            obs = episode.states[step_idx]
+            state = episode.states[step_idx]
+            
+            # state가 dict인 경우 obstacles 추출 (이전 이름 grid도 지원)
+            if isinstance(state, dict):
+                obs = state.get('obstacles', state.get('grid'))  # obstacles 우선, 없으면 grid
+            else:
+                obs = state
+                
             if hasattr(obs, 'numpy'):
                 grid = obs.numpy()
             else:
@@ -481,10 +542,25 @@ def save_episode_frames(episodes: List[Episode], config: MuZeroConfig,
                 action_idx = episode.actions[step_idx]
                 action = Action.from_index(action_idx)
                 info_text += f"Action: {action_idx}\n({action.position.value})\n"
+                
+                # Expert Ego Position 표시
+                if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
+                    expert_pos = episode.expert_ego_pos[step_idx]
+                    if expert_pos is not None:
+                        if isinstance(expert_pos, tuple) and len(expert_pos) == 2:
+                            info_text += f"Expert Pos: G({expert_pos[0]}, {expert_pos[1]})\n"
+                        else:
+                            info_text += f"Expert Pos: {expert_pos}\n"
+                # 이전 버전 호환성
+                elif hasattr(episode, 'expert_actions') and step_idx < len(episode.expert_actions):
+                    expert_action = episode.expert_actions[step_idx]
+                    if expert_action is not None:
+                        info_text += f"Expert: {expert_action}\n"
+                
                 info_text += f"Reward: {episode.rewards[step_idx]:.3f}\n"
                 
                 # Policy top 3
-                if step_idx < len(episode.policies):
+                if step_idx < len(episode.policies) and episode.policies[step_idx] is not None:
                     policy = episode.policies[step_idx]
                     top_actions = np.argsort(policy)[-3:][::-1]
                     info_text += f"\nTop Actions:\n"

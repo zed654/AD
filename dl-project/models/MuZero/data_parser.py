@@ -366,15 +366,15 @@ class ObservationBuilder:
         self.config = config
         self.observation_shape = config.observation_shape
         
-        # 그리드 설정 (예: 100x100 그리드, 각 셀은 0.2x0.2m)
+        # 그리드 설정 (예: 99x99 그리드, 각 셀은 0.2x0.2m)
         if len(self.observation_shape) == 3:
             self.channels = self.observation_shape[0]  # 1
-            self.grid_rows = self.observation_shape[1]  # 100
-            self.grid_cols = self.observation_shape[2]  # 100
+            self.grid_rows = self.observation_shape[1]  # 99
+            self.grid_cols = self.observation_shape[2]  # 99
         else:
             self.channels = 1
-            self.grid_rows = self.observation_shape[0]  # 100
-            self.grid_cols = self.observation_shape[1]  # 100
+            self.grid_rows = self.observation_shape[0]  # 99
+            self.grid_cols = self.observation_shape[1]  # 99
         self.cell_size = getattr(config, 'cell_size', 0.2)  # 각 셀의 크기 (m)
         
         # 자차 중심은 그리드의 정중앙

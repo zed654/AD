@@ -20,8 +20,8 @@ class MuZeroConfig:
         self.stacked_observations = 0  # 현재 관찰에 추가할 이전 관찰 및 이전 액션 수
 
         # 환경 설정 (DrivingEnvironment에서 사용)
-        # 원본: 200x200 (10cm 셀) -> 100x100 (20cm 셀)로 다운샘플링
-        self.observation_shape = (1, 100, 100)  # 게임 관찰의 차원 (channel, height, width) - 20m x 20m 영역 (20cm 셀)
+        # 원본: 200x200 (10cm 셀) -> 99x99 (20cm 셀)로 다운샘플링
+        self.observation_shape = (1, 99, 99)  # 게임 관찰의 차원 (channel, height, width) - 19.8m x 19.8m 영역 (20cm 셀)
         self.original_resolution = 0.1  # 원본 데이터 해상도 (10cm)
         self.downsample_factor = 2  # 다운샘플링 비율 (2x2 셀을 1개로)
         self.env_max_steps = 50  # 에피소드 최대 스텝 수 (약 10초, 5Hz 기준)
