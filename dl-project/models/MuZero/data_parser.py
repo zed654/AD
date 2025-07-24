@@ -17,7 +17,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent / 'data' / 'db3_parser')
 from rosetta import (
     # Grid values
     GRID_VALUE_EMPTY, GRID_VALUE_PEDESTRIAN, GRID_VALUE_OTHER_OBJECT,
-    GRID_VALUE_VEHICLE, GRID_VALUE_EGO,
+    GRID_VALUE_VEHICLE,
     GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, GRID_VALUE_MISSING_POINTS,
     # Functions
     get_object_name, get_object_color,
@@ -256,15 +256,13 @@ def interpret_class_id(class_id: float, is_ldm: bool = False) -> str:
     """
     class_id_int = int(class_id)
     
-    if class_id_int == -1:
-        return "Ego"
-    elif class_id_int == 0:
+    if class_id_int == 0:
         return "Empty/Background"
     elif is_ldm or (0 < class_id_int < 100):
-        # LDM semantic class (1-16)
+        # LDM semantic class (1-25, 99)
         return get_ldm_segmentation_name(class_id_int)
     else:
-        # Object class (100+)
+        # Object class (100+) - 하지만 Channel 2에는 LDM만 들어가야 함
         return get_object_name(class_id_int)
 
 
@@ -358,18 +356,8 @@ class ObservationBuilder:
         if episode_start_ego is None:
             episode_start_ego = ego_info
             
-        # 1. 자차 위치 표시 (episode 시작점 기준)
-        ego_rel_x, ego_rel_y = CoordinateTransformer.global_to_ego(
-            ego_info.x, ego_info.y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
-        )
-        ego_grid_row = self.ego_grid_row - int(ego_rel_x / self.cell_size)
-        ego_grid_col = self.ego_grid_col + int(ego_rel_y / self.cell_size)
-        
-        if 0 <= ego_grid_row < self.grid_rows and 0 <= ego_grid_col < self.grid_cols:
-            grid[0, ego_grid_row, ego_grid_col] = GRID_VALUE_EGO  # Channel 0: Dynamic objects
-            grid[2, ego_grid_row, ego_grid_col] = -1  # Channel 2: Ego는 class_id가 없으므로 -1
-        
-        # 2. 객체들을 그리드에 배치 (episode 시작점 기준)
+        # 1. 객체들을 그리드에 배치 (episode 시작점 기준)
+        # 주의: Ego는 Grid에 표시하지 않음. ego_pos로 별도 전달됨
         for obj in objects:
             # 객체의 중심점과 모든 꼭짓점을 그리드에 표시
             grid_value = get_grid_value_from_class_id(obj.class_id)

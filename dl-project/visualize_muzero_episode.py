@@ -28,6 +28,7 @@ if not GUI_AVAILABLE:
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
+from matplotlib.widgets import CheckButtons
 import numpy as np
 import argparse
 from pathlib import Path
@@ -40,25 +41,81 @@ from models.MuZero.expert_data_loader import ExpertDataLoader
 from models.MuZero.config import MuZeroConfig
 from models.MuZero.replay_buffer import Episode
 from models.MuZero.action import Action
-from models.MuZero.data_parser import (
-    get_grid_value_info, 
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent / 'data' / 'db3_parser'))
+from rosetta import (
+    get_grid_value_info,
     GRID_VALUE_EMPTY, GRID_VALUE_PEDESTRIAN, GRID_VALUE_OTHER_OBJECT,
-    GRID_VALUE_VEHICLE, GRID_VALUE_EGO
+    GRID_VALUE_VEHICLE,
+    GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, GRID_VALUE_MISSING_POINTS,
+    get_object_name, get_ldm_segmentation_name,
+    get_object_color, get_ldm_segmentation_color,
+    OBJECT_CLASS_IDS, LDM_SEGMENTATION_IDS,
+    OBJECT_COLORS, LDM_SEGMENTATION_COLORS
 )
 
 
-def get_grid_color(value: float) -> str:
-    """Grid 값에 따른 색상을 반환합니다."""
-    if value >= 0.9:  # 자차
-        return 'green'
-    elif value >= 0.5:  # 차량
-        return 'blue'
-    elif value >= 0.2:  # 보행자
-        return 'red'
-    elif value > 0:  # 기타
-        return 'gray'
-    else:
+def get_grid_color(value: float, channel: int = None) -> str:
+    """Grid 값과 채널에 따른 색상을 반환합니다.
+    
+    Args:
+        value: Grid 값
+        channel: 채널 번호 (0: obstacles, 1: static_environment, 2: ground_class_id)
+    """
+    # 부동소수점 비교를 위한 작은 오차 허용
+    epsilon = 0.01
+    
+    # 빈 공간
+    if abs(value - GRID_VALUE_EMPTY) < epsilon:  # 0.0
         return 'white'
+    
+    # Channel 0: 동적 객체
+    if channel == 0:
+        if abs(value - GRID_VALUE_VEHICLE) < epsilon:  # 0.6: 차량
+            return 'red'
+        elif abs(value - GRID_VALUE_OTHER_OBJECT) < epsilon:  # 0.4: 기타 객체
+            return 'orange'
+        elif abs(value - GRID_VALUE_PEDESTRIAN) < epsilon:  # 0.3: 보행자
+            return 'magenta'
+    
+    # Channel 1: 정적 환경
+    elif channel == 1:
+        if abs(value - GRID_VALUE_MISSING_POINTS) < epsilon:  # 0.9: Missing points
+            return 'purple'
+        elif abs(value - GRID_VALUE_STATIC_OBSTACLE) < epsilon:  # 0.6: Static obstacles
+            return 'yellow'
+        elif abs(value - GRID_VALUE_CLIFF) < epsilon:  # 0.3: Cliff
+            return 'cyan'
+    
+    # Channel 2: 지면 semantic class ID
+    elif channel == 2:
+        class_id = int(value)
+        if class_id == 0:  # Empty/Background
+            return 'lightgray'
+        else:
+            # LDM segmentation 색상 가져오기
+            color_hex = get_ldm_segmentation_color(class_id)
+            if color_hex:
+                # hex 색상을 matplotlib 색상 이름으로 변환하거나 그대로 반환
+                return color_hex
+            else:
+                return 'gray'
+    
+    # 채널 정보가 없으면 값으로만 추측 (하위 호환성)
+    elif channel is None:
+        # 고유한 값들
+        if abs(value - GRID_VALUE_MISSING_POINTS) < epsilon:  # 0.9
+            return 'purple'
+        elif abs(value - GRID_VALUE_OTHER_OBJECT) < epsilon:  # 0.4
+            return 'orange'
+        # 중복되는 값들 - 기본적으로 동적 객체로 가정
+        elif abs(value - 0.6) < epsilon:  # Vehicle or Static Obstacle
+            return 'red'  # 차량으로 가정
+        elif abs(value - 0.3) < epsilon:  # Pedestrian or Cliff
+            return 'magenta'  # 보행자로 가정
+    
+    return 'gray'  # 정의되지 않은 값
 
 
 class EpisodeInteractiveVisualizer:
@@ -91,14 +148,14 @@ class EpisodeInteractiveVisualizer:
         
         # ===== 3. matplotlib 그래픽 요소 =====
         self.fig = None
-        self.ax_grid = None  # 왼쪽: Grid observation
+        self.ax_grid = None  # 왼쪽: 통합 그리드 (Obstacles + Static + Class ID)
         self.ax_info = None  # 오른쪽: 정보 표시
         self.anim = None
         self.playing = False
         
         # ===== 4. 그래픽 요소 저장 =====
         self.artists = {
-            'grid_image': None,      # Grid 이미지
+            'grid_image': None,      # 통합 그리드 이미지
             'info_text': None,       # Episode 정보 텍스트
             'step_text': None,       # 스텝별 정보 텍스트
             'policy_bars': None,     # Policy 막대 그래프
@@ -108,7 +165,15 @@ class EpisodeInteractiveVisualizer:
         # ===== 5. 캐시 =====
         self.observation_cache = {}  # numpy 변환 캐시
         
-        # ===== 6. 전처리 실행 =====
+        # ===== 6. 채널 토글 상태 =====
+        self.channel_visibility = {
+            'obstacles': True,          # Channel 0: 동적 객체
+            'static_environment': True, # Channel 1: 정적 환경
+            'ground_class_id': True,    # Channel 2: 지면 class_id
+            'ego': True                 # Ego 위치 표시
+        }
+        
+        # ===== 7. 전처리 실행 =====
         self.preprocess_episodes()
     
     def preprocess_episodes(self):
@@ -120,24 +185,143 @@ class EpisodeInteractiveVisualizer:
             for step_idx, state in enumerate(episode.states):
                 cache_key = (ep_idx, step_idx)
                 
-                # state가 dict인 경우 obstacles 추출 (이전 이름 grid도 지원)
+                # 첫 번째 Episode의 첫 번째 스텝에서 state 구조 확인
+                if ep_idx == 0 and step_idx == 0:
+                    print(f"[DEBUG] State type: {type(state)}")
+                    if isinstance(state, dict):
+                        print(f"[DEBUG] State keys: {state.keys()}")
+                    elif hasattr(state, 'shape'):
+                        print(f"[DEBUG] State shape: {state.shape}")
+                
+                # state가 dict인 경우 obstacles와 static_environment 추출
                 if isinstance(state, dict):
-                    obs = state.get('obstacles', state.get('grid'))  # obstacles 우선, 없으면 grid
+                    obstacles = state.get('obstacles', state.get('grid'))  # obstacles 우선, 없으면 grid
+                    static_env = state.get('static_environment')
+                    ground_class_id = state.get('ground_class_id')  # Channel 2: Ground semantic class ID
+                    
+                    # class_id_np 초기화
+                    class_id_np = None
+                    
+                    # numpy로 변환
+                    if hasattr(obstacles, 'numpy'):
+                        obstacles_np = obstacles.numpy()
+                    else:
+                        obstacles_np = obstacles
+                    
+                    # ground_class_id 처리
+                    if ground_class_id is not None and not isinstance(ground_class_id, dict):
+                        if hasattr(ground_class_id, 'numpy'):
+                            class_id_np = ground_class_id.numpy()
+                        else:
+                            class_id_np = ground_class_id
+                        
+                        # Shape 처리
+                        if len(class_id_np.shape) == 4:
+                            class_id_np = class_id_np[0, 0]
+                        elif len(class_id_np.shape) == 3:
+                            class_id_np = class_id_np[0]
+                        
+                        # 첫 번째 Episode의 첫 번째 스텝에서 ground_class_id 값 확인
+                        if ep_idx == 0 and step_idx == 0:
+                            print(f"[DEBUG] class_id_np shape: {class_id_np.shape}")
+                            unique_values = np.unique(class_id_np)
+                            print(f"[DEBUG] ground_class_id unique values: {unique_values}")
+                            print(f"[DEBUG] ground_class_id value counts:")
+                            for val in unique_values:
+                                count = np.sum(class_id_np == val)
+                                print(f"  {val}: {count} pixels")
+                            
+                            # obstacles와 비교
+                            print(f"\n[DEBUG] obstacles_np shape: {obstacles_np.shape}")
+                            obstacles_unique = np.unique(obstacles_np)
+                            print(f"[DEBUG] obstacles unique values: {obstacles_unique}")
+                            
+                            # 두 배열이 같은지 확인
+                            if np.array_equal(class_id_np, obstacles_np):
+                                print("[ERROR] class_id_np와 obstacles_np가 완전히 같습니다!")
+                            else:
+                                print("[OK] class_id_np와 obstacles_np가 다릅니다.")
+                                # 몇 개의 픽셀이 다른지 확인
+                                diff_count = np.sum(class_id_np != obstacles_np)
+                                print(f"  다른 픽셀 수: {diff_count}/{class_id_np.size} ({diff_count/class_id_np.size*100:.1f}%)")
+                    
+                    # 세 채널 모두 추출 (obstacles, static_environment, ground_class_id)
+                    # Shape 처리 - obstacles
+                    if len(obstacles_np.shape) == 4:
+                        obstacles_np = obstacles_np[0, 0]
+                    elif len(obstacles_np.shape) == 3:
+                        obstacles_np = obstacles_np[0]
+                    
+                    # static_environment 처리
+                    static_env_np = None
+                    if static_env is not None and not isinstance(static_env, dict):
+                        if hasattr(static_env, 'numpy'):
+                            static_env_np = static_env.numpy()
+                        else:
+                            static_env_np = static_env
+                        
+                        # Shape 처리
+                        if len(static_env_np.shape) == 4:
+                            static_env_np = static_env_np[0, 0]
+                        elif len(static_env_np.shape) == 3:
+                            static_env_np = static_env_np[0]
                 else:
                     # 기존 tensor 형태 (하위 호환성)
                     obs = state
+                    # Torch tensor를 numpy로 변환
+                    if hasattr(obs, 'numpy'):
+                        obs_full = obs.numpy()
+                    else:
+                        obs_full = obs
+                    
+                    # 3채널 observation 처리
+                    # Shape: (batch, channel, height, width) 또는 (channel, height, width)
+                    if len(obs_full.shape) == 4:
+                        # batch dimension 제거
+                        obs_full = obs_full[0]  # shape: (3, 99, 99)
+                    
+                    # class_id_np 초기화
+                    class_id_np = None
+                    
+                    if len(obs_full.shape) == 3 and obs_full.shape[0] >= 3:
+                        # 3채널 데이터: channel 0 = obstacles, channel 1 = static_env, channel 2 = ground_class_id
+                        obstacles_np = obs_full[0]  # 첫 번째 채널 (동적 장애물)
+                        static_env_np = obs_full[1]  # 두 번째 채널 (정적 환경)
+                        class_id_np = obs_full[2]   # 세 번째 채널 (ground_class_id)
+                        
+                        # 첫 번째 Episode의 첫 번째 스텝에서만 디버그 출력
+                        if ep_idx == 0 and step_idx == 0:
+                            print(f"[DEBUG] 3채널 observation shape: {obs_full.shape}")
+                            print(f"[DEBUG] class_id_np unique values: {np.unique(class_id_np)}")
+                        
+                        # 병합하지 않고 별도로 저장
+                        obs_np = obstacles_np
+                        static_np = static_env_np
+                    else:
+                        # 1채널만 있는 경우 (이전 버전 호환성)
+                        if len(obs_full.shape) == 3:
+                            obs_np = obs_full[0]
+                        else:
+                            obs_np = obs_full
+                        class_id_np = None
                 
-                # Torch tensor를 numpy로 변환
-                if hasattr(obs, 'numpy'):
-                    obs_np = obs.numpy()
+                # 3개 채널 모두 별도로 저장 (obstacles, static_environment, ground_class_id)
+                if isinstance(state, dict):
+                    self.observation_cache[cache_key] = {
+                        'obstacles': obstacles_np,
+                        'static_environment': static_env_np,  # 병합하지 않고 원본 그대로 저장
+                        'ground_class_id': class_id_np
+                    }
                 else:
-                    obs_np = obs
-                
-                # 3D인 경우 첫 번째 채널만
-                if len(obs_np.shape) == 3:
-                    obs_np = obs_np[0]
-                
-                self.observation_cache[cache_key] = obs_np
+                    # 이전 버전 호환성 - 3채널 텐서 형태
+                    if 'static_np' in locals():
+                        self.observation_cache[cache_key] = {
+                            'obstacles': obs_np,
+                            'static_environment': static_np,
+                            'ground_class_id': class_id_np
+                        }
+                    else:
+                        self.observation_cache[cache_key] = (obs_np, class_id_np)
         
         elapsed = time.time() - start_time
         print(f"Preprocessing completed in {elapsed:.2f} seconds")
@@ -198,10 +382,75 @@ class EpisodeInteractiveVisualizer:
                 if not self.playing:
                     plt.draw()
                     
+        elif event.key == '1':
+            # Toggle Channel 0 (Dynamic Objects)
+            self.channel_visibility['obstacles'] = not self.channel_visibility['obstacles']
+            self.update_frame()
+            if not self.playing:
+                plt.draw()
+        
+        elif event.key == '2':
+            # Toggle Channel 1 (Static Environment)
+            self.channel_visibility['static_environment'] = not self.channel_visibility['static_environment']
+            self.update_frame()
+            if not self.playing:
+                plt.draw()
+        
+        elif event.key == '3':
+            # Toggle Channel 2 (Ground Class ID)
+            self.channel_visibility['ground_class_id'] = not self.channel_visibility['ground_class_id']
+            self.update_frame()
+            if not self.playing:
+                plt.draw()
+        
+        elif event.key == '4':
+            # Toggle Ego position
+            self.channel_visibility['ego'] = not self.channel_visibility['ego']
+            self.update_frame()
+            if not self.playing:
+                plt.draw()
+                
         elif event.key == 'escape' or event.key == 'q':
             if self.anim:
                 self.anim.pause()
             plt.close(self.fig)
+    
+    def setup_toggle_buttons(self):
+        """채널별 토글 버튼 설정"""
+        self.ax_toggle.set_title('Channel Visibility', fontsize=10)
+        
+        # 토글 버튼 생성
+        labels = ['Dynamic Objects (Ch0)', 'Static Environment (Ch1)', 'Ground Class ID (Ch2)', 'Ego Position']
+        visibility = [self.channel_visibility['obstacles'], 
+                      self.channel_visibility['static_environment'],
+                      self.channel_visibility['ground_class_id'],
+                      self.channel_visibility['ego']]
+        
+        self.check_buttons = CheckButtons(self.ax_toggle, labels, visibility)
+        
+        # 버튼 크기 조정 (더 작게)
+        for rect in self.check_buttons.rectangles:
+            rect.set_width(0.08)
+            rect.set_height(0.08)
+        
+        # X 표시 크기 조정
+        for line in self.check_buttons.lines:
+            for l in line:
+                l.set_markersize(4)  # X 표시 크기 축소
+        
+        # 버튼 클릭 이벤트 연결
+        def on_toggle(label):
+            if 'Ch0' in label:
+                self.channel_visibility['obstacles'] = not self.channel_visibility['obstacles']
+            elif 'Ch1' in label:
+                self.channel_visibility['static_environment'] = not self.channel_visibility['static_environment']
+            elif 'Ch2' in label:
+                self.channel_visibility['ground_class_id'] = not self.channel_visibility['ground_class_id']
+            elif 'Ego' in label:
+                self.channel_visibility['ego'] = not self.channel_visibility['ego']
+            self.update_frame()
+        
+        self.check_buttons.on_clicked(on_toggle)
     
     def init_graphics(self):
         """그래픽 요소를 초기화합니다."""
@@ -209,33 +458,18 @@ class EpisodeInteractiveVisualizer:
         self.ax_grid.set_aspect('equal')
         self.ax_grid.set_xlabel('X (cells)')
         self.ax_grid.set_ylabel('Y (cells)')
+        self.ax_grid.set_title('Integrated Grid View')
         
-        # 초기 Grid 이미지
-        empty_grid = np.zeros((self.grid_rows, self.grid_cols))
+        # 초기 Grid 이미지 - RGB 이미지로 초기화
+        empty_rgb = np.ones((self.grid_rows, self.grid_cols, 3))  # 흰색 배경
         self.artists['grid_image'] = self.ax_grid.imshow(
-            empty_grid, cmap='hot', origin='lower', vmin=-1, vmax=1
+            empty_rgb, origin='lower', interpolation='nearest'
         )
         
-        # Colorbar
-        self.artists['colorbar'] = plt.colorbar(
-            self.artists['grid_image'], ax=self.ax_grid
-        )
-        self.artists['colorbar'].set_label('Grid Value')
-        
-        # 색상 범례 추가 (hot colormap 기준)
-        from matplotlib.cm import hot
-        legend_elements = []
-        for value in [GRID_VALUE_EMPTY, GRID_VALUE_PEDESTRIAN, GRID_VALUE_OTHER_OBJECT, 
-                      GRID_VALUE_VEHICLE, GRID_VALUE_EGO]:
-            name, _ = get_grid_value_info(value)
-            color = hot(value)
-            legend_elements.append(
-                patches.Patch(color=color, label=f'{name} ({value})')
-            )
-        self.ax_grid.legend(handles=legend_elements, loc='upper right', fontsize=8)
-        
-        # 자차 마커는 Episode 데이터에 이미 포함되어 있으므로 별도로 그리지 않음
-        # Episode의 grid 데이터에서 1.0 값이 ego 위치를 나타냄
+        # Ego 마커 초기화 (Grid가 아닌 별도 표시)
+        self.artists['ego_marker'] = self.ax_grid.plot(
+            [], [], 'g*', markersize=10, label='Ego', zorder=100  # 크기 절반으로, 최상위 레이어
+        )[0]
         
         # Grid 선
         for i in range(self.grid_rows + 1):
@@ -258,6 +492,146 @@ class EpisodeInteractiveVisualizer:
             verticalalignment='top', fontsize=10, family='monospace'
         )
     
+    def _create_integrated_grid(self, obstacles_grid, static_env_grid, class_id_grid, ego_pos=None):
+        """
+        토글 상태에 따라 각 채널을 개별적으로 시각화
+        Channel 0 (obstacles): 동적 객체만 표시
+        Channel 1 (static_environment): 정적 환경만 표시  
+        Channel 2 (ground_class_id): 지면 색상만 표시
+        ego_pos: (row, col) 형태의 Ego 위치
+        """
+        import matplotlib.colors as mcolors
+        
+        # RGB 이미지 초기화 (white background)
+        rgb_image = np.ones((obstacles_grid.shape[0], obstacles_grid.shape[1], 3))
+        
+        # 디버그: 첫 번째 호출 시 데이터 분포 출력
+        if not hasattr(self, '_debug_printed'):
+            self._debug_printed = True
+            print(f"\n[DEBUG] Creating integrated grid:")
+            print(f"  obstacles_grid shape: {obstacles_grid.shape}")
+            print(f"  obstacles unique values: {np.unique(obstacles_grid)}")
+            if static_env_grid is not None:
+                print(f"  static_env_grid shape: {static_env_grid.shape}")
+                print(f"  static_env unique values: {np.unique(static_env_grid)}")
+            if class_id_grid is not None:
+                print(f"  class_id_grid shape: {class_id_grid.shape}")
+                print(f"  ground_class_id unique values: {np.unique(class_id_grid)}")
+        
+        # 우선순위 기반 시각화: Channel 0 > Channel 1 > Channel 2
+        # 각 채널을 순서대로 그리되, 이미 그려진 부분은 덮어쓰지 않음
+        
+        # 먼저 모든 픽셀이 비어있는지 추적
+        drawn_mask = np.zeros((obstacles_grid.shape[0], obstacles_grid.shape[1]), dtype=bool)
+        
+        # 1. Channel 0 (Obstacles) - 가장 높은 우선순위
+        if self.channel_visibility['obstacles']:
+            unique_values = np.unique(obstacles_grid)
+            for value in unique_values:
+                if value == GRID_VALUE_EMPTY:
+                    continue
+                mask = (obstacles_grid == value) & (~drawn_mask)
+                if np.any(mask):
+                    color_name = get_grid_color(value, channel=0)
+                    rgb_image[mask] = mcolors.to_rgb(color_name)
+                    drawn_mask |= mask
+        
+        # 2. Channel 1 (Static Environment) - 중간 우선순위
+        if static_env_grid is not None and self.channel_visibility['static_environment']:
+            unique_values = np.unique(static_env_grid)
+            for value in unique_values:
+                if value == GRID_VALUE_EMPTY:
+                    continue
+                mask = (static_env_grid == value) & (~drawn_mask)
+                if np.any(mask):
+                    color_name = get_grid_color(value, channel=1)
+                    rgb_image[mask] = mcolors.to_rgb(color_name)
+                    drawn_mask |= mask
+        
+        # 3. Channel 2 (Ground Class ID) - 가장 낮은 우선순위
+        if class_id_grid is not None and self.channel_visibility['ground_class_id']:
+            unique_class_ids = np.unique(class_id_grid)
+            for ground_class_id in unique_class_ids:
+                mask = (class_id_grid == ground_class_id) & (~drawn_mask)
+                if np.any(mask):
+                    color_str = get_grid_color(ground_class_id, channel=2)
+                    if color_str.startswith('#'):
+                        color = mcolors.to_rgb(color_str)
+                    else:
+                        color = mcolors.to_rgb(color_str)
+                    rgb_image[mask] = color
+                    drawn_mask |= mask
+        
+        # 4. Ego 위치 표시 (최우선 순위)
+        if self.channel_visibility['ego'] and ego_pos is not None:
+            ego_row, ego_col = ego_pos
+            if 0 <= ego_row < obstacles_grid.shape[0] and 0 <= ego_col < obstacles_grid.shape[1]:
+                # Ego를 녹색으로 표시
+                rgb_image[ego_row, ego_col] = mcolors.to_rgb('green')
+                # 주변 픽셀도 약간 표시해서 더 잘 보이게
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        r, c = ego_row + dr, ego_col + dc
+                        if 0 <= r < obstacles_grid.shape[0] and 0 <= c < obstacles_grid.shape[1]:
+                            if dr == 0 and dc == 0:
+                                continue  # 중심은 이미 처리함
+                            # 주변은 연한 녹색으로
+                            rgb_image[r, c] = 0.5 * rgb_image[r, c] + 0.5 * np.array(mcolors.to_rgb('green'))
+        
+        # 색상 범례 추가를 위한 정보 저장
+        self._legend_info = []
+        
+        # 표시된 채널에 따라 범례 항목 추가
+        if self.channel_visibility['obstacles']:
+            # Channel 0의 값들 (Ego 제외)
+            for value in [GRID_VALUE_VEHICLE, 
+                         GRID_VALUE_OTHER_OBJECT, GRID_VALUE_PEDESTRIAN]:
+                color = get_grid_color(value, channel=0)
+                name, _ = get_grid_value_info(value)
+                self._legend_info.append((color, name, value))
+                
+        if self.channel_visibility['static_environment']:
+            # Channel 1의 값들
+            for value in [GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, 
+                         GRID_VALUE_MISSING_POINTS]:
+                color = get_grid_color(value, channel=1)
+                name, _ = get_grid_value_info(value)
+                self._legend_info.append((color, name, value))
+                
+        if self.channel_visibility['ground_class_id'] and class_id_grid is not None:
+            # Channel 2의 주요 클래스들 (상위 5개만 표시)
+            unique_class_ids, counts = np.unique(class_id_grid, return_counts=True)
+            # 카운트 순으로 정렬
+            sorted_indices = np.argsort(counts)[::-1]
+            shown_count = 0
+            for idx in sorted_indices:
+                ground_class_id = unique_class_ids[idx]
+                count = counts[idx]
+                
+                # 0(Background)은 생략, 너무 적은 픽셀도 생략
+                if ground_class_id == 0 or count < 10:
+                    continue
+                    
+                color_str = get_grid_color(ground_class_id, channel=2)
+                name = get_ldm_segmentation_name(int(ground_class_id))
+                
+                # 색상이 hex인 경우 matplotlib 색상으로 변환
+                if color_str.startswith('#'):
+                    # hex 색상은 그대로 사용
+                    self._legend_info.append((color_str, f"{name}", ground_class_id))
+                else:
+                    self._legend_info.append((color_str, f"{name}", ground_class_id))
+                
+                shown_count += 1
+                if shown_count >= 5:  # 최대 5개만 표시
+                    break
+        
+        # Ego 범례 추가
+        if self.channel_visibility['ego']:
+            self._legend_info.append(('green', 'Ego', None))
+        
+        return rgb_image
+    
     def update_frame(self):
         """현재 프레임 업데이트"""
         # 현재 Episode와 스텝
@@ -265,16 +639,59 @@ class EpisodeInteractiveVisualizer:
         
         # ===== 1. Grid 업데이트 =====
         cache_key = (self.current_episode, self.current_step)
-        grid = self.observation_cache.get(cache_key)
+        cached_data = self.observation_cache.get(cache_key)
         
-        if grid is not None:
-            self.artists['grid_image'].set_data(grid)
+        if cached_data is not None:
+            if isinstance(cached_data, dict):
+                # 새로운 형식: 3개 채널 별도 저장
+                obstacles_grid = cached_data['obstacles']
+                static_env_grid = cached_data['static_environment']
+                class_id_grid = cached_data['ground_class_id']
+            elif isinstance(cached_data, tuple):
+                # 이전 버전 호환성
+                obstacles_grid, class_id_grid = cached_data
+                static_env_grid = None
+            else:
+                # 더 오래된 버전 호환성
+                obstacles_grid = cached_data
+                static_env_grid = None
+                class_id_grid = None
             
-            # Grid 제목 업데이트
-            self.ax_grid.set_title(
-                f'Episode {self.current_episode + 1}/{self.total_episodes}, '
-                f'Step {self.current_step + 1}/{len(episode)}'
-            )
+            # Ego 위치 계산
+            ego_pos = None
+            if self.channel_visibility['ego']:
+                state = episode.states[self.current_step]
+                if isinstance(state, dict) and 'ego_pos' in state:
+                    # ego_pos는 전역 좌표이므로, Episode 시작점 기준으로 변환 필요
+                    # 첫 번째 프레임에서는 ego가 중앙(49, 49)에 위치
+                    if self.current_step == 0:
+                        ego_pos = (self.grid_rows // 2, self.grid_cols // 2)
+                    else:
+                        # 이후 프레임에서는 expert_ego_pos 사용
+                        if hasattr(episode, 'expert_ego_pos') and self.current_step < len(episode.expert_ego_pos):
+                            expert_pos = episode.expert_ego_pos[self.current_step]
+                            if expert_pos is not None and isinstance(expert_pos, tuple):
+                                ego_pos = expert_pos  # (row, col) 형태
+                            else:
+                                ego_pos = (self.grid_rows // 2, self.grid_cols // 2)
+                        else:
+                            ego_pos = (self.grid_rows // 2, self.grid_cols // 2)
+            
+            # 통합된 그리드 생성 및 업데이트 - ego_pos도 전달
+            integrated_rgb = self._create_integrated_grid(obstacles_grid, static_env_grid, class_id_grid, ego_pos)
+            self.artists['grid_image'].set_data(integrated_rgb)
+            
+            # Ego 마커는 이제 그리드에 직접 그려지므로 별도 업데이트 불필요
+            self.artists['ego_marker'].set_data([], [])
+            
+            # 첫 번째 Episode의 첫 번째 스텝에서 범례 추가
+            if self.current_episode == 0 and self.current_step == 0 and hasattr(self, '_legend_info'):
+                legend_elements = []
+                for color, label, value in self._legend_info:
+                    legend_elements.append(
+                        patches.Patch(color=color, label=f'{label} ({value})')
+                    )
+                self.ax_grid.legend(handles=legend_elements, loc='upper right', fontsize=8)
         
         # ===== 2. Episode 정보 업데이트 =====
         info_text = f"Episode {self.current_episode + 1} / {self.total_episodes}\n"
@@ -339,14 +756,43 @@ class EpisodeInteractiveVisualizer:
         else:
             step_text += f"\nPolicy: None (GT data)\n"
         
-        # Grid 통계 및 객체 타입
-        if grid is not None:
-            unique_values, counts = np.unique(grid, return_counts=True)
-            step_text += f"\nGrid Statistics:\n"
+        # Grid 통계 - 통합된 정보 표시
+        if obstacles_grid is not None:
+            step_text += f"\n[Obstacles/Static Layer]:\n"
+            unique_values, counts = np.unique(obstacles_grid, return_counts=True)
             for val, count in zip(unique_values, counts):
                 if val != 0:  # 0이 아닌 값만 표시
                     name, _ = get_grid_value_info(val)
                     step_text += f"  {name} ({val}): {count} cells\n"
+        
+        # Class ID 통계
+        if class_id_grid is not None:
+            step_text += f"\n[Class ID Layer]:\n"
+            unique_class_ids, counts = np.unique(class_id_grid, return_counts=True)
+            # 주요 클래스만 표시 (너무 많으면 상위 10개만)
+            sorted_indices = np.argsort(counts)[::-1]
+            shown_count = 0
+            for idx in sorted_indices:
+                ground_class_id = unique_class_ids[idx]
+                count = counts[idx]
+                if shown_count >= 10 and count < 100:  # 10개 이상 표시했고 카운트가 작으면 중단
+                    remaining = len(sorted_indices) - shown_count
+                    if remaining > 0:
+                        step_text += f"  ... and {remaining} more classes\n"
+                    break
+                
+                if ground_class_id == 0:
+                    if count > 1000:  # 배경이 너무 많으면 간략히
+                        step_text += f"  Background: {count} cells\n"
+                elif 0 < ground_class_id < 100:
+                    # LDM semantic class
+                    name = get_ldm_segmentation_name(int(ground_class_id))
+                    step_text += f"  {name}: {count} cells\n"
+                else:
+                    # Object class
+                    name = get_object_name(int(ground_class_id))
+                    step_text += f"  {name}: {count} cells\n"
+                shown_count += 1
         
         # 추가 정보 표시 (state가 dict인 경우)
         if self.current_step < len(episode.states) and isinstance(episode.states[self.current_step], dict):
@@ -357,9 +803,6 @@ class EpisodeInteractiveVisualizer:
                 ego_x, ego_y = state['ego_pos']
                 step_text += f"\nEgo Position: ({ego_x:.2f}, {ego_y:.2f})\n"
             
-            # 객체 수
-            if 'objects' in state and state['objects']:
-                step_text += f"Objects: {len(state['objects'])} detected\n"
             
             # 방향 정보
             if 'near_direction' in state and state['near_direction']:
@@ -368,14 +811,24 @@ class EpisodeInteractiveVisualizer:
                 step_text += f"Dest Direction: {state['destination_direction']}\n"
             
             # Static Environment 정보
-            if 'static_environment' in state and state['static_environment']:
+            if 'static_environment' in state and state['static_environment'] is not None:
                 static_env = state['static_environment']
-                step_text += f"\nStatic Environment:\n"
-                for env_type, grid in static_env.items():
-                    if isinstance(grid, np.ndarray):
-                        count = np.sum(grid > 0)
-                        if count > 0:
-                            step_text += f"  {env_type}: {count} cells\n"
+                if hasattr(static_env, 'numpy'):
+                    static_env = static_env.numpy()
+                
+                if isinstance(static_env, np.ndarray):
+                    # 2D array인 경우
+                    cliff_count = np.sum(static_env == GRID_VALUE_CLIFF)
+                    static_obs_count = np.sum(static_env == GRID_VALUE_STATIC_OBSTACLE)
+                    missing_count = np.sum(static_env == GRID_VALUE_MISSING_POINTS)
+                    
+                    step_text += f"\nStatic Environment:\n"
+                    if cliff_count > 0:
+                        step_text += f"  Cliff: {cliff_count} cells\n"
+                    if static_obs_count > 0:
+                        step_text += f"  Static Obstacles: {static_obs_count} cells\n"
+                    if missing_count > 0:
+                        step_text += f"  Missing Points: {missing_count} cells\n"
         
         self.artists['step_text'].set_text(step_text)
         
@@ -407,9 +860,15 @@ class EpisodeInteractiveVisualizer:
         
         # ===== 5. 제목 업데이트 =====
         status = "[Playing]" if self.playing else "[Paused]"
+        # 채널 가시성 상태 표시
+        visibility_status = f"Ch0: {'ON' if self.channel_visibility['obstacles'] else 'OFF'}, " \
+                           f"Ch1: {'ON' if self.channel_visibility['static_environment'] else 'OFF'}, " \
+                           f"Ch2: {'ON' if self.channel_visibility['ground_class_id'] else 'OFF'}, " \
+                           f"Ego: {'ON' if self.channel_visibility['ego'] else 'OFF'}"
+        
         self.fig.suptitle(
-            f'MuZero Episode Visualization {status}\n'
-            f'(Space: Play/Pause, ←/→: Step, ↑/↓: Episode, ESC/Q: Quit)',
+            f'MuZero Episode Visualization {status} - {visibility_status}\n'
+            f'(Space: Play/Pause, ←/→: Step, ↑/↓: Episode, 1/2/3/4: Toggle Channels/Ego, ESC/Q: Quit)',
             fontsize=14
         )
     
@@ -433,8 +892,16 @@ class EpisodeInteractiveVisualizer:
         self.current_episode = start_episode
         self.current_step = start_step
         
-        # Figure 생성
-        self.fig, (self.ax_grid, self.ax_info) = plt.subplots(1, 2, figsize=(16, 8))
+        # Figure 생성 - 토글 버튼을 위한 공간 추가
+        self.fig = plt.figure(figsize=(22, 10))
+        gs = self.fig.add_gridspec(1, 3, width_ratios=[1, 1, 0.15])
+        
+        self.ax_grid = self.fig.add_subplot(gs[0, 0])
+        self.ax_info = self.fig.add_subplot(gs[0, 1])
+        self.ax_toggle = self.fig.add_subplot(gs[0, 2])
+        
+        # 토글 버튼 생성
+        self.setup_toggle_buttons()
         
         # 키보드 이벤트 연결
         self.fig.canvas.mpl_connect('key_press_event', self.on_key)
@@ -475,7 +942,7 @@ def save_episode_frames(episodes: List[Episode], config: MuZeroConfig,
     for ep_idx, episode in enumerate(episodes):
         print(f"\nSaving Episode {ep_idx + 1}...")
         
-        # Episode 전체를 한 그림에 표시
+        # Episode 전체를 한 그림에 표시 - 2행으로 변경 (integrated grid, info)
         num_steps = min(num_frames, len(episode))
         fig, axes = plt.subplots(2, num_steps, figsize=(4*num_steps, 8))
         
@@ -489,52 +956,115 @@ def save_episode_frames(episodes: List[Episode], config: MuZeroConfig,
         step_indices = np.linspace(0, len(episode)-1, num_steps, dtype=int)
         
         for i, step_idx in enumerate(step_indices):
-            # 상단: Grid
+            # 상단: 통합 그리드
             ax_grid = axes[0, i]
+            # 하단: 정보
+            ax_info = axes[1, i]
+            
             state = episode.states[step_idx]
             
-            # state가 dict인 경우 obstacles 추출 (이전 이름 grid도 지원)
+            # state가 dict인 경우 obstacles와 static_environment 병합
             if isinstance(state, dict):
-                obs = state.get('obstacles', state.get('grid'))  # obstacles 우선, 없으면 grid
-            else:
-                obs = state
+                obstacles = state.get('obstacles', state.get('grid'))
+                static_env = state.get('static_environment')
+                ground_class_id = state.get('ground_class_id')  # Channel 2: Class ID
                 
-            if hasattr(obs, 'numpy'):
-                grid = obs.numpy()
+                # numpy로 변환
+                if hasattr(obstacles, 'numpy'):
+                    obstacles_np = obstacles.numpy()
+                else:
+                    obstacles_np = obstacles
+                    
+                if len(obstacles_np.shape) == 3:
+                    obstacles_np = obstacles_np[0]
+                
+                # static_environment 처리
+                static_env_np = None
+                if static_env is not None and not isinstance(static_env, dict):
+                    if hasattr(static_env, 'numpy'):
+                        static_env_np = static_env.numpy()
+                    else:
+                        static_env_np = static_env
+                        
+                    if len(static_env_np.shape) == 3:
+                        static_env_np = static_env_np[0]
+                
+                # ground_class_id 처리
+                class_id_np = None
+                if ground_class_id is not None and not isinstance(ground_class_id, dict):
+                    if hasattr(ground_class_id, 'numpy'):
+                        class_id_np = ground_class_id.numpy()
+                    else:
+                        class_id_np = ground_class_id
+                    if len(class_id_np.shape) == 3:
+                        class_id_np = class_id_np[0]
             else:
-                grid = obs
-            if len(grid.shape) == 3:
-                grid = grid[0]
+                # 기존 tensor 형태 - 3채널 observation
+                if hasattr(state, 'numpy'):
+                    obs_full = state.numpy()
+                else:
+                    obs_full = state
+                
+                # 3채널 데이터 처리
+                if len(obs_full.shape) == 3 and obs_full.shape[0] >= 3:
+                    # Channel 0: obstacles, Channel 1: static_env, Channel 2: ground_class_id
+                    obstacles_np = obs_full[0]
+                    static_env_np = obs_full[1]
+                    class_id_np = obs_full[2]
+                else:
+                    # 1채널만 있는 경우
+                    obstacles_np = obs_full[0] if len(obs_full.shape) == 3 else obs_full
+                    static_env_np = None
+                    class_id_np = None
             
-            im = ax_grid.imshow(grid, cmap='hot', origin='lower', vmin=0, vmax=1)
-            ax_grid.set_title(f'Step {step_idx}')
+            # 통합 그리드 생성 - 각 채널을 개별적으로 전달
+            visualizer = EpisodeInteractiveVisualizer([], config, 0, False)
+            # 모든 채널을 표시하도록 설정
+            visualizer.channel_visibility = {'obstacles': True, 'static_environment': True, 'ground_class_id': True}
+            integrated_rgb = visualizer._create_integrated_grid(obstacles_np, static_env_np, class_id_np)
+            
+            # 통합 그리드 시각화
+            ax_grid.imshow(integrated_rgb, origin='lower')
+            ax_grid.set_title(f'Step {step_idx}: Integrated Grid')
             ax_grid.set_xlabel('X')
             ax_grid.set_ylabel('Y')
             
             # 색상 범례 추가
-            from matplotlib.cm import hot
-            legend_elements = []
-            for value in [GRID_VALUE_EMPTY, GRID_VALUE_PEDESTRIAN, GRID_VALUE_OTHER_OBJECT,
-                          GRID_VALUE_VEHICLE, GRID_VALUE_EGO]:
-                name, _ = get_grid_value_info(value)
-                color = hot(value)
-                legend_elements.append(
-                    patches.Patch(color=color, label=f'{name} ({value})')
-                )
-            ax_grid.legend(handles=legend_elements, loc='upper right', fontsize=6)
+            if i == 0 and hasattr(visualizer, '_legend_info'):
+                legend_elements = []
+                for color, label, value in visualizer._legend_info:
+                    legend_elements.append(
+                        patches.Patch(color=color, label=f'{label} ({value})')
+                    )
+                ax_grid.legend(handles=legend_elements, loc='upper right', fontsize=6)
             
-            # Episode 데이터에 이미 ego 위치(GRID_VALUE_EGO)가 포함되어 있음
-            # grid에서 값이 GRID_VALUE_EGO인 위치가 ego vehicle
-            ego_positions = np.where(grid == GRID_VALUE_EGO)
-            if len(ego_positions[0]) > 0:
-                ego_row, ego_col = ego_positions[0][0], ego_positions[1][0]
-                ax_grid.plot(ego_col, ego_row, 'g*', markersize=15, label='Ego')
-                # 그리드 중심점 표시
-                ax_grid.axhline(y=ego_row, color='green', alpha=0.3, linestyle='--')
-                ax_grid.axvline(x=ego_col, color='green', alpha=0.3, linestyle='--')
+            # Ego 위치 표시 (Grid가 아닌 별도 표시)
+            if step_idx == 0:
+                # 첫 프레임에서는 중앙
+                ego_col, ego_row = config.observation_shape[2] // 2, config.observation_shape[1] // 2
+            else:
+                # 이후 프레임에서는 expert_ego_pos 사용
+                if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
+                    expert_pos = episode.expert_ego_pos[step_idx]
+                    if expert_pos is not None and isinstance(expert_pos, tuple):
+                        ego_row, ego_col = expert_pos
+                    else:
+                        ego_col, ego_row = config.observation_shape[2] // 2, config.observation_shape[1] // 2
+                else:
+                    ego_col, ego_row = config.observation_shape[2] // 2, config.observation_shape[1] // 2
+            
+            ax_grid.plot(ego_col, ego_row, 'g*', markersize=8, label='Ego', zorder=100)
+            # 그리드 중심점 표시
+            ax_grid.axhline(y=ego_row, color='green', alpha=0.3, linestyle='--')
+            ax_grid.axvline(x=ego_col, color='green', alpha=0.3, linestyle='--')
+            
+            # 그리드 선
+            for j in range(0, obstacles_np.shape[0], 10):
+                ax_grid.axhline(y=j, color='gray', alpha=0.3, linewidth=0.5)
+            for j in range(0, obstacles_np.shape[1], 10):
+                ax_grid.axvline(x=j, color='gray', alpha=0.3, linewidth=0.5)
             
             # 하단: 정보
-            ax_info = axes[1, i]
             ax_info.axis('off')
             
             info_text = f"Step: {step_idx}\n"
@@ -581,10 +1111,14 @@ def save_episode_frames(episodes: List[Episode], config: MuZeroConfig,
 
 def main():
     parser = argparse.ArgumentParser(description='MuZero Episode 시각화')
+    
+    # MuZero 설정 로드하여 기본값 설정
+    config = MuZeroConfig()
+    
     parser.add_argument('--num-episodes', type=int, default=5,
                        help='로드할 Episode 수 (기본값: 5)')
-    parser.add_argument('--episode-length', type=int, default=50,
-                       help='Episode 길이 (기본값: 50)')
+    parser.add_argument('--episode-length', type=int, default=config.max_episode_length,
+                       help=f'Episode 길이 (기본값: {config.max_episode_length})')
     parser.add_argument('--overlap', type=int, default=25,
                        help='Episode 간 겹침 (기본값: 25)')
     parser.add_argument('--interval', type=int, default=200,
@@ -601,9 +1135,6 @@ def main():
                        help='Episode당 저장할 프레임 수')
     
     args = parser.parse_args()
-    
-    # MuZero 설정 로드
-    config = MuZeroConfig()
     
     # 데이터 경로 오버라이드
     if args.data_path:
