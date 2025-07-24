@@ -805,10 +805,10 @@ class EpisodeInteractiveVisualizer:
             
             
             # 방향 정보
-            if 'near_direction' in state and state['near_direction']:
-                step_text += f"Near Direction: {state['near_direction']}\n"
-            if 'destination_direction' in state and state['destination_direction']:
-                step_text += f"Dest Direction: {state['destination_direction']}\n"
+            if 'near_destination_direction' in state and state['near_destination_direction']:
+                step_text += f"Near Direction: {state['near_destination_direction']}\n"
+            if 'final_destination_direction' in state and state['final_destination_direction']:
+                step_text += f"Dest Direction: {state['final_destination_direction']}\n"
             
             # Static Environment 정보
             if 'static_environment' in state and state['static_environment'] is not None:

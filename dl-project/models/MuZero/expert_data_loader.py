@@ -97,7 +97,7 @@ class ExpertDataLoader:
             ego_info = self.parser.parse_ego_info(frame_data)
             objects = self.parser.parse_objects(frame_data)
             ldm_points = self.parser.parse_ldm_points(frame_data)  # LDM 데이터 파싱
-            near_direction, destination_direction = self.parser.get_direction_vectors(frame_data)
+            near_destination_direction, final_destination_direction = self.parser.get_direction_vectors(frame_data)
             
             if not ego_info:
                 break
@@ -107,7 +107,7 @@ class ExpertDataLoader:
                 self.episode_start_ego = ego_info
             
             observation = self.obs_builder.build_observation(
-                ego_info, objects, ldm_points, near_direction, destination_direction,
+                ego_info, objects, ldm_points, near_destination_direction, final_destination_direction,
                 episode_start_ego=self.episode_start_ego
             )
             
@@ -116,11 +116,11 @@ class ExpertDataLoader:
             vectors = observation['vectors']  # 방향 벡터 [near_x, near_y, dest_x, dest_y]
             
             # 방향 벡터 파싱
-            parsed_near_direction = None
+            parsed_near_destination_direction = None
             parsed_dest_direction = None
             if vectors is not None and len(vectors) == 4:
                 if not (vectors[0] == 0 and vectors[1] == 0):  # near direction이 유효한 경우
-                    parsed_near_direction = {'x': float(vectors[0]), 'y': float(vectors[1])}
+                    parsed_near_destination_direction = {'x': float(vectors[0]), 'y': float(vectors[1])}
                 if not (vectors[2] == 0 and vectors[3] == 0):  # destination direction이 유효한 경우
                     parsed_dest_direction = {'x': float(vectors[2]), 'y': float(vectors[3])}
             
@@ -129,8 +129,8 @@ class ExpertDataLoader:
                 'obstacles': grid[0],  # Channel 0: 동적 장애물 (/obstacles_tracking_msg, 현재는 동적/정적 섞여있음. 정적은 ldm_msg 의 static 을 의미하는게 아님.)
                 'static_environment': grid[1],  # Channel 1: 정적 환경 (/ldm_msg 의 Cliff, Static Obstacles, Missing Points)
                 'ground_class_id': grid[2],  # Channel 2: 지면 semantic class ID (/ldm_msg 의 Semantic Segmentation Class ID)
-                'near_direction': parsed_near_direction,  # 근거리 방향 (build_observation에서 계산된 값)
-                'destination_direction': parsed_dest_direction,  # 목적지 방향 (build_observation에서 계산된 값)
+                'near_destination_direction': parsed_near_destination_direction,  # 근거리 방향 (build_observation에서 계산된 값)
+                'final_destination_direction': parsed_dest_direction,  # 목적지 방향 (build_observation에서 계산된 값)
                 'ego_pos': (ego_info.x, ego_info.y)  # 자차 위치 (전역좌표)
             }
             
@@ -141,10 +141,10 @@ class ExpertDataLoader:
             #     print(f"Ego info: x={ego_info.x:.2f}, y={ego_info.y:.2f}, yaw={ego_info.yaw:.2f}")
             #     print(f"Objects: {len(objects)}개")
             #     print(f"Trajectory points: {len(trajectory)}개")
-            #     if near_direction:
-            #         print(f"Near direction: x={near_direction.get('x', 0):.2f}, y={near_direction.get('y', 0):.2f}")
-            #     if destination_direction:
-            #         print(f"Destination direction: x={destination_direction.get('x', 0):.2f}, y={destination_direction.get('y', 0):.2f}")
+            #     if near_destination_direction:
+            #         print(f"Near direction: x={near_destination_direction.get('x', 0):.2f}, y={near_destination_direction.get('y', 0):.2f}")
+            #     if final_destination_direction:
+            #         print(f"Destination direction: x={final_destination_direction.get('x', 0):.2f}, y={final_destination_direction.get('y', 0):.2f}")
             #     
             #     # Observation 내용 확인
             #     decoded = self.obs_builder.decode_observation(observation)

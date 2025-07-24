@@ -192,11 +192,11 @@
     }
   },
   "extracted_features": {
-    "near_direction_vector": {
+    "near_destination_direction_vector": {
       "description": "현재 위치에서 K미터 앞 웨이포인트로의 방향 단위벡터",
       "k_meters": "20.0 (기본값)"
     },
-    "destination_direction_vector": {
+    "final_destination_direction_vector": {
       "description": "현재 위치에서 최종 목적지로의 방향 단위벡터"
     },
     "_linear_vel": {

@@ -78,8 +78,8 @@ class DrivingEnvironment(BaseEnvironment):
         objects = []
         ldm_points = []
         trajectory = []
-        near_direction = None
-        destination_direction = None
+        near_destination_direction = None
+        final_destination_direction = None
         
         if hasattr(self.observation_provider, 'get_current_frame_data'):
             frame_data = self.observation_provider.get_current_frame_data()
@@ -88,7 +88,7 @@ class DrivingEnvironment(BaseEnvironment):
                 objects = self.observation_provider.parser.parse_objects(frame_data)
                 ldm_points = self.observation_provider.parser.parse_ldm_points(frame_data)
                 trajectory = self.observation_provider.parser.parse_trajectory(frame_data)
-                near_direction, destination_direction = self.observation_provider.parser.get_direction_vectors(frame_data)
+                near_destination_direction, final_destination_direction = self.observation_provider.parser.get_direction_vectors(frame_data)
                 
                 if ego_info:
                     self.ego_position = np.array([ego_info.x, ego_info.y])
@@ -117,8 +117,8 @@ class DrivingEnvironment(BaseEnvironment):
             'obstacles': observation_tensor,  # grid를 obstacles로 이름 변경
             'ldm': ldm_points,
             'objects': objects,
-            'near_direction': near_direction,
-            'destination_direction': destination_direction,
+            'near_destination_direction': near_destination_direction,
+            'final_destination_direction': final_destination_direction,
             'ego_pos': (self.ego_position[0], self.ego_position[1]) if self.ego_position is not None else None
         }
         
@@ -142,8 +142,8 @@ class DrivingEnvironment(BaseEnvironment):
         objects = []
         ldm_points = []
         trajectory = []
-        near_direction = None
-        destination_direction = None
+        near_destination_direction = None
+        final_destination_direction = None
         
         if hasattr(self.observation_provider, 'get_current_frame_data'):
             frame_data = self.observation_provider.get_current_frame_data()
@@ -152,7 +152,7 @@ class DrivingEnvironment(BaseEnvironment):
                 objects = self.observation_provider.parser.parse_objects(frame_data)
                 ldm_points = self.observation_provider.parser.parse_ldm_points(frame_data)
                 trajectory = self.observation_provider.parser.parse_trajectory(frame_data)
-                near_direction, destination_direction = self.observation_provider.parser.get_direction_vectors(frame_data)
+                near_destination_direction, final_destination_direction = self.observation_provider.parser.get_direction_vectors(frame_data)
         
         # dict에서 grid를 torch tensor로 변환
         observation_np = observation_dict['grid']
@@ -188,8 +188,8 @@ class DrivingEnvironment(BaseEnvironment):
             'obstacles': observation_tensor,  # grid를 obstacles로 이름 변경
             'ldm': ldm_points,
             'objects': objects,
-            'near_direction': near_direction,
-            'destination_direction': destination_direction,
+            'near_destination_direction': near_destination_direction,
+            'final_destination_direction': final_destination_direction,
             'ego_pos': (self.ego_position[0], self.ego_position[1]) if self.ego_position is not None else None
         }
         

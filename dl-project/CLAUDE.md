@@ -14,9 +14,11 @@ The Ego Agent is Mobile Robot (Simply, think of it like Humanoid Robots)
 프로그램을 실행하기 전에 Conda 환경을 사용해야해. 환경 활성화 방법은 커맨드라인에 conda_init 입력(alias 등록되어있어)하여 conda 환경 불러온 후, conda activate pytorch_2_2 입력하여 설정 가능해
 
 작업 이후에는 항상 검증을해서 정상적인 동작이 가능한 상태인지 직접 변경된 코드를 실행시켜서 확인해야해
-동작 가능 상태태이고 아키텍처가 변경된 경우라면, CLAUDE.md 에 변경된 아키텍처들을 업데이트해줘. 업데이트 할 때 오늘의 날짜(yyyy-mm-dd)를 서버시간을 기준으로 기입해줘야해.
+동작 가능 상태태이고 아키텍처가 변경된 경우라면, CLAUDE.md 에 변경된 아키텍처들을 업데이트해줘. 업데이트 할 때 오늘의 날짜(yyyy-mm-dd)를 서버시간을 기준으로 기입해줘야해. 서버시간으로 묶어 기록 이후에, 전체 내용을 요약하는 설명 부분에도 변경점을 잘 정리해서 반영해야해.
 
 visualize_muzero_episode.py 의 경우, Episode 의 정보를 시각화하는 프로그램으로, 시각화적인 표현 외에에 다른 정보들은 절대 임의로 가공하면 안돼.
+
+데이터를 파싱하는 인덱싱 정보들은 rosseta.py 에서 가져와야해. 없다면 추가 방안을 모색해서 추가 여부를 사용자에게 물어봐.
 
 <!-- ### Environment Setup
 ```bash
@@ -67,11 +69,21 @@ README.md 파일 내 기록
 tensorboard --logdir models/MuZero/results
 ```
 
-## Architecture Overview
+## Architecture Overview (Updated 2025-07-24)
 
 ### Training/Evaluation Data Parsing
 /home/chp/ai_ws/AD/dl-project/models/MuZero/data_parser.py 를 통해 학습할 데이터들을 GT 인 Json 으로부터 가져온다.
 JSON GT 는 /home/chp/ai_ws/AD/dl-project/data/db3_parser/db3 의 db3 로부터 파싱되며, /home/chp/ai_ws/AD/dl-project/data/db3_parser/db3_extractor.py 를 통해 파싱된다.
+모든 데이터 정의(class_id, 색상, grid values)는 /home/chp/ai_ws/AD/dl-project/data/db3_parser/rosetta.py 에 중앙 집중식으로 관리된다.
+
+### Training Data Flow (GT + MCTS)
+1. **GT Episode 생성**: `ExpertDataLoader`가 JSON에서 observation과 expert_ego_pos 추출
+2. **MCTS Enrichment**: `SelfPlayManager.enrich_episodes_with_mcts()`로 각 observation에 대해 MCTS 실행
+   - policy: MCTS가 계산한 action 확률 분포
+   - value: MCTS가 예측한 상태 가치
+   - reward: expert 이동 거리 기반 계산
+3. **통합 Episode**: GT 정보(observation, expert_ego_pos) + MCTS 결과(policy, value, reward) 모두 포함
+4. **학습**: Replay buffer에서 샘플링하여 네트워크 학습
 
 ### Data Processing Pipeline
 The `data/db3_parser/` module extracts data from ROS2 bag files:
@@ -92,6 +104,7 @@ The `models/MuZero/` implements the MuZero algorithm for autonomous driving:
   - `expert_data_loader.py`: Converts GT JSON data to training episodes (used when observation_provider_type="gt")
   - `observation_provider.py`: Interface for different data sources (GT/Mock/ROS2) - only provides observations
   - `data_parser.py`: Common JSON parsing utilities for GT data + shared color/grid mapping functions
+  - `rosetta.py`: Centralized data definitions (class IDs, colors, grid values) - located in `data/db3_parser/`
 - **Results**: Saved in `models/MuZero/results/` with timestamps
 
 ### SSR Models (Templates)
@@ -103,9 +116,12 @@ The `models/SSR/` contains template implementations for Structured State Represe
 2. **Training Data**: 
    - Self-play: Generated through MCTS simulations
    - Expert data: Loaded from GT JSON when using observation_provider_type="gt"
-3. **Observation Shape**: Configured as (1, 99, 99) representing the driving environment state (channel, height, width)
+3. **Observation Shape**: Configured as (3, 99, 99) representing the driving environment state (channel, height, width)
    - Grid size: 99x99 cells (19.8m x 19.8m area with 0.2m per cell)
-   - Ego is always at grid center (49, 49) in the first step of each episode
+   - Ego position managed separately via state_dict['ego_pos'], not displayed in grid
+   - Channel 0: Dynamic objects from /obstacles_tracking_msg (pedestrians, vehicles)
+   - Channel 1: Static environment from /ldm_msg (cliff, static obstacles, missing points)
+   - Channel 2: Ground semantic class_id from /ldm_msg (segmentation information)
 4. **Time Matching**: 
    - Data extraction is now based on Ego (odomgyro) timestamps
    - Uses `time_matching_threshold_sec` (50ms) for closest match within range
@@ -117,6 +133,88 @@ The `models/SSR/` contains template implementations for Structured State Represe
 6. **Value vs Reward**: 
    - Reward: Immediate reward for single step
    - Value: Expected sum of future rewards (used for training targets)
+
+## Recent Updates (2025-07-24)
+
+### Ego 위치 관리 개선 및 시각화 UI 향상
+1. **Ego 위치를 Grid에서 분리**:
+   - Ego는 더 이상 Grid에 표시되지 않음 (GRID_VALUE_EGO 제거)
+   - state_dict의 'ego_pos' 필드로 독립적으로 관리
+   - Channel 2에 Ego class_id = -1 할당 제거
+
+2. **시각화 UI 개선**:
+   - CheckButtons 크기 축소 (좌측 0.15 → 0.10)
+   - X 마커 크기 감소 (markersize 8 → 4)
+   - 별표(expert position) 크기 감소 (markersize 10 → 5)
+   - Ego 위치 토글 추가 (키보드 '4', 버튼 클릭)
+   - Ego 위치 최우선 렌더링으로 항상 가시성 보장
+
+3. **Channel별 독립 시각화**:
+   - Grid 0, 1, 2 채널 독립적으로 토글 가능
+   - 우선순위 기반 렌더링으로 색상 혼재 방지
+   - get_grid_color() 함수에 channel 파라미터 추가
+
+### 메모리 효율성 및 코드 정리
+1. **중복 데이터 제거**:
+   - state_dict에서 불필요한 'objects' 필드 제거
+   - build_observation() 반환값 직접 활용
+   - 'class_id' → 'ground_class_id'로 명칭 변경
+
+2. **LDM 데이터 처리 개선**:
+   - obstacles_type과 무관하게 모든 LDM 포인트의 class_id 저장
+   - Channel 2 legend 추가 (상위 5개 클래스 표시)
+
+### Channel 2 처리 개선 - Object class_id 제거
+1. **Channel 2는 LDM semantic 정보만 저장**:
+   - Channel 0: 동적 객체의 grid value (0.3=Pedestrian, 0.6=Vehicle 등)
+   - Channel 1: 정적 환경의 grid value (0.3=Cliff, 0.6=Static Obstacle 등)
+   - Channel 2: LDM semantic class_id만 저장 (0-25의 segmentation 정보)
+   - Object의 class_id(100=Person, 202=Car 등)는 grid value로 변환되어 Channel 0에만 표시
+
+2. **코드 수정 사항**:
+   - `data_parser.py`: objects 처리 시 Channel 2에 class_id 저장하지 않음
+   - `expert_data_loader.py`: 불필요한 class_id tensor 변환 코드 제거
+
+### 3채널 Observation 구조 및 rosetta.py 도입
+1. **3채널 Observation 구조로 확장**:
+   - observation_shape을 (2, 99, 99)에서 (3, 99, 99)로 확장
+   - Channel 0: 동적 객체 (EMPTY(0.0), PEDESTRIAN(0.3), OTHER_OBJECT(0.4), VEHICLE(0.6))
+   - Channel 1: 정적 환경 (EMPTY(0.0), CLIFF(0.3), STATIC_OBSTACLE(0.6), MISSING_POINTS(0.9))
+   - Channel 2: LDM semantic class_id 정보
+
+2. **rosetta.py 도입 - 데이터 정의 통합 관리**:
+   - rosetta.json을 Python 모듈로 변환하여 `/data/db3_parser/rosetta.py`에 위치
+   - 모든 class_id, 색상, 매핑 정보를 중앙 집중식으로 관리
+   - data_parser.py와 visualize_muzero_episode.py에서 하드코딩 완전 제거
+   - 주요 내용:
+     - 객체 class_id 정의 (100: Person, 202: Car, 205: Truck 등)
+     - LDM segmentation 정의 (0-25: Background, Blocks, Crosswalk, Grass 등)
+     - Grid values 상수 (GRID_VALUE_EMPTY, GRID_VALUE_PEDESTRIAN 등)
+     - 유틸리티 함수 제공 (get_object_name, get_grid_value_info 등)
+
+3. **코드 개선 사항**:
+   - `data_parser.py`: rosetta.py에서 상수 import하여 사용
+   - `visualize_muzero_episode.py`: rosetta.py import 추가, 하드코딩 제거
+   - `expert_data_loader.py`: Channel 2 (class_id) 추출 로직 추가
+
+### ObservationProvider 아키텍처 개선
+1. **책임 분리**:
+   - `ObservationProvider`: 데이터 제공 인터페이스 (get_frame_count, get_frame_data, reset, get_observation)
+   - `ExpertDataLoader`: Episode 생성 및 관리 (시작/종료, 길이 등)
+   - Episode 관리 로직이 ObservationProvider에서 ExpertDataLoader로 이동
+
+2. **GT 학습 플로우 개선**:
+   - GT Episode 생성 → MCTS enrichment → Replay buffer 저장
+   - `SelfPlayManager.enrich_episodes_with_mcts()` 메서드 추가
+   - GT observation에 대해 MCTS를 실행하여 policy와 value 계산
+
+3. **Episode 구조**:
+   - states: observation dictionary (obstacles, objects, ldm 등)
+   - expert_ego_pos: GT에서 추출한 전문가 위치 (그리드 좌표)
+   - actions: self-play action (초기값 0)
+   - policies: MCTS가 계산한 action 확률 분포
+   - values: MCTS가 예측한 상태 가치
+   - rewards: 이동 거리 기반 계산
 
 ## Recent Updates (2025-07-23)
 
@@ -201,6 +299,12 @@ The `models/SSR/` contains template implementations for Structured State Represe
 3. **시각화 개선**:
    - `visualize_muzero_episode.py`: Episode 데이터를 있는 그대로 표현, 색상 범례 추가
    - `visualize_gt_fast.py`: 공용 색상 함수 사용
+
+4. **시각화 개선**:
+   - `visualize_muzero_episode.py`: obstacles와 static_environment 두 레이어를 하나의 99x99 그리드로 병합하여 표시
+   - 동적 장애물이 있는 위치는 동적 장애물 표시, 없는 곳에만 정적 환경 표시
+   - static_environment가 없거나 dict 형태인 경우 obstacles만 사용
+   - Channel 2 (class_id)는 시각화에 사용하지 않음 (의미론적 정보이므로)
 
 ## Development Notes
 

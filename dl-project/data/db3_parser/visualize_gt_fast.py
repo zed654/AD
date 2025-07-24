@@ -245,8 +245,8 @@ class FastInteractiveVisualizer:
                 'ldm_points': ldm_points,
                 'trajectory': trajectory,
                 'timestamp': timestamp,
-                'near_direction': near_dir,
-                'destination_direction': dest_dir,
+                'near_destination_direction': near_dir,
+                'final_destination_direction': dest_dir,
                 
                 # 화면 좌표로 전처리된 데이터
                 # _preprocess_frame_data()는 글로벌 좌표를 화면 좌표로 변환
@@ -724,14 +724,14 @@ class FastInteractiveVisualizer:
             self.artists['dest_arrow'].remove()
             self.artists['dest_arrow'] = None
         
-        near_direction = cache_data.get('near_direction')
-        destination_direction = cache_data.get('destination_direction')
+        near_destination_direction = cache_data.get('near_destination_direction')
+        final_destination_direction = cache_data.get('final_destination_direction')
         
-        if near_direction and destination_direction and ego_info:
+        if near_destination_direction and final_destination_direction and ego_info:
             # 근접 방위벡터
-            if near_direction.get('x') is not None and near_direction.get('y') is not None:
-                dx_near = near_direction['x']
-                dy_near = near_direction['y']
+            if near_destination_direction.get('x') is not None and near_destination_direction.get('y') is not None:
+                dx_near = near_destination_direction['x']
+                dy_near = near_destination_direction['y']
                 
                 cos_yaw = np.cos(-ego_info.yaw)
                 sin_yaw = np.sin(-ego_info.yaw)
@@ -749,9 +749,9 @@ class FastInteractiveVisualizer:
                 self.ax1.add_patch(self.artists['near_arrow'])
             
             # 목적지 방위벡터
-            if destination_direction.get('x') is not None and destination_direction.get('y') is not None:
-                dx_dest = destination_direction['x']
-                dy_dest = destination_direction['y']
+            if final_destination_direction.get('x') is not None and final_destination_direction.get('y') is not None:
+                dx_dest = final_destination_direction['x']
+                dy_dest = final_destination_direction['y']
                 
                 cos_yaw = np.cos(-ego_info.yaw)
                 sin_yaw = np.sin(-ego_info.yaw)

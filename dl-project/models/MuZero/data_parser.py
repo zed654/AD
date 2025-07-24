@@ -223,9 +223,9 @@ class GTDataParser:
     def get_direction_vectors(self, frame_data: Dict) -> Tuple[Optional[Dict], Optional[Dict]]:
         """방향 벡터 정보 추출"""
         input_env = frame_data.get('input_environment', {})
-        near_direction = input_env.get('near_direction_vector')
-        destination_direction = input_env.get('destination_direction_vector')
-        return near_direction, destination_direction
+        near_destination_direction = input_env.get('near_destination_direction_vector')
+        final_destination_direction = input_env.get('final_destination_direction_vector')
+        return near_destination_direction, final_destination_direction
     
     def get_timestamp(self, frame_data: Dict) -> int:
         """프레임의 타임스탬프 추출"""
@@ -331,8 +331,8 @@ class ObservationBuilder:
     
     def build_observation(self, ego_info: EgoInfo, objects: List[ObjectInfo], 
                          ldm_points: List[LDMPoint],
-                         near_direction: Optional[Dict] = None,
-                         destination_direction: Optional[Dict] = None,
+                         near_destination_direction: Optional[Dict] = None,
+                         final_destination_direction: Optional[Dict] = None,
                          episode_start_ego: Optional[EgoInfo] = None) -> Dict[str, np.ndarray]:
         """
         프레임 데이터로부터 MuZero 학습용 observation 생성
@@ -343,7 +343,7 @@ class ObservationBuilder:
         Returns:
             observation_dict: 'grid', 'vectors' 키를 가진 딕셔너리
                 - grid: shape이 config.observation_shape인 numpy 배열 (3채널: 동적객체, 정적환경, 지면class_id)
-                - vectors: 방향 벡터들 (near_direction, destination_direction)
+                - vectors: 방향 벡터들 (near_destination_direction, final_destination_direction)
         """
         # 빈 그리드 초기화 (3채널)
         # Channel 0, 1: float32 (0.0 ~ 1.0 값들)
@@ -409,9 +409,9 @@ class ObservationBuilder:
         # 4. 방향 벡터 정보 준비 (별도 벡터로 저장)
         direction_vectors = np.zeros(4, dtype=np.float32)  # [near_x, near_y, dest_x, dest_y]
         
-        if near_direction:
-            near_x = near_direction.get('x', 0)
-            near_y = near_direction.get('y', 0)
+        if near_destination_direction:
+            near_x = near_destination_direction.get('x', 0)
+            near_y = near_destination_direction.get('y', 0)
             
             # 방향 벡터를 자차 좌표계로 변환 (벡터이므로 회전만 적용)
             cos_yaw = np.cos(-ego_info.yaw)
@@ -425,9 +425,9 @@ class ObservationBuilder:
                 direction_vectors[0] = ego_near_x / length
                 direction_vectors[1] = ego_near_y / length
         
-        if destination_direction:
-            dest_x = destination_direction.get('x', 0)
-            dest_y = destination_direction.get('y', 0)
+        if final_destination_direction:
+            dest_x = final_destination_direction.get('x', 0)
+            dest_y = final_destination_direction.get('y', 0)
             
             # 방향 벡터를 자차 좌표계로 변환
             cos_yaw = np.cos(-ego_info.yaw)
@@ -453,8 +453,8 @@ class ObservationBuilder:
             'objects': [],
             'trajectory': [],
             'obstacles': [],
-            'near_direction': None,
-            'destination_direction': None
+            'near_destination_direction': None,
+            'final_destination_direction': None
         }
         
         # 그리드 정보 디코드
@@ -481,8 +481,8 @@ class ObservationBuilder:
         
         # 방향 벡터 정보 디코드
         if vectors is not None and len(vectors) >= 4:
-            info['near_direction'] = (vectors[0], vectors[1]) if abs(vectors[0]) > 0.01 or abs(vectors[1]) > 0.01 else None
-            info['destination_direction'] = (vectors[2], vectors[3]) if abs(vectors[2]) > 0.01 or abs(vectors[3]) > 0.01 else None
+            info['near_destination_direction'] = (vectors[0], vectors[1]) if abs(vectors[0]) > 0.01 or abs(vectors[1]) > 0.01 else None
+            info['final_destination_direction'] = (vectors[2], vectors[3]) if abs(vectors[2]) > 0.01 or abs(vectors[3]) > 0.01 else None
         
         # GT trajectory 정보 디코드
         if len(trajectory) > 0:

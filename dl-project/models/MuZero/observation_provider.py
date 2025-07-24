@@ -141,7 +141,7 @@ class GTObservationProvider(ObservationProvider):
         objects = self.parser.parse_objects(frame_data)
         ldm_points = []  # 임시로 빈 리스트
         trajectory = self.parser.parse_trajectory(frame_data)
-        near_direction, destination_direction = self.parser.get_direction_vectors(frame_data)
+        near_destination_direction, final_destination_direction = self.parser.get_direction_vectors(frame_data)
         
         # 데이터가 없으면 빈 observation
         if not ego_info:
@@ -152,7 +152,7 @@ class GTObservationProvider(ObservationProvider):
         
         # Observation 생성 (episode 시작 위치 기준)
         observation = self.obs_builder.build_observation(
-            ego_info, objects, ldm_points, trajectory, near_direction, destination_direction,
+            ego_info, objects, ldm_points, trajectory, near_destination_direction, final_destination_direction,
             episode_start_ego=self.episode_start_ego
         )
         

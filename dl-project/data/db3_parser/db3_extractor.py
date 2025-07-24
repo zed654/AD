@@ -215,13 +215,13 @@ class DB3Extractor:
         
         # 근접 방위벡터 (현재 위치에서 K미터 지점으로의 방향)
         k_meter_point = global_waypoints[k_meter_idx]
-        near_direction = self.calculate_direction_vector(current_position, k_meter_point)
+        near_destination_direction = self.calculate_direction_vector(current_position, k_meter_point)
         
         # 목적지 방위벡터 (현재 위치에서 목적지로의 방향)
         destination_point = global_waypoints[-1]
-        destination_direction = self.calculate_direction_vector(current_position, destination_point)
+        final_destination_direction = self.calculate_direction_vector(current_position, destination_point)
         
-        return near_direction, destination_direction
+        return near_destination_direction, final_destination_direction
 
     def parse_topic(self, topic_name, msg_type_str):
         # rosbag2_py를 사용하여 토픽 파싱
@@ -562,18 +562,18 @@ class DB3Extractor:
                     if closest_global_way:
                         # PointCloud2 메시지에서 포인트 추출
                         global_waypoints = self.extract_points_from_pointcloud2(closest_global_way["msg"], max_points=999999)
-                        near_direction, destination_direction = self.extract_waypoint_vectors(
+                        near_destination_direction, final_destination_direction = self.extract_waypoint_vectors(
                             global_waypoints, current_position, k_meters
                         )
                         
                         # 방위벡터 정보를 input_environment에 추가
-                        if near_direction and destination_direction:
-                            input_dict["near_direction_vector"] = near_direction
-                            input_dict["destination_direction_vector"] = destination_direction
+                        if near_destination_direction and final_destination_direction:
+                            input_dict["near_destination_direction_vector"] = near_destination_direction
+                            input_dict["final_destination_direction_vector"] = final_destination_direction
                     else:
                         # global_way가 없으면 기본값 설정
-                        input_dict["near_direction_vector"] = {'x': 0.0, 'y': 0.0}
-                        input_dict["destination_direction_vector"] = {'x': 0.0, 'y': 0.0}
+                        input_dict["near_destination_direction_vector"] = {'x': 0.0, 'y': 0.0}
+                        input_dict["final_destination_direction_vector"] = {'x': 0.0, 'y': 0.0}
                     
                     # ldm_msg 정보를 input_environment에 추가
                     if closest_ldm_msg:
