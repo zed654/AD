@@ -69,7 +69,7 @@ README.md 파일 내 기록
 tensorboard --logdir models/MuZero/results
 ```
 
-## Architecture Overview (Updated 2025-07-24)
+## Architecture Overview (Updated 2025-07-25)
 
 ### Training/Evaluation Data Parsing
 /home/chp/ai_ws/AD/dl-project/models/MuZero/data_parser.py 를 통해 학습할 데이터들을 GT 인 Json 으로부터 가져온다.
@@ -119,6 +119,8 @@ The `models/SSR/` contains template implementations for Structured State Represe
 3. **Observation Shape**: Configured as (3, 99, 99) representing the driving environment state (channel, height, width)
    - Grid size: 99x99 cells (19.8m x 19.8m area with 0.2m per cell)
    - Ego position managed separately via state_dict['ego_pos'], not displayed in grid
+   - **Coordinate system**: 180-degree rotated view (forward=down, right=left) for vehicle perspective
+   - **Direction vectors**: Stored in vehicle coordinate system (converted from global in db3_extractor.py)
    - Channel 0: Dynamic objects from /obstacles_tracking_msg (pedestrians, vehicles)
    - Channel 1: Static environment from /ldm_msg (cliff, static obstacles, missing points)
    - Channel 2: Ground semantic class_id from /ldm_msg (segmentation information)
@@ -133,6 +135,32 @@ The `models/SSR/` contains template implementations for Structured State Represe
 6. **Value vs Reward**: 
    - Reward: Immediate reward for single step
    - Value: Expected sum of future rewards (used for training targets)
+
+## Recent Updates (2025-07-25)
+
+### 좌표계 180도 회전 및 방향 벡터 처리 개선
+1. **좌표 변환 방식 변경**:
+   - 기존: 전방이 위쪽(row 감소), 오른쪽이 오른쪽(col 증가)
+   - 변경: 전방이 아래쪽(row 증가), 오른쪽이 왼쪽(col 감소)
+   - 차량 뒤에서 바라보는 관점으로 180도 회전
+
+2. **방향 벡터 처리 통합**:
+   - `db3_extractor.py`: 전역 좌표계 방향 벡터를 차량 좌표계로 변환하여 JSON 저장
+   - `extract_waypoint_vectors()` 함수에 ego yaw 파라미터 추가 및 변환 로직 구현
+   - `data_parser.py`, `visualize_muzero_episode.py`: 추가 변환 없이 원본 데이터 사용
+   - `expert_data_loader.py`: 방향 벡터를 소수점 둘째 자리까지 반올림하여 저장
+
+3. **수정된 파일**:
+   - `data_parser.py`: grid_row = center + rel_x, grid_col = center - rel_y
+   - `expert_data_loader.py`: 동일한 좌표 변환 적용, 방향 벡터 round(value, 2)
+   - `visualize_muzero_episode.py`: 방향 벡터 표시 수정 (dx = -y*10, dy = x*10)
+   - `db3_extractor.py`: extract_waypoint_vectors에 차량 좌표계 변환 추가
+
+4. **UI/UX 개선**:
+   - Ego 토글(4번)과 방향 벡터 토글(5번) 독립적으로 작동
+   - Step Information 위치 상향 조정 (0.5 → 0.7)
+   - 마우스 좌표 표시 수정 (x=row, y=col)
+   - 채널별 범례 동적 업데이트
 
 ## Recent Updates (2025-07-24)
 

@@ -180,8 +180,8 @@ class DB3Extractor:
         else:
             return 0.0
     
-    def extract_waypoint_vectors(self, global_waypoints, current_position, k_meters=10.0):
-        # 전역경로에서 K미터 지점의 방위벡터와 목적지 방위벡터 추출
+    def extract_waypoint_vectors(self, global_waypoints, current_position, current_yaw, k_meters=10.0):
+        # 전역경로에서 K미터 지점의 방위벡터와 목적지 방위벡터 추출 (차량 좌표계로 변환)
         if not global_waypoints or len(global_waypoints) < 2:
             return None, None
         
@@ -220,6 +220,26 @@ class DB3Extractor:
         # 목적지 방위벡터 (현재 위치에서 목적지로의 방향)
         destination_point = global_waypoints[-1]
         final_destination_direction = self.calculate_direction_vector(current_position, destination_point)
+        
+        # 전역 좌표계 벡터를 차량 좌표계로 변환
+        cos_yaw = math.cos(-current_yaw)
+        sin_yaw = math.sin(-current_yaw)
+        
+        # Near destination 변환
+        if near_destination_direction:
+            global_x = near_destination_direction['x']
+            global_y = near_destination_direction['y']
+            local_x = global_x * cos_yaw - global_y * sin_yaw
+            local_y = global_x * sin_yaw + global_y * cos_yaw
+            near_destination_direction = {'x': local_x, 'y': local_y}
+        
+        # Final destination 변환
+        if final_destination_direction:
+            global_x = final_destination_direction['x']
+            global_y = final_destination_direction['y']
+            local_x = global_x * cos_yaw - global_y * sin_yaw
+            local_y = global_x * sin_yaw + global_y * cos_yaw
+            final_destination_direction = {'x': local_x, 'y': local_y}
         
         return near_destination_direction, final_destination_direction
 
@@ -400,12 +420,17 @@ class DB3Extractor:
                         continue
                 last_sample_time = t_ego
                 
-                # 현재 Ego 위치
+                # 현재 Ego 위치와 방향
                 current_odom = odom
                 current_position = {
                     'x': current_odom["msg"].pose.pose.position.x,
                     'y': current_odom["msg"].pose.pose.position.y
                 }
+                
+                # Ego yaw 계산 (쿼터니언에서 변환)
+                orientation = current_odom["msg"].pose.pose.orientation
+                x, y, z, w = orientation.x, orientation.y, orientation.z, orientation.w
+                current_yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
                 
                 # 미래 trajectory 수집 (현재 시점부터 n_trajectory_sample_time 동안)
                 trajectory_data = []
@@ -563,7 +588,7 @@ class DB3Extractor:
                         # PointCloud2 메시지에서 포인트 추출
                         global_waypoints = self.extract_points_from_pointcloud2(closest_global_way["msg"], max_points=999999)
                         near_destination_direction, final_destination_direction = self.extract_waypoint_vectors(
-                            global_waypoints, current_position, k_meters
+                            global_waypoints, current_position, current_yaw, k_meters
                         )
                         
                         # 방위벡터 정보를 input_environment에 추가

@@ -170,7 +170,8 @@ class EpisodeInteractiveVisualizer:
             'obstacles': True,          # Channel 0: 동적 객체
             'static_environment': True, # Channel 1: 정적 환경
             'ground_class_id': True,    # Channel 2: 지면 class_id
-            'ego': True                 # Ego 위치 표시
+            'ego': True,                # Ego 위치 표시
+            'directions': True          # 방향 벡터 표시
         }
         
         # ===== 7. 전처리 실행 =====
@@ -409,6 +410,13 @@ class EpisodeInteractiveVisualizer:
             self.update_frame()
             if not self.playing:
                 plt.draw()
+        
+        elif event.key == '5':
+            # Toggle Direction vectors
+            self.channel_visibility['directions'] = not self.channel_visibility['directions']
+            self.update_frame()
+            if not self.playing:
+                plt.draw()
                 
         elif event.key == 'escape' or event.key == 'q':
             if self.anim:
@@ -420,11 +428,12 @@ class EpisodeInteractiveVisualizer:
         self.ax_toggle.set_title('Channel Visibility', fontsize=10)
         
         # 토글 버튼 생성
-        labels = ['Dynamic Objects (Ch0)', 'Static Environment (Ch1)', 'Ground Class ID (Ch2)', 'Ego Position']
+        labels = ['Dynamic Objects (Ch0)', 'Static Environment (Ch1)', 'Ground Class ID (Ch2)', 'Ego Position', 'Direction Vectors']
         visibility = [self.channel_visibility['obstacles'], 
                       self.channel_visibility['static_environment'],
                       self.channel_visibility['ground_class_id'],
-                      self.channel_visibility['ego']]
+                      self.channel_visibility['ego'],
+                      self.channel_visibility['directions']]
         
         self.check_buttons = CheckButtons(self.ax_toggle, labels, visibility)
         
@@ -448,6 +457,8 @@ class EpisodeInteractiveVisualizer:
                 self.channel_visibility['ground_class_id'] = not self.channel_visibility['ground_class_id']
             elif 'Ego' in label:
                 self.channel_visibility['ego'] = not self.channel_visibility['ego']
+            elif 'Direction' in label:
+                self.channel_visibility['directions'] = not self.channel_visibility['directions']
             self.update_frame()
         
         self.check_buttons.on_clicked(on_toggle)
@@ -456,9 +467,19 @@ class EpisodeInteractiveVisualizer:
         """그래픽 요소를 초기화합니다."""
         # Grid view 설정
         self.ax_grid.set_aspect('equal')
-        self.ax_grid.set_xlabel('X (cells)')
-        self.ax_grid.set_ylabel('Y (cells)')
-        self.ax_grid.set_title('Integrated Grid View')
+        self.ax_grid.set_xlabel('Column Index (y coordinate)')
+        self.ax_grid.set_ylabel('Row Index (x coordinate)')
+        self.ax_grid.set_title('Ego-Centric Grid View - (0,0) at bottom-left')
+        
+        # 마우스 좌표 표시 형식 커스터마이징
+        def format_coord(x, y):
+            col = int(x + 0.5)
+            row = int(y + 0.5)
+            if 0 <= col < self.grid_cols and 0 <= row < self.grid_rows:
+                return f'x={row}, y={col}'  # row를 x로, col을 y로 표시
+            else:
+                return f'x={row}, y={col}'
+        self.ax_grid.format_coord = format_coord
         
         # 초기 Grid 이미지 - RGB 이미지로 초기화
         empty_rgb = np.ones((self.grid_rows, self.grid_cols, 3))  # 흰색 배경
@@ -470,6 +491,10 @@ class EpisodeInteractiveVisualizer:
         self.artists['ego_marker'] = self.ax_grid.plot(
             [], [], 'g*', markersize=10, label='Ego', zorder=100  # 크기 절반으로, 최상위 레이어
         )[0]
+        
+        # 방향 벡터 화살표 초기화
+        self.artists['near_arrow'] = None
+        self.artists['dest_arrow'] = None
         
         # Grid 선
         for i in range(self.grid_rows + 1):
@@ -488,7 +513,7 @@ class EpisodeInteractiveVisualizer:
         )
         
         self.artists['step_text'] = self.ax_info.text(
-            0.05, 0.5, '', transform=self.ax_info.transAxes,
+            0.05, 0.7, '', transform=self.ax_info.transAxes,
             verticalalignment='top', fontsize=10, family='monospace'
         )
     
@@ -525,7 +550,7 @@ class EpisodeInteractiveVisualizer:
         drawn_mask = np.zeros((obstacles_grid.shape[0], obstacles_grid.shape[1]), dtype=bool)
         
         # 1. Channel 0 (Obstacles) - 가장 높은 우선순위
-        if self.channel_visibility['obstacles']:
+        if hasattr(self, 'channel_visibility') and self.channel_visibility.get('obstacles', True):
             unique_values = np.unique(obstacles_grid)
             for value in unique_values:
                 if value == GRID_VALUE_EMPTY:
@@ -537,7 +562,7 @@ class EpisodeInteractiveVisualizer:
                     drawn_mask |= mask
         
         # 2. Channel 1 (Static Environment) - 중간 우선순위
-        if static_env_grid is not None and self.channel_visibility['static_environment']:
+        if static_env_grid is not None and hasattr(self, 'channel_visibility') and self.channel_visibility.get('static_environment', True):
             unique_values = np.unique(static_env_grid)
             for value in unique_values:
                 if value == GRID_VALUE_EMPTY:
@@ -549,7 +574,7 @@ class EpisodeInteractiveVisualizer:
                     drawn_mask |= mask
         
         # 3. Channel 2 (Ground Class ID) - 가장 낮은 우선순위
-        if class_id_grid is not None and self.channel_visibility['ground_class_id']:
+        if class_id_grid is not None and hasattr(self, 'channel_visibility') and self.channel_visibility.get('ground_class_id', True):
             unique_class_ids = np.unique(class_id_grid)
             for ground_class_id in unique_class_ids:
                 mask = (class_id_grid == ground_class_id) & (~drawn_mask)
@@ -563,8 +588,9 @@ class EpisodeInteractiveVisualizer:
                     drawn_mask |= mask
         
         # 4. Ego 위치 표시 (최우선 순위)
-        if self.channel_visibility['ego'] and ego_pos is not None:
+        if hasattr(self, 'channel_visibility') and self.channel_visibility.get('ego', True) and ego_pos is not None:
             ego_row, ego_col = ego_pos
+            
             if 0 <= ego_row < obstacles_grid.shape[0] and 0 <= ego_col < obstacles_grid.shape[1]:
                 # Ego를 녹색으로 표시
                 rgb_image[ego_row, ego_col] = mcolors.to_rgb('green')
@@ -582,7 +608,7 @@ class EpisodeInteractiveVisualizer:
         self._legend_info = []
         
         # 표시된 채널에 따라 범례 항목 추가
-        if self.channel_visibility['obstacles']:
+        if hasattr(self, 'channel_visibility') and self.channel_visibility.get('obstacles', True):
             # Channel 0의 값들 (Ego 제외)
             for value in [GRID_VALUE_VEHICLE, 
                          GRID_VALUE_OTHER_OBJECT, GRID_VALUE_PEDESTRIAN]:
@@ -590,7 +616,7 @@ class EpisodeInteractiveVisualizer:
                 name, _ = get_grid_value_info(value)
                 self._legend_info.append((color, name, value))
                 
-        if self.channel_visibility['static_environment']:
+        if hasattr(self, 'channel_visibility') and self.channel_visibility.get('static_environment', True):
             # Channel 1의 값들
             for value in [GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, 
                          GRID_VALUE_MISSING_POINTS]:
@@ -598,7 +624,7 @@ class EpisodeInteractiveVisualizer:
                 name, _ = get_grid_value_info(value)
                 self._legend_info.append((color, name, value))
                 
-        if self.channel_visibility['ground_class_id'] and class_id_grid is not None:
+        if hasattr(self, 'channel_visibility') and self.channel_visibility.get('ground_class_id', True) and class_id_grid is not None:
             # Channel 2의 주요 클래스들 (상위 5개만 표시)
             unique_class_ids, counts = np.unique(class_id_grid, return_counts=True)
             # 카운트 순으로 정렬
@@ -627,7 +653,7 @@ class EpisodeInteractiveVisualizer:
                     break
         
         # Ego 범례 추가
-        if self.channel_visibility['ego']:
+        if hasattr(self, 'channel_visibility') and self.channel_visibility.get('ego', True):
             self._legend_info.append(('green', 'Ego', None))
         
         return rgb_image
@@ -684,14 +710,128 @@ class EpisodeInteractiveVisualizer:
             # Ego 마커는 이제 그리드에 직접 그려지므로 별도 업데이트 불필요
             self.artists['ego_marker'].set_data([], [])
             
-            # 첫 번째 Episode의 첫 번째 스텝에서 범례 추가
-            if self.current_episode == 0 and self.current_step == 0 and hasattr(self, '_legend_info'):
-                legend_elements = []
-                for color, label, value in self._legend_info:
-                    legend_elements.append(
-                        patches.Patch(color=color, label=f'{label} ({value})')
+            # 방향 벡터 표시
+            if self.channel_visibility['directions']:
+                # 기존 화살표 제거
+                if self.artists['near_arrow']:
+                    self.artists['near_arrow'].remove()
+                    self.artists['near_arrow'] = None
+                if self.artists['dest_arrow']:
+                    self.artists['dest_arrow'].remove()
+                    self.artists['dest_arrow'] = None
+                
+                # 현재 상태에서 방향 벡터 가져오기
+                state = episode.states[self.current_step]
+                near_dir = state.get('near_destination_direction')
+                dest_dir = state.get('final_destination_direction')
+                
+                # Ego 위치 계산 (방향 벡터용 - Ego 가시성과 무관)
+                # 첫 번째 프레임에서는 ego가 중앙(49, 49)에 위치
+                if self.current_step == 0:
+                    arrow_ego_pos = (self.grid_rows // 2, self.grid_cols // 2)
+                else:
+                    # 이후 프레임에서는 expert_ego_pos 사용
+                    if hasattr(episode, 'expert_ego_pos') and self.current_step < len(episode.expert_ego_pos):
+                        expert_pos = episode.expert_ego_pos[self.current_step]
+                        if expert_pos is not None and isinstance(expert_pos, tuple):
+                            arrow_ego_pos = expert_pos  # (row, col) 형태
+                        else:
+                            arrow_ego_pos = (self.grid_rows // 2, self.grid_cols // 2)
+                    else:
+                        arrow_ego_pos = (self.grid_rows // 2, self.grid_cols // 2)
+                
+                ego_row, ego_col = arrow_ego_pos
+                
+                # Near destination 화살표
+                if near_dir and near_dir.get('x') is not None and near_dir.get('y') is not None:
+                    # 방향 벡터는 이미 차량 좌표계 기준
+                    # x는 전방(양수가 앞), y는 좌우(양수가 오른쪽)
+                    # 180도 회전 좌표계: row는 클수록 전방, col은 작을수록 오른쪽
+                    dx = -near_dir['y'] * 10  # y는 좌우 (col 방향, 180도 회전이므로 부호 반전)
+                    dy = near_dir['x'] * 10  # x는 전방 (row 방향, 180도 회전이므로 양수)
+                    
+                    self.artists['near_arrow'] = self.ax_grid.arrow(
+                        ego_col, ego_row, dx, dy,
+                        head_width=2, head_length=1, fc='blue', ec='blue',
+                        alpha=0.7, zorder=90, label='Near Destination'
                     )
+                
+                # Final destination 화살표
+                if dest_dir and dest_dir.get('x') is not None and dest_dir.get('y') is not None:
+                    # 방향 벡터는 이미 차량 좌표계 기준
+                    # x는 전방(양수가 앞), y는 좌우(양수가 오른쪽)
+                    # 180도 회전 좌표계: row는 클수록 전방, col은 작을수록 오른쪽
+                    dx = -dest_dir['y'] * 15  # y는 좌우 (col 방향, 180도 회전이므로 부호 반전), 더 길게
+                    dy = dest_dir['x'] * 15  # x는 전방 (row 방향, 180도 회전이므로 양수)
+                    
+                    self.artists['dest_arrow'] = self.ax_grid.arrow(
+                        ego_col, ego_row, dx, dy,
+                        head_width=2, head_length=1, fc='red', ec='red',
+                        alpha=0.5, zorder=89, label='Final Destination'
+                    )
+            else:
+                # 방향 벡터 숨기기
+                if self.artists['near_arrow']:
+                    self.artists['near_arrow'].remove()
+                    self.artists['near_arrow'] = None
+                if self.artists['dest_arrow']:
+                    self.artists['dest_arrow'].remove()
+                    self.artists['dest_arrow'] = None
+            
+            # 범례 업데이트 (채널 가시성에 따라)
+            legend_elements = []
+            
+            # Channel 0: 동적 객체
+            if self.channel_visibility.get('obstacles', True):
+                for value in [GRID_VALUE_VEHICLE, GRID_VALUE_OTHER_OBJECT, GRID_VALUE_PEDESTRIAN]:
+                    color = get_grid_color(value, channel=0)
+                    name, _ = get_grid_value_info(value)
+                    legend_elements.append(patches.Patch(color=color, label=f'{name} ({value})'))
+            
+            # Channel 1: 정적 환경
+            if self.channel_visibility.get('static_environment', True):
+                for value in [GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, GRID_VALUE_MISSING_POINTS]:
+                    color = get_grid_color(value, channel=1)
+                    name, _ = get_grid_value_info(value)
+                    legend_elements.append(patches.Patch(color=color, label=f'{name} ({value})'))
+            
+            # Channel 2: 지면 클래스 (상위 5개만)
+            if self.channel_visibility.get('ground_class_id', True) and class_id_grid is not None:
+                unique_class_ids, counts = np.unique(class_id_grid, return_counts=True)
+                sorted_indices = np.argsort(counts)[::-1]
+                shown_count = 0
+                for idx in sorted_indices[:5]:  # 최대 5개
+                    ground_class_id = unique_class_ids[idx]
+                    if ground_class_id == 0 or counts[idx] < 10:  # Background 또는 너무 적은 픽셀 제외
+                        continue
+                    color_str = get_grid_color(ground_class_id, channel=2)
+                    name = get_ldm_segmentation_name(int(ground_class_id))
+                    legend_elements.append(patches.Patch(color=color_str, label=f'{name}'))
+                    shown_count += 1
+                    if shown_count >= 5:
+                        break
+            
+            # Ego
+            if self.channel_visibility.get('ego', True):
+                legend_elements.append(patches.Patch(color='green', label='Ego'))
+            
+            # 방향 벡터
+            if self.channel_visibility.get('directions', True):
+                state = episode.states[self.current_step]
+                near_dir = state.get('near_destination_direction')
+                dest_dir = state.get('final_destination_direction')
+                if near_dir:
+                    legend_elements.append(patches.Patch(color='blue', label='Near Destination'))
+                if dest_dir:
+                    legend_elements.append(patches.Patch(color='red', label='Final Destination'))
+            
+            # 범례 업데이트
+            if legend_elements:
                 self.ax_grid.legend(handles=legend_elements, loc='upper right', fontsize=8)
+            else:
+                # 범례가 없으면 기존 범례 제거
+                if self.ax_grid.get_legend():
+                    self.ax_grid.get_legend().remove()
         
         # ===== 2. Episode 정보 업데이트 =====
         info_text = f"Episode {self.current_episode + 1} / {self.total_episodes}\n"
@@ -864,11 +1004,12 @@ class EpisodeInteractiveVisualizer:
         visibility_status = f"Ch0: {'ON' if self.channel_visibility['obstacles'] else 'OFF'}, " \
                            f"Ch1: {'ON' if self.channel_visibility['static_environment'] else 'OFF'}, " \
                            f"Ch2: {'ON' if self.channel_visibility['ground_class_id'] else 'OFF'}, " \
-                           f"Ego: {'ON' if self.channel_visibility['ego'] else 'OFF'}"
+                           f"Ego: {'ON' if self.channel_visibility['ego'] else 'OFF'}, " \
+                           f"Dir: {'ON' if self.channel_visibility['directions'] else 'OFF'}"
         
         self.fig.suptitle(
             f'MuZero Episode Visualization {status} - {visibility_status}\n'
-            f'(Space: Play/Pause, ←/→: Step, ↑/↓: Episode, 1/2/3/4: Toggle Channels/Ego, ESC/Q: Quit)',
+            f'(Space: Play/Pause, ←/→: Step, ↑/↓: Episode, 1/2/3/4/5: Toggle Channels/Ego/Dir, ESC/Q: Quit)',
             fontsize=14
         )
     
@@ -1019,15 +1160,31 @@ def save_episode_frames(episodes: List[Episode], config: MuZeroConfig,
             
             # 통합 그리드 생성 - 각 채널을 개별적으로 전달
             visualizer = EpisodeInteractiveVisualizer([], config, 0, False)
-            # 모든 채널을 표시하도록 설정
-            visualizer.channel_visibility = {'obstacles': True, 'static_environment': True, 'ground_class_id': True}
-            integrated_rgb = visualizer._create_integrated_grid(obstacles_np, static_env_np, class_id_np)
+            # 모든 채널을 표시하도록 설정 (Ego, Directions 포함)
+            visualizer.channel_visibility = {'obstacles': True, 'static_environment': True, 'ground_class_id': True, 'ego': True, 'directions': False}
+            
+            # Ego 위치 계산
+            if step_idx == 0:
+                # 첫 프레임에서는 중앙
+                ego_pos = (config.observation_shape[1] // 2, config.observation_shape[2] // 2)  # (row, col)
+            else:
+                # 이후 프레임에서는 expert_ego_pos 사용
+                if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
+                    expert_pos = episode.expert_ego_pos[step_idx]
+                    if expert_pos is not None and isinstance(expert_pos, tuple):
+                        ego_pos = expert_pos  # (row, col) 형태
+                    else:
+                        ego_pos = (config.observation_shape[1] // 2, config.observation_shape[2] // 2)
+                else:
+                    ego_pos = (config.observation_shape[1] // 2, config.observation_shape[2] // 2)
+            
+            integrated_rgb = visualizer._create_integrated_grid(obstacles_np, static_env_np, class_id_np, ego_pos)
             
             # 통합 그리드 시각화
             ax_grid.imshow(integrated_rgb, origin='lower')
             ax_grid.set_title(f'Step {step_idx}: Integrated Grid')
-            ax_grid.set_xlabel('X')
-            ax_grid.set_ylabel('Y')
+            ax_grid.set_xlabel('Column Index')
+            ax_grid.set_ylabel('Row Index')
             
             # 색상 범례 추가
             if i == 0 and hasattr(visualizer, '_legend_info'):
@@ -1038,25 +1195,11 @@ def save_episode_frames(episodes: List[Episode], config: MuZeroConfig,
                     )
                 ax_grid.legend(handles=legend_elements, loc='upper right', fontsize=6)
             
-            # Ego 위치 표시 (Grid가 아닌 별도 표시)
-            if step_idx == 0:
-                # 첫 프레임에서는 중앙
-                ego_col, ego_row = config.observation_shape[2] // 2, config.observation_shape[1] // 2
-            else:
-                # 이후 프레임에서는 expert_ego_pos 사용
-                if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
-                    expert_pos = episode.expert_ego_pos[step_idx]
-                    if expert_pos is not None and isinstance(expert_pos, tuple):
-                        ego_row, ego_col = expert_pos
-                    else:
-                        ego_col, ego_row = config.observation_shape[2] // 2, config.observation_shape[1] // 2
-                else:
-                    ego_col, ego_row = config.observation_shape[2] // 2, config.observation_shape[1] // 2
-            
-            ax_grid.plot(ego_col, ego_row, 'g*', markersize=8, label='Ego', zorder=100)
-            # 그리드 중심점 표시
-            ax_grid.axhline(y=ego_row, color='green', alpha=0.3, linestyle='--')
-            ax_grid.axvline(x=ego_col, color='green', alpha=0.3, linestyle='--')
+            # Ego 위치는 이미 integrated_rgb에 포함되어 있음
+            # 그리드 중심점 표시 (Episode 시작점)
+            center_row, center_col = config.observation_shape[1] // 2, config.observation_shape[2] // 2
+            ax_grid.axhline(y=center_row, color='gray', alpha=0.3, linestyle='--')
+            ax_grid.axvline(x=center_col, color='gray', alpha=0.3, linestyle='--')
             
             # 그리드 선
             for j in range(0, obstacles_np.shape[0], 10):
@@ -1157,6 +1300,16 @@ def main():
     for i, ep in enumerate(episodes):
         print(f"  Episode {i+1}: {len(ep)} steps, "
               f"total reward: {sum(ep.rewards):.2f}")
+        # 첫 Episode의 expert_ego_pos 디버그
+        if i == 0 and hasattr(ep, 'expert_ego_pos'):
+            print(f"\n[DEBUG] Episode 1 expert_ego_pos in main:")
+            print(f"  Total positions: {len(ep.expert_ego_pos)}")
+            if len(ep.expert_ego_pos) > 0:
+                print(f"  First: {ep.expert_ego_pos[0]}")
+                print(f"  Last: {ep.expert_ego_pos[-1]}")
+                # 처음 3개 출력
+                for j in range(min(3, len(ep.expert_ego_pos))):
+                    print(f"    Step {j}: {ep.expert_ego_pos[j]}")
     
     # 시각화
     if args.save or not GUI_AVAILABLE:

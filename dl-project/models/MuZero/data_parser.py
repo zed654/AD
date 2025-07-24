@@ -366,8 +366,8 @@ class ObservationBuilder:
             rel_x, rel_y = CoordinateTransformer.global_to_ego(
                 obj.global_x, obj.global_y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
             )
-            grid_row = self.ego_grid_row - int(rel_x / self.cell_size)
-            grid_col = self.ego_grid_col + int(rel_y / self.cell_size)
+            grid_row = self.ego_grid_row + int(rel_x / self.cell_size)  # 180도 회전: 전방이 아래쪽
+            grid_col = self.ego_grid_col - int(rel_y / self.cell_size)  # 180도 회전: 오른쪽이 왼쪽
             
             if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
                 grid[0, grid_row, grid_col] = grid_value  # Channel 0: Dynamic objects
@@ -378,8 +378,8 @@ class ObservationBuilder:
                 rel_x, rel_y = CoordinateTransformer.global_to_ego(
                     point_x, point_y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
                 )
-                grid_row = self.ego_grid_row - int(rel_x / self.cell_size)
-                grid_col = self.ego_grid_col + int(rel_y / self.cell_size)
+                grid_row = self.ego_grid_row + int(rel_x / self.cell_size)  # 180도 회전
+                grid_col = self.ego_grid_col - int(rel_y / self.cell_size)  # 180도 회전
                 
                 if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
                     grid[0, grid_row, grid_col] = grid_value  # Channel 0: Dynamic objects
@@ -392,8 +392,8 @@ class ObservationBuilder:
                 ldm.x, ldm.y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
             )
             
-            grid_row = self.ego_grid_row - int(rel_x / self.cell_size)
-            grid_col = self.ego_grid_col + int(rel_y / self.cell_size)
+            grid_row = self.ego_grid_row + int(rel_x / self.cell_size)  # 180도 회전: 전방이 아래쪽
+            grid_col = self.ego_grid_col - int(rel_y / self.cell_size)  # 180도 회전: 오른쪽이 왼쪽
             
             if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
                 if ldm.obstacles_type == 1:  # Cliff/경사
@@ -413,33 +413,23 @@ class ObservationBuilder:
             near_x = near_destination_direction.get('x', 0)
             near_y = near_destination_direction.get('y', 0)
             
-            # 방향 벡터를 자차 좌표계로 변환 (벡터이므로 회전만 적용)
-            cos_yaw = np.cos(-ego_info.yaw)
-            sin_yaw = np.sin(-ego_info.yaw)
-            ego_near_x = near_x * cos_yaw - near_y * sin_yaw
-            ego_near_y = near_x * sin_yaw + near_y * cos_yaw
-            
+            # 방향 벡터는 이미 차량 좌표계 기준으로 저장됨
             # 정규화 (단위 벡터로)
-            length = np.sqrt(ego_near_x**2 + ego_near_y**2)
+            length = np.sqrt(near_x**2 + near_y**2)
             if length > 0.01:
-                direction_vectors[0] = ego_near_x / length
-                direction_vectors[1] = ego_near_y / length
+                direction_vectors[0] = near_x / length
+                direction_vectors[1] = near_y / length
         
         if final_destination_direction:
             dest_x = final_destination_direction.get('x', 0)
             dest_y = final_destination_direction.get('y', 0)
             
-            # 방향 벡터를 자차 좌표계로 변환
-            cos_yaw = np.cos(-ego_info.yaw)
-            sin_yaw = np.sin(-ego_info.yaw)
-            ego_dest_x = dest_x * cos_yaw - dest_y * sin_yaw
-            ego_dest_y = dest_x * sin_yaw + dest_y * cos_yaw
-            
+            # 방향 벡터는 이미 차량 좌표계 기준으로 저장됨
             # 정규화 (단위 벡터로)
-            length = np.sqrt(ego_dest_x**2 + ego_dest_y**2)
+            length = np.sqrt(dest_x**2 + dest_y**2)
             if length > 0.01:
-                direction_vectors[2] = ego_dest_x / length
-                direction_vectors[3] = ego_dest_y / length
+                direction_vectors[2] = dest_x / length
+                direction_vectors[3] = dest_y / length
         
         return {
             'grid': grid,

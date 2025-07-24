@@ -39,7 +39,7 @@ class MuZeroConfig:
         
         # Observation Provider 설정
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
-        self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171526_94.jsonl")  # GT 데이터 경로
+        self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # GT 데이터 경로
 
         # Self-Play 설정
         self.num_workers = 1

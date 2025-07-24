@@ -728,18 +728,15 @@ class FastInteractiveVisualizer:
         final_destination_direction = cache_data.get('final_destination_direction')
         
         if near_destination_direction and final_destination_direction and ego_info:
-            # 근접 방위벡터
+            # 근접 방위벡터 (이미 차량 좌표계 기준)
             if near_destination_direction.get('x') is not None and near_destination_direction.get('y') is not None:
+                # 방향 벡터는 이미 차량 좌표계 기준으로 저장됨
                 dx_near = near_destination_direction['x']
                 dy_near = near_destination_direction['y']
                 
-                cos_yaw = np.cos(-ego_info.yaw)
-                sin_yaw = np.sin(-ego_info.yaw)
-                ego_dx_near = dx_near * cos_yaw - dy_near * sin_yaw
-                ego_dy_near = dx_near * sin_yaw + dy_near * cos_yaw
-                
-                screen_x_near = -ego_dy_near * 5
-                screen_y_near = ego_dx_near * 5
+                # 화면 좌표계로 변환 (x와 y 바꾸기)
+                screen_x_near = -dy_near * 5
+                screen_y_near = dx_near * 5
                 
                 self.artists['near_arrow'] = patches.FancyArrowPatch(
                     (0, 0), (screen_x_near, screen_y_near),
@@ -748,18 +745,15 @@ class FastInteractiveVisualizer:
                 )
                 self.ax1.add_patch(self.artists['near_arrow'])
             
-            # 목적지 방위벡터
+            # 목적지 방위벡터 (이미 차량 좌표계 기준)
             if final_destination_direction.get('x') is not None and final_destination_direction.get('y') is not None:
+                # 방향 벡터는 이미 차량 좌표계 기준으로 저장됨
                 dx_dest = final_destination_direction['x']
                 dy_dest = final_destination_direction['y']
                 
-                cos_yaw = np.cos(-ego_info.yaw)
-                sin_yaw = np.sin(-ego_info.yaw)
-                ego_dx_dest = dx_dest * cos_yaw - dy_dest * sin_yaw
-                ego_dy_dest = dx_dest * sin_yaw + dy_dest * cos_yaw
-                
-                screen_x_dest = -ego_dy_dest * 8
-                screen_y_dest = ego_dx_dest * 8
+                # 화면 좌표계로 변환 (x와 y 바꾸기)
+                screen_x_dest = -dy_dest * 8
+                screen_y_dest = dx_dest * 8
                 
                 self.artists['dest_arrow'] = patches.FancyArrowPatch(
                     (0, 0), (screen_x_dest, screen_y_dest),

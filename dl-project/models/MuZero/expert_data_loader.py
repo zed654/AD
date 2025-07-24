@@ -115,14 +115,20 @@ class ExpertDataLoader:
             grid = observation['grid']  # 3채널 그리드 (3, 99, 99)
             vectors = observation['vectors']  # 방향 벡터 [near_x, near_y, dest_x, dest_y]
             
-            # 방향 벡터 파싱
+            # 방향 벡터 파싱 (소수점 둘째 자리까지만)
             parsed_near_destination_direction = None
             parsed_dest_direction = None
             if vectors is not None and len(vectors) == 4:
                 if not (vectors[0] == 0 and vectors[1] == 0):  # near direction이 유효한 경우
-                    parsed_near_destination_direction = {'x': float(vectors[0]), 'y': float(vectors[1])}
+                    parsed_near_destination_direction = {
+                        'x': round(float(vectors[0]), 2), 
+                        'y': round(float(vectors[1]), 2)
+                    }
                 if not (vectors[2] == 0 and vectors[3] == 0):  # destination direction이 유효한 경우
-                    parsed_dest_direction = {'x': float(vectors[2]), 'y': float(vectors[3])}
+                    parsed_dest_direction = {
+                        'x': round(float(vectors[2]), 2), 
+                        'y': round(float(vectors[3]), 2)
+                    }
             
             # observation은 dict 형태로 저장
             state_dict = {
@@ -221,9 +227,11 @@ class ExpertDataLoader:
         rel_y = dx * sin_yaw + dy * cos_yaw
         
         # 그리드 좌표로 변환 (중앙이 49, 49)
+        # 주의: rel_x는 전방(forward)이고, rel_y는 좌우(left/right)
+        # Grid에서 row는 y축(아래가 큰 값), col은 x축(오른쪽이 큰 값)
         grid_center = self.config.observation_shape[1] // 2  # 49
-        grid_row = grid_center - int(rel_x / self.config.cell_size)
-        grid_col = grid_center + int(rel_y / self.config.cell_size)
+        grid_row = grid_center + int(rel_x / self.config.cell_size)  # 180도 회전: 전방이 아래쪽
+        grid_col = grid_center - int(rel_y / self.config.cell_size)  # 180도 회전: 오른쪽이 왼쪽
         
         return grid_row, grid_col
     
