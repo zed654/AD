@@ -8,7 +8,7 @@ from typing import List, Dict, Optional
 from .mcts import MCTS
 from .environment import BaseEnvironment
 from .action import Action
-from .replay_buffer import ReplayBuffer
+from .replay_buffer import ReplayBuffer, Episode
 
 
 class GameHistory:
@@ -62,6 +62,12 @@ class SelfPlayManager:
         # 환경 초기화
         observation = self.environment.reset()
         
+        # observation이 dict인 경우, 'obstacles' tensor만 추출
+        if isinstance(observation, dict):
+            observation_tensor = observation['obstacles']
+        else:
+            observation_tensor = observation
+        
         # 게임이 끝날 때까지 플레이
         step = 0
         while not self.environment.is_terminal():
@@ -70,7 +76,7 @@ class SelfPlayManager:
             
             # MCTS 실행 - 시뮬레이션 통해 액션 선택
             mcts_result = self.mcts.run(
-                observation,
+                observation_tensor,
                 add_exploration_noise=(temperature > 0)
             )
             
@@ -98,7 +104,7 @@ class SelfPlayManager:
             
             # 히스토리 저장
             game_history.store(
-                observation=observation.cpu(),
+                observation=observation,  # dict 형태로 저장
                 action=action,
                 reward=reward,
                 policy=mcts_result['policy_targets'],
@@ -116,6 +122,13 @@ class SelfPlayManager:
             
             # 다음 상태로 전환
             observation = next_observation
+            
+            # observation이 dict인 경우, 'obstacles' tensor만 추출
+            if isinstance(observation, dict):
+                observation_tensor = observation['obstacles']
+            else:
+                observation_tensor = observation
+                
             step += 1
             
             # 최대 스텝 제한 (안전장치)
@@ -174,4 +187,63 @@ class SelfPlayManager:
         print(f"  - 저장된 에피소드: {replay_buffer.size()}")
         print(f"  - 총 누적 에피소드: {replay_buffer.total_episodes()}")
         
-        return replay_buffer 
+        return replay_buffer
+    
+    def enrich_episodes_with_mcts(self, episodes: List['Episode']) -> List['Episode']:
+        """GT Episode에 MCTS 결과(policy, value) 추가
+        
+        Args:
+            episodes: GT 데이터로부터 생성된 Episode 리스트
+            
+        Returns:
+            MCTS 결과가 추가된 Episode 리스트
+        """
+        enriched_episodes = []
+        
+        for ep_idx, episode in enumerate(episodes):
+            print(f"\nEpisode {ep_idx + 1}/{len(episodes)}에 MCTS 적용 중...")
+            
+            # 각 스텝에 대해 MCTS 실행
+            for step_idx in range(len(episode)):
+                # observation 가져오기 (dict 형태)
+                state_dict = episode.states[step_idx]
+                
+                # observation tensor 추출
+                if isinstance(state_dict, dict) and 'obstacles' in state_dict:
+                    observation_tensor = state_dict['obstacles']
+                    
+                    # MCTS 실행하여 policy와 value 계산
+                    with torch.no_grad():
+                        mcts_result = self.mcts.run(
+                            observation_tensor,
+                            add_exploration_noise=False  # GT 데이터는 노이즈 없이
+                        )
+                    
+                    # Episode에 MCTS 결과 업데이트
+                    episode.policies[step_idx] = mcts_result['policy_targets']
+                    episode.values[step_idx] = mcts_result['root_value']
+                    
+                    # 보상 계산 (GT에서는 목표 도달 거리 기반)
+                    if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos) - 1:
+                        # 현재와 다음 스텝의 expert 위치
+                        if episode.expert_ego_pos[step_idx] is not None:
+                            current_expert_pos = episode.expert_ego_pos[step_idx]
+                            
+                            # 이전 위치와의 거리 계산
+                            if step_idx > 0 and episode.expert_ego_pos[step_idx - 1] is not None:
+                                prev_expert_pos = episode.expert_ego_pos[step_idx - 1]
+                                distance = np.sqrt((current_expert_pos[0] - prev_expert_pos[0])**2 + 
+                                                 (current_expert_pos[1] - prev_expert_pos[1])**2)
+                                # 이동했으면 양의 보상, 정지했으면 음의 보상
+                                episode.rewards[step_idx] = distance / 10.0 - 0.1 if distance > 0.5 else -0.1
+                            else:
+                                episode.rewards[step_idx] = 0.0
+                
+                if step_idx % 10 == 0:
+                    print(f"  - 진행률: {step_idx}/{len(episode)} 스텝")
+            
+            enriched_episodes.append(episode)
+            print(f"  - Episode {ep_idx + 1} 완료: {len(episode)} 스텝, "
+                  f"평균 value: {np.mean(episode.values):.3f}")
+        
+        return enriched_episodes 

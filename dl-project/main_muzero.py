@@ -94,6 +94,7 @@ def train_mode(config, checkpoint_path=None):
         start_epoch = 0
     
     # Observation Provider 생성 (학습용)
+    # GT 인지, Mock 인지, ROS2 인지 설정에 따라 다름
     observation_provider = create_observation_provider(config, mode="train")
     # parsing_result = observation_provider.get_observation()  # 디버깅용 - 불필요
 
@@ -114,18 +115,24 @@ def train_mode(config, checkpoint_path=None):
     # 파싱한 Json 을 활용하여 Episode 구성 단계
     if config.observation_provider_type == "gt":
         print("\n📚 전문가 데이터 로드 중...")
-        expert_loader = ExpertDataLoader(config)
+        expert_loader = ExpertDataLoader(config, observation_provider)
         expert_episodes = expert_loader.create_episodes_from_json(
-            num_episodes=20,  # 20개 에피소드 생성
-            episode_length=50,  # 각 50 스텝
-            overlap=25  # 25 스텝 겹침
+            num_episodes=config.gt_num_episodes,  # config에서 읽기
+            episode_length=config.max_episode_length,  # config에서 읽기
+            overlap=config.gt_episode_overlap  # config에서 읽기
         )
         
-        # Replay Buffer에 추가
-        for episode in expert_episodes:
+        print(f"   GT Episode 생성 완료: {len(expert_episodes)}개")
+        
+        # GT Episode에 MCTS 결과 추가
+        print("\n🧠 GT Episode에 MCTS 적용 중...")
+        enriched_episodes = self_play_manager.enrich_episodes_with_mcts(expert_episodes)
+        
+        # Enriched Episode를 Replay Buffer에 추가
+        for episode in enriched_episodes:
             replay_buffer.save_episode(episode)
         
-        print(f"   전문가 데이터 추가 완료: {len(expert_episodes)}개 에피소드")
+        print(f"   전문가 데이터 + MCTS 결과 추가 완료: {len(enriched_episodes)}개 에피소드")
     
     # 학습 루프
     print(f"\n🚀 학습 시작 (총 {config.num_training_epochs}회)")

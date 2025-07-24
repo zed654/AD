@@ -175,10 +175,17 @@ def train_network(network, replay_buffer, config, device):
             value_loss += torch.nn.functional.cross_entropy(value, target_value_idx)
             
             # Policy loss
-            target_policy = torch.tensor(episode.policies[start_idx], device=device).unsqueeze(0)
-            # KL divergence loss (target_policy는 확률 분포)
-            log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
-            policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
+            if episode.policies[start_idx] is not None:
+                target_policy = torch.tensor(episode.policies[start_idx], device=device).unsqueeze(0)
+                # KL divergence loss (target_policy는 확률 분포)
+                log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
+                policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
+            else:
+                # GT 데이터의 경우 policy가 없으므로 uniform distribution 사용
+                num_actions = policy_logits.shape[1]
+                target_policy = torch.ones(1, num_actions, device=device) / num_actions
+                log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
+                policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
             
             # K 스텝 unroll
             for k in range(0, K):
@@ -213,10 +220,17 @@ def train_network(network, replay_buffer, config, device):
                 
                 # Policy loss (k+1번째 상태의 policy)
                 if start_idx + k + 1 < len(episode):
-                    target_policy = torch.tensor(episode.policies[start_idx + k + 1], device=device).unsqueeze(0)
-                    # KL divergence loss (target_policy는 확률 분포)
-                    log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
-                    policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
+                    if episode.policies[start_idx + k + 1] is not None:
+                        target_policy = torch.tensor(episode.policies[start_idx + k + 1], device=device).unsqueeze(0)
+                        # KL divergence loss (target_policy는 확률 분포)
+                        log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
+                        policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
+                    else:
+                        # GT 데이터의 경우 policy가 없으므로 uniform distribution 사용
+                        num_actions = policy_logits.shape[1]
+                        target_policy = torch.ones(1, num_actions, device=device) / num_actions
+                        log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
+                        policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
         
         # 평균 손실 계산
         num_samples = len(batch)

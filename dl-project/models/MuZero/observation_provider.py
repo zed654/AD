@@ -19,21 +19,23 @@ class ObservationProvider(ABC):
     """관측값 제공자 인터페이스"""
     
     @abstractmethod
+    def get_frame_count(self) -> int:
+        """사용 가능한 프레임 수 반환"""
+        pass
+    
+    @abstractmethod
+    def get_frame_data(self, frame_idx: int) -> Optional[Dict]:
+        """특정 프레임의 원시 데이터 반환"""
+        pass
+    
+    @abstractmethod
     def reset(self) -> Dict[str, np.ndarray]:
-        """환경을 리셋하고 초기 관측값을 반환"""
+        """환경을 리셋하고 초기 관측값을 반환 (self-play용)"""
         pass
     
     @abstractmethod
     def get_observation(self) -> Dict[str, np.ndarray]:
-        """
-        현재 상태의 관측값을 반환
-        
-        Args:
-            action: 이전에 수행한 액션 (첫 번째 호출 시 None)
-            
-        Returns:
-            observation: 현재 관측값 딕셔너리 (grid, vectors)
-        """
+        """현재 상태의 관측값을 반환 (self-play용)"""
         pass
     
     @abstractmethod
@@ -43,7 +45,7 @@ class ObservationProvider(ABC):
 
 
 class GTObservationProvider(ObservationProvider):
-    """Ground Truth 데이터에서 관측값을 제공하는 클래스 (학습용)"""
+    """Ground Truth 데이터에서 프레임 데이터를 제공하는 클래스"""
     
     def __init__(self, config, data_path: Optional[Path] = None):
         """
@@ -65,76 +67,63 @@ class GTObservationProvider(ObservationProvider):
             self.parser = None
             self.obs_builder = None
         
-        # 에피소드 관리
+        # Self-play를 위한 상태 변수 (단순화)
         self.current_frame_idx = 0
-        self.episode_start_idx = 0
-        self.steps_in_episode = 0
-        self.max_episode_length = getattr(config, 'max_episode_length', 50)
-        
-        # Episode 시작 위치 추적
         self.episode_start_ego = None
         
-        # 이전 프레임 정보 (보상 계산용)
-        self.prev_ego_info = None
-        self.prev_distance_to_goal = None
-        
-    def reset(self) -> Dict[str, np.ndarray]:
-        """새로운 에피소드 시작"""
+    def get_frame_count(self) -> int:
+        """사용 가능한 프레임 수 반환"""
         if not self.parser:
-            # GT 데이터가 없으면 임시로 랜덤 데이터 반환
-            print("경고: GT 데이터가 없어 랜덤 관측값을 사용합니다")
+            return 0
+        return self.parser.get_frame_count()
+    
+    def get_frame_data(self, frame_idx: int) -> Optional[Dict]:
+        """특정 프레임의 원시 데이터 반환"""
+        if not self.parser:
+            return None
+        return self.parser.get_frame_data(frame_idx)
+    
+    def get_parser(self) -> Optional[GTDataParser]:
+        """파서 객체 반환 (ExpertDataLoader에서 필요)"""
+        return self.parser
+    
+    def reset(self) -> Dict[str, np.ndarray]:
+        """환경을 리셋하고 초기 관측값을 반환 (self-play용)"""
+        if not self.parser:
             return {
                 'grid': np.random.rand(*self.observation_shape).astype(np.float32),
-                'vectors': np.zeros(4, dtype=np.float32),
-                'trajectory': np.zeros((5, 4), dtype=np.float32)
+                'vectors': np.zeros(4, dtype=np.float32)
             }
         
-        # 랜덤하게 시작 프레임 선택 (뒤에 충분한 프레임이 있는 곳에서)
-        max_start = max(0, self.parser.get_frame_count() - self.max_episode_length - 10)
-        self.episode_start_idx = random.randint(0, max_start)
-        self.current_frame_idx = self.episode_start_idx
-        self.steps_in_episode = 0
+        # 랜덤하게 시작 프레임 선택
+        import random
+        max_start = max(0, self.parser.get_frame_count() - 100)
+        self.current_frame_idx = random.randint(0, max_start)
         
-        # 초기 프레임 데이터 가져오기
+        # 초기 프레임 데이터
         frame_data = self.parser.get_frame_data(self.current_frame_idx)
         if not frame_data:
             return {
                 'grid': np.zeros(self.observation_shape, dtype=np.float32),
-                'vectors': np.zeros(4, dtype=np.float32),
-                'trajectory': np.zeros((0, 4), dtype=np.float32)
+                'vectors': np.zeros(4, dtype=np.float32)
             }
         
         # Episode 시작 위치 설정
         self.episode_start_ego = self.parser.parse_ego_info(frame_data)
         
-        # 관측값 생성
-        observation = self._create_observation(frame_data)
-        
-        # 초기 상태 저장
-        self.prev_ego_info = self.episode_start_ego
-        trajectory = self.parser.parse_trajectory(frame_data)
-        if trajectory and len(trajectory) > 5:
-            goal = trajectory[5]  # 5번째 포인트를 목표로
-            if self.prev_ego_info:
-                self.prev_distance_to_goal = np.sqrt(
-                    (goal.x - self.prev_ego_info.x)**2 + 
-                    (goal.y - self.prev_ego_info.y)**2
-                )
-        
-        return observation
+        # Observation 생성
+        return self._create_observation(frame_data)
     
     def get_observation(self) -> Dict[str, np.ndarray]:
-        """GT 데이터에서 다음 관측값 가져오기"""
+        """현재 상태의 관측값을 반환 (self-play용)"""
         if not self.parser:
             return {
                 'grid': np.random.rand(*self.observation_shape).astype(np.float32),
-                'vectors': np.zeros(4, dtype=np.float32),
-                'trajectory': np.zeros((5, 4), dtype=np.float32)
+                'vectors': np.zeros(4, dtype=np.float32)
             }
         
         # 다음 프레임으로 이동
         self.current_frame_idx += 1
-        self.steps_in_episode += 1
         
         # 프레임 데이터 가져오기
         frame_data = self.parser.get_frame_data(self.current_frame_idx)
@@ -142,22 +131,14 @@ class GTObservationProvider(ObservationProvider):
             # 데이터 끝에 도달하면 리셋
             return self.reset()
         
-        # 관측값 생성
-        observation = self._create_observation(frame_data)
-        
-        # 현재 상태 저장 (나중에 사용 가능하도록)
-        self.current_frame_data = frame_data
-        ego_info = self.parser.parse_ego_info(frame_data)
-        self.prev_ego_info = ego_info
-        
-        return observation
+        # Observation 생성
+        return self._create_observation(frame_data)
     
     def _create_observation(self, frame_data: Dict) -> Dict[str, np.ndarray]:
         """프레임 데이터에서 observation 생성"""
         # 데이터 파싱
         ego_info = self.parser.parse_ego_info(frame_data)
         objects = self.parser.parse_objects(frame_data)
-        # ldm_points = self.parser.parse_ldm_points(frame_data)  # 추후 Transformer 모델에서 사용 예정
         ldm_points = []  # 임시로 빈 리스트
         trajectory = self.parser.parse_trajectory(frame_data)
         near_direction, destination_direction = self.parser.get_direction_vectors(frame_data)
@@ -166,8 +147,7 @@ class GTObservationProvider(ObservationProvider):
         if not ego_info:
             return {
                 'grid': np.zeros(self.observation_shape, dtype=np.float32),
-                'vectors': np.zeros(4, dtype=np.float32),
-                'trajectory': np.zeros((0, 4), dtype=np.float32)
+                'vectors': np.zeros(4, dtype=np.float32)
             }
         
         # Observation 생성 (episode 시작 위치 기준)
@@ -179,9 +159,9 @@ class GTObservationProvider(ObservationProvider):
         return observation
     
     def get_current_frame_data(self) -> Optional[Dict]:
-        """현재 프레임 데이터 반환 (Environment에서 충돌 체크 등에 사용)"""
-        if hasattr(self, 'current_frame_data'):
-            return self.current_frame_data
+        """현재 프레임 데이터 반환"""
+        if hasattr(self, 'current_frame_idx'):
+            return self.get_frame_data(self.current_frame_idx)
         return None
     
     def is_data_ended(self) -> bool:
@@ -196,7 +176,7 @@ class GTObservationProvider(ObservationProvider):
 
 
 class ROS2ObservationProvider(ObservationProvider):
-    """ROS2 Topic에서 실시간으로 관측값을 제공하는 클래스 (추론용)"""
+    """ROS2 Topic에서 실시간으로 프레임 데이터를 제공하는 클래스 (추론용)"""
     
     def __init__(self, config):
         """
@@ -204,16 +184,14 @@ class ROS2ObservationProvider(ObservationProvider):
             config: MuZero 설정
         """
         self.config = config
-        self.observation_shape = config.observation_shape
         
         # ROS2 관련 초기화
         self.ros2_initialized = False
         self._init_ros2()
         
-        # 최신 관측값 저장
-        self.latest_obstacles = None
-        self.latest_odometry = None
-        self.latest_image = None
+        # 최신 데이터 저장
+        self.latest_frame_data = None
+        self.frame_buffer = []  # 프레임 버퍼
         
     def _init_ros2(self):
         """ROS2 노드 및 구독자 초기화"""
@@ -237,37 +215,40 @@ class ROS2ObservationProvider(ObservationProvider):
             print("경고: ROS2가 설치되지 않았습니다. 시뮬레이션 모드로 동작합니다.")
             self.ros2_initialized = False
     
+    def get_frame_count(self) -> int:
+        """사용 가능한 프레임 수 반환 (ROS2는 실시간이므로 버퍼 크기)"""
+        return len(self.frame_buffer)
+    
+    def get_frame_data(self, frame_idx: int) -> Optional[Dict]:
+        """특정 프레임의 데이터 반환 (버퍼에서)"""
+        if 0 <= frame_idx < len(self.frame_buffer):
+            return self.frame_buffer[frame_idx]
+        return self.latest_frame_data  # 최신 데이터 반환
+    
     def reset(self) -> Dict[str, np.ndarray]:
-        """환경 리셋 (ROS2에서는 현재 상태 반환)"""
+        """환경을 리셋하고 초기 관측값을 반환 (ROS2에서는 현재 상태 반환)"""
         if not self.ros2_initialized:
-            # ROS2가 없으면 랜덤 데이터
             return {
-                'grid': np.random.rand(*self.observation_shape).astype(np.float32),
-                'vectors': np.zeros(4, dtype=np.float32),
-                'trajectory': np.zeros((5, 4), dtype=np.float32)
+                'grid': np.random.rand(*self.config.observation_shape).astype(np.float32),
+                'vectors': np.zeros(4, dtype=np.float32)
             }
         
-        # 현재 ROS2 topic에서 받은 최신 관측값 반환
-        observation = self._create_observation_from_ros2()
-        return observation
+        # TODO: 현재 ROS2 topic에서 받은 최신 관측값 반환
+        return self._create_observation_from_ros2()
     
     def get_observation(self) -> Dict[str, np.ndarray]:
-        """ROS2에서 실시간 관측값 가져오기"""
+        """현재 상태의 관측값을 반환 (ROS2에서 실시간 관측값 가져오기)"""
         if not self.ros2_initialized:
-            # ROS2가 없으면 랜덤 데이터
             return {
-                'grid': np.random.rand(*self.observation_shape).astype(np.float32),
-                'vectors': np.zeros(4, dtype=np.float32),
-                'trajectory': np.zeros((5, 4), dtype=np.float32)
+                'grid': np.random.rand(*self.config.observation_shape).astype(np.float32),
+                'vectors': np.zeros(4, dtype=np.float32)
             }
         
-        # ROS2 메시지 처리 (spin_once)
-        # TODO: rclpy.spin_once(self.node, timeout_sec=0.1)
+        # TODO: ROS2 메시지 처리 (spin_once)
+        # rclpy.spin_once(self.node, timeout_sec=0.1)
         
-        # 최신 데이터로 관측값 생성
-        observation = self._create_observation_from_ros2()
-        
-        return observation
+        # TODO: 최신 데이터로 관측값 생성
+        return self._create_observation_from_ros2()
     
     def _create_observation_from_ros2(self) -> Dict[str, np.ndarray]:
         """
@@ -279,7 +260,7 @@ class ROS2ObservationProvider(ObservationProvider):
         """
         # 임시 구현
         return {
-            'grid': np.random.rand(*self.observation_shape).astype(np.float32),
+            'grid': np.random.rand(*self.config.observation_shape).astype(np.float32),
             'vectors': np.zeros(4, dtype=np.float32)
         }
     
@@ -305,27 +286,56 @@ class ROS2ObservationProvider(ObservationProvider):
 
 
 class MockObservationProvider(ObservationProvider):
-    """테스트용 Mock 관측값 제공자"""
+    """테스트용 Mock 데이터 제공자"""
     
     def __init__(self, config):
         self.config = config
         self.observation_shape = config.observation_shape
-        self.step_count = 0
-        self.episode_start_ego = EgoInfo(x=0, y=0, yaw=0, velocity=0)
+        self.mock_frames = self._generate_mock_frames(1000)  # 1000개의 가짝 프레임 생성
+        self.current_frame_idx = 0
         
+    def get_frame_count(self) -> int:
+        """사용 가능한 프레임 수 반환"""
+        return len(self.mock_frames)
+    
+    def get_frame_data(self, frame_idx: int) -> Optional[Dict]:
+        """특정 프레임의 데이터 반환"""
+        if 0 <= frame_idx < len(self.mock_frames):
+            return self.mock_frames[frame_idx]
+        return None
+    
     def reset(self) -> Dict[str, np.ndarray]:
-        self.step_count = 0
+        """환경을 리셋하고 초기 관측값을 반환"""
+        self.current_frame_idx = 0
         return {
             'grid': np.random.rand(*self.observation_shape).astype(np.float32),
             'vectors': np.zeros(4, dtype=np.float32)
         }
     
     def get_observation(self) -> Dict[str, np.ndarray]:
-        self.step_count += 1
+        """현재 상태의 관측값을 반환"""
+        self.current_frame_idx += 1
         return {
             'grid': np.random.rand(*self.observation_shape).astype(np.float32),
             'vectors': np.zeros(4, dtype=np.float32)
         }
+    
+    def _generate_mock_frames(self, count: int) -> List[Dict]:
+        """테스트용 가짝 프레임 데이터 생성"""
+        frames = []
+        for i in range(count):
+            frame = {
+                'timestamp': i * 0.1,  # 0.1초 간격
+                'ego': {
+                    'x': i * 0.5,  # 전진
+                    'y': np.sin(i * 0.1) * 2,  # 사인파 경로
+                    'yaw': i * 0.01,
+                    'velocity': 5.0
+                },
+                'trajectory': [{'x': (i+j)*0.5, 'y': np.sin((i+j)*0.1)*2} for j in range(10)]
+            }
+            frames.append(frame)
+        return frames
     
     def close(self):
         pass

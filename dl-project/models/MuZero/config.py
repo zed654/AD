@@ -21,7 +21,10 @@ class MuZeroConfig:
 
         # 환경 설정 (DrivingEnvironment에서 사용)
         # 원본: 200x200 (10cm 셀) -> 99x99 (20cm 셀)로 다운샘플링
-        self.observation_shape = (1, 99, 99)  # 게임 관찰의 차원 (channel, height, width) - 19.8m x 19.8m 영역 (20cm 셀)
+        self.observation_shape = (3, 99, 99)  # 게임 관찰의 차원 (channel, height, width) - 19.8m x 19.8m 영역 (20cm 셀)
+        # Channel 0: Dynamic objects (vehicles, pedestrians, ego)
+        # Channel 1: Static info (Cliff, Static obstacles, Missing points - LDM obstacles_type=1,2,3)
+        # Channel 2: Class ID info (raw class_id values for semantic information)
         self.original_resolution = 0.1  # 원본 데이터 해상도 (10cm)
         self.downsample_factor = 2  # 다운샘플링 비율 (2x2 셀을 1개로)
         self.env_max_steps = 50  # 에피소드 최대 스텝 수 (약 10초, 5Hz 기준)
@@ -29,6 +32,10 @@ class MuZeroConfig:
         self.collision_threshold = 0.5  # 충돌 판정 거리
         self.goal_threshold = 1.0  # 목표 도달 판정 거리
         self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
+        
+        # GT Episode 생성 설정
+        self.gt_num_episodes = 20  # GT 데이터에서 생성할 에피소드 수
+        self.gt_episode_overlap = 25  # 에피소드 간 겹침 스텝 수
         
         # Observation Provider 설정
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택

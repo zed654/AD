@@ -8,28 +8,35 @@ from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from .replay_buffer import Episode
 from .data_parser import GTDataParser
-from .observation_provider import ObservationBuilder
+from .observation_provider import ObservationBuilder, ObservationProvider
 from .action import Action
 
 
 class ExpertDataLoader:
     """JSON GT 데이터에서 학습용 Episode 생성"""
     
-    def __init__(self, config, data_path: Optional[Path] = None):
+    def __init__(self, config, observation_provider: Optional['ObservationProvider'] = None):
         """
         Args:
             config: MuZero 설정
-            data_path: GT 데이터 파일 경로 (JSONL 형식)
+            observation_provider: GT 데이터 제공자 (선택적)
         """
         self.config = config
-        self.data_path = data_path or config.gt_data_path
         self.discount = config.discount
         
-        # 데이터 파서 및 observation 빌더 초기화
-        self.parser = GTDataParser(self.data_path)
+        # ObservationProvider에서 parser와 데이터 가져오기
+        if observation_provider and hasattr(observation_provider, 'get_parser'):
+            self.parser = observation_provider.get_parser()
+        else:
+            # ObservationProvider가 없으면 직접 생성
+            self.parser = GTDataParser(config.gt_data_path)
+            
         self.obs_builder = ObservationBuilder(config)
         
-        print(f"전문가 데이터 로드: {self.parser.get_frame_count()}개 프레임")
+        if self.parser:
+            print(f"전문가 데이터 로드: {self.parser.get_frame_count()}개 프레임")
+        else:
+            print("경고: GT 데이터 파서를 찾을 수 없습니다")
     
     def create_episodes_from_json(self, 
                                  num_episodes: int = 10,
@@ -46,6 +53,10 @@ class ExpertDataLoader:
         Returns:
             Episode 리스트
         """
+        if not self.parser:
+            print("경고: GT 데이터가 없어 Episode를 생성할 수 없습니다")
+            return []
+            
         episodes = []
         total_frames = self.parser.get_frame_count()
         
@@ -85,9 +96,7 @@ class ExpertDataLoader:
             # Observation 생성
             ego_info = self.parser.parse_ego_info(frame_data)
             objects = self.parser.parse_objects(frame_data)
-            # ldm_points = self.parser.parse_ldm_points(frame_data)  # 추후 Transformer 모델 입력으로 사용 예정
-            ldm_points = []  # 임시로 빈 리스트
-            trajectory = self.parser.parse_trajectory(frame_data)
+            ldm_points = self.parser.parse_ldm_points(frame_data)  # LDM 데이터 파싱
             near_direction, destination_direction = self.parser.get_direction_vectors(frame_data)
             
             if not ego_info:
@@ -98,21 +107,30 @@ class ExpertDataLoader:
                 self.episode_start_ego = ego_info
             
             observation = self.obs_builder.build_observation(
-                ego_info, objects, ldm_points, trajectory, near_direction, destination_direction,
+                ego_info, objects, ldm_points, near_direction, destination_direction,
                 episode_start_ego=self.episode_start_ego
             )
             
-            # LDM을 static_environment로 파싱 (obstacles_type별로 분리)
-            static_environment = self._parse_ldm_to_grid(ldm_points, ego_info, self.episode_start_ego)
+            # observation에서 필요한 정보 추출
+            grid = observation['grid']  # 3채널 그리드 (3, 99, 99)
+            vectors = observation['vectors']  # 방향 벡터 [near_x, near_y, dest_x, dest_y]
             
-            # observation은 dict 형태로 저장 (obstacles + 추가 정보)
-            # 추가 정보 포함: static_environment, objects, near_direction, destination_direction, ego_pos
+            # 방향 벡터 파싱
+            parsed_near_direction = None
+            parsed_dest_direction = None
+            if vectors is not None and len(vectors) == 4:
+                if not (vectors[0] == 0 and vectors[1] == 0):  # near direction이 유효한 경우
+                    parsed_near_direction = {'x': float(vectors[0]), 'y': float(vectors[1])}
+                if not (vectors[2] == 0 and vectors[3] == 0):  # destination direction이 유효한 경우
+                    parsed_dest_direction = {'x': float(vectors[2]), 'y': float(vectors[3])}
+            
+            # observation은 dict 형태로 저장
             state_dict = {
-                'obstacles': observation['grid'],  # grid를 obstacles로 이름 변경
-                'static_environment': static_environment,  # LDM을 그리드 좌표로 변환하고 타입별로 분리
-                'objects': objects,  # 객체 정보
-                'near_direction': near_direction,  # 근거리 방향
-                'destination_direction': destination_direction,  # 목적지 방향
+                'obstacles': grid[0],  # Channel 0: 동적 장애물 (/obstacles_tracking_msg, 현재는 동적/정적 섞여있음. 정적은 ldm_msg 의 static 을 의미하는게 아님.)
+                'static_environment': grid[1],  # Channel 1: 정적 환경 (/ldm_msg 의 Cliff, Static Obstacles, Missing Points)
+                'ground_class_id': grid[2],  # Channel 2: 지면 semantic class ID (/ldm_msg 의 Semantic Segmentation Class ID)
+                'near_direction': parsed_near_direction,  # 근거리 방향 (build_observation에서 계산된 값)
+                'destination_direction': parsed_dest_direction,  # 목적지 방향 (build_observation에서 계산된 값)
                 'ego_pos': (ego_info.x, ego_info.y)  # 자차 위치 (전역좌표)
             }
             
@@ -160,12 +178,16 @@ class ExpertDataLoader:
             #     print(f"\n--- Step {i} ---")
             #     print(f"Expert Action: x={expert_actions[i][0]:.2f}, y={expert_actions[i][1]:.2f}")
             
-            # state dict를 Episode에 추가 (obstacles tensor만 torch.tensor로 변환)
-            state_with_tensor_obstacles = observations[i].copy()
-            state_with_tensor_obstacles['obstacles'] = torch.tensor(observations[i]['obstacles'], dtype=torch.float32)
+            # state dict를 Episode에 추가 (obstacles와 static_environment를 tensor로 변환)
+            state_with_tensor = observations[i].copy()
+            state_with_tensor['obstacles'] = torch.tensor(observations[i]['obstacles'], dtype=torch.float32)
+            
+            # static_environment가 있으면 tensor로 변환
+            if 'static_environment' in observations[i] and isinstance(observations[i]['static_environment'], np.ndarray):
+                state_with_tensor['static_environment'] = torch.tensor(observations[i]['static_environment'], dtype=torch.float32)
             
             episode.add_step(
-                state=state_with_tensor_obstacles,  # dict 형태의 state
+                state=state_with_tensor,  # dict 형태의 state
                 action=0,           # self-play action은 0으로 초기화 (POS0: 현재 위치)
                 expert_ego_pos=expert_ego_positions[i],  # GT에서 추출한 전문가 ego 위치 (그리드 좌표)
                 reward=0.0,         # GT에서는 항상 0

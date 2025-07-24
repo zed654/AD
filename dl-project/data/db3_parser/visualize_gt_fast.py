@@ -7,24 +7,20 @@ db3_extractor.py로 추출한 JSONL 파일의 GT 데이터를 빠르게 시각�
 import sys
 import os
 
-# matplotlib 백엔드 설정 (save 모드일 때는 Agg 사용)
+# matplotlib 백엔드 설정
 import matplotlib
 if '--save' in sys.argv:
     matplotlib.use('Agg')
+elif 'DISPLAY' not in os.environ:
+    # 헤드리스 환경에서는 Agg 백엔드 사용
+    matplotlib.use('Agg')
+    print("Warning: No display detected, using Agg backend")
 
 # Qt 플랫폼 플러그인 충돌 방지를 위해 환경변수 설정 (OpenCV import 전에 설정)
 os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = ''
 
 # MuZero 모듈을 import할 수 있도록 경로 추가
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-import matplotlib
-# Qt 백엔드 충돌 방지를 위해 Agg 백엔드 사용 (또는 TkAgg)
-try:
-    matplotlib.use('TkAgg')
-except ImportError:
-    # 헤드리스 환경에서는 Agg 백엔드 사용
-    matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -41,8 +37,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 from data_parser import (
     GTDataParser, CoordinateTransformer,
     EgoInfo, ObjectInfo, LDMPoint, TrajectoryPoint,
-    get_object_color, get_ldm_color, get_ldm_segmentation_color
+    get_object_color, get_ldm_segmentation_color
 )
+
+# rosetta.py에서 추가 함수 import
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+from rosetta import get_ldm_obstacles_type_color
 
 
 def _get_object_color_old(class_id: int) -> str:  # 임시로 이름 변경 (공용 함수 사용)
@@ -502,7 +502,7 @@ class FastInteractiveVisualizer:
             
             # 모드 1: 장애물 타입만 표시
             if self.ldm_mode == 1:
-                color = get_ldm_color(ldm_pt['obstacles_type'])
+                color = get_ldm_obstacles_type_color(ldm_pt['obstacles_type'])
                 
             # 모드 2: 세그멘테이션 클래스만 표시
             elif self.ldm_mode == 2:
@@ -511,7 +511,7 @@ class FastInteractiveVisualizer:
             # 모드 3: 둘 다 표시 (장애물이 있으면 장애물 색상 우선)
             elif self.ldm_mode == 3:
                 if ldm_pt['obstacles_type'] >= 1:
-                    color = get_ldm_color(ldm_pt['obstacles_type'])
+                    color = get_ldm_obstacles_type_color(ldm_pt['obstacles_type'])
                 else:
                     color = get_ldm_segmentation_color(ldm_pt['class_id'])
             
