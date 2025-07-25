@@ -80,6 +80,8 @@ class ExpertDataLoader:
         
         # 상태 추적
         self.episode_start_ego = None  # Episode 시작 위치
+        episode_near_direction = None  # Episode 전체에서 사용할 근거리 방향 (첫 스텝에서 고정)
+        episode_final_direction = None  # Episode 전체에서 사용할 목적지 방향 (첫 스텝에서 고정)
         observations = []
         expert_ego_positions = []  # GT에서 추출한 전문가 ego 위치 (그리드 좌표)
         
@@ -115,17 +117,16 @@ class ExpertDataLoader:
             grid = observation['grid']  # 3채널 그리드 (3, 99, 99)
             vectors = observation['vectors']  # 방향 벡터 [near_x, near_y, dest_x, dest_y]
             
-            # 방향 벡터 파싱 (소수점 둘째 자리까지만)
-            parsed_near_destination_direction = None
-            parsed_dest_direction = None
-            if vectors is not None and len(vectors) == 4:
+            # 첫 스텝에서만 방향 벡터를 저장하고, 이후 스텝에서는 재사용
+            if i == 0 and vectors is not None and len(vectors) == 4:
+                # 첫 스텝에서 Episode 전체에서 사용할 방향 저장
                 if not (vectors[0] == 0 and vectors[1] == 0):  # near direction이 유효한 경우
-                    parsed_near_destination_direction = {
+                    episode_near_direction = {
                         'x': round(float(vectors[0]), 2), 
                         'y': round(float(vectors[1]), 2)
                     }
                 if not (vectors[2] == 0 and vectors[3] == 0):  # destination direction이 유효한 경우
-                    parsed_dest_direction = {
+                    episode_final_direction = {
                         'x': round(float(vectors[2]), 2), 
                         'y': round(float(vectors[3]), 2)
                     }
@@ -135,8 +136,8 @@ class ExpertDataLoader:
                 'obstacles': grid[0],  # Channel 0: 동적 장애물 (/obstacles_tracking_msg, 현재는 동적/정적 섞여있음. 정적은 ldm_msg 의 static 을 의미하는게 아님.)
                 'static_environment': grid[1],  # Channel 1: 정적 환경 (/ldm_msg 의 Cliff, Static Obstacles, Missing Points)
                 'ground_class_id': grid[2],  # Channel 2: 지면 semantic class ID (/ldm_msg 의 Semantic Segmentation Class ID)
-                'near_destination_direction': parsed_near_destination_direction,  # 근거리 방향 (build_observation에서 계산된 값)
-                'final_destination_direction': parsed_dest_direction  # 목적지 방향 (build_observation에서 계산된 값)
+                'near_destination_direction': episode_near_direction,  # 근거리 방향 (Episode 첫 스텝에서 고정)
+                'final_destination_direction': episode_final_direction  # 목적지 방향 (Episode 첫 스텝에서 고정)
             }
             
             # 디버깅 포인트 1: observation 확인 (필요시 주석 해제)

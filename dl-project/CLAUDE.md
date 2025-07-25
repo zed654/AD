@@ -120,7 +120,7 @@ The `models/SSR/` contains template implementations for Structured State Represe
    - Grid size: 99x99 cells (19.8m x 19.8m area with 0.2m per cell)
    - Ego position managed separately via Episode's expert_ego_pos field (grid coordinates), not displayed in grid
    - **Coordinate system**: 180-degree rotated view (forward=down, right=left) for vehicle perspective
-   - **Direction vectors**: Stored in vehicle coordinate system (converted from global in db3_extractor.py)
+   - **Direction vectors**: Fixed from first step of Episode (vehicle coordinate system at Episode start)
    - Channel 0: Dynamic objects from /obstacles_tracking_msg (pedestrians, vehicles)
    - Channel 1: Static environment from /ldm_msg (cliff, static obstacles, missing points)
    - Channel 2: Ground semantic class_id from /ldm_msg (segmentation information)
@@ -138,6 +138,17 @@ The `models/SSR/` contains template implementations for Structured State Represe
 
 ## Recent Updates (2025-07-25)
 
+### Direction Vector 고정 방식 적용
+1. **방향 벡터 일관성 개선**:
+   - Episode 첫 스텝의 direction vector를 전체 Episode에서 고정 사용
+   - Ego가 회전해도 방향 정보의 일관성 유지
+   - "미래의 큰 방향성"이라는 목적에 부합
+
+2. **구현 상세**:
+   - `expert_data_loader.py`: 첫 스텝에서 episode_near_direction, episode_final_direction 저장
+   - 이후 스텝에서는 저장된 값 재사용
+   - Episode 좌표계와 direction 좌표계의 일치성 확보
+
 ### state_dict에서 ego_pos 제거 및 구조 개선
 1. **중복 데이터 제거**:
    - state_dict에서 'ego_pos' 필드 제거 (전역 좌표로 저장되어 좌표계 불일치)
@@ -148,8 +159,8 @@ The `models/SSR/` contains template implementations for Structured State Represe
    - 'obstacles': Channel 0 동적 장애물 (그리드 좌표)
    - 'static_environment': Channel 1 정적 환경 (그리드 좌표)
    - 'ground_class_id': Channel 2 지면 semantic class ID (그리드 좌표)
-   - 'near_destination_direction': 근거리 방향 벡터 (차량 좌표계)
-   - 'final_destination_direction': 목적지 방향 벡터 (차량 좌표계)
+   - 'near_destination_direction': 근거리 방향 벡터 (Episode 첫 스텝에서 고정)
+   - 'final_destination_direction': 목적지 방향 벡터 (Episode 첫 스텝에서 고정)
 
 3. **시각화 개선**:
    - visualize_muzero_episode.py에서 ego 위치는 expert_ego_pos 사용
