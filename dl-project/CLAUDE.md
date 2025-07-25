@@ -118,7 +118,7 @@ The `models/SSR/` contains template implementations for Structured State Represe
    - Expert data: Loaded from GT JSON when using observation_provider_type="gt"
 3. **Observation Shape**: Configured as (3, 99, 99) representing the driving environment state (channel, height, width)
    - Grid size: 99x99 cells (19.8m x 19.8m area with 0.2m per cell)
-   - Ego position managed separately via state_dict['ego_pos'], not displayed in grid
+   - Ego position managed separately via Episode's expert_ego_pos field (grid coordinates), not displayed in grid
    - **Coordinate system**: 180-degree rotated view (forward=down, right=left) for vehicle perspective
    - **Direction vectors**: Stored in vehicle coordinate system (converted from global in db3_extractor.py)
    - Channel 0: Dynamic objects from /obstacles_tracking_msg (pedestrians, vehicles)
@@ -137,6 +137,23 @@ The `models/SSR/` contains template implementations for Structured State Represe
    - Value: Expected sum of future rewards (used for training targets)
 
 ## Recent Updates (2025-07-25)
+
+### state_dict에서 ego_pos 제거 및 구조 개선
+1. **중복 데이터 제거**:
+   - state_dict에서 'ego_pos' 필드 제거 (전역 좌표로 저장되어 좌표계 불일치)
+   - GT ego 위치는 Episode의 'expert_ego_pos'로만 관리 (그리드 좌표)
+   - state_dict는 순수하게 observation 데이터만 포함
+
+2. **수정된 state_dict 구조**:
+   - 'obstacles': Channel 0 동적 장애물 (그리드 좌표)
+   - 'static_environment': Channel 1 정적 환경 (그리드 좌표)
+   - 'ground_class_id': Channel 2 지면 semantic class ID (그리드 좌표)
+   - 'near_destination_direction': 근거리 방향 벡터 (차량 좌표계)
+   - 'final_destination_direction': 목적지 방향 벡터 (차량 좌표계)
+
+3. **시각화 개선**:
+   - visualize_muzero_episode.py에서 ego 위치는 expert_ego_pos 사용
+   - Step Information에 그리드 좌표로 표시
 
 ### 좌표계 180도 회전 및 방향 벡터 처리 개선
 1. **좌표 변환 방식 변경**:

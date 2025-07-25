@@ -686,22 +686,19 @@ class EpisodeInteractiveVisualizer:
             # Ego 위치 계산
             ego_pos = None
             if self.channel_visibility['ego']:
-                state = episode.states[self.current_step]
-                if isinstance(state, dict) and 'ego_pos' in state:
-                    # ego_pos는 전역 좌표이므로, Episode 시작점 기준으로 변환 필요
-                    # 첫 번째 프레임에서는 ego가 중앙(49, 49)에 위치
-                    if self.current_step == 0:
-                        ego_pos = (self.grid_rows // 2, self.grid_cols // 2)
-                    else:
-                        # 이후 프레임에서는 expert_ego_pos 사용
-                        if hasattr(episode, 'expert_ego_pos') and self.current_step < len(episode.expert_ego_pos):
-                            expert_pos = episode.expert_ego_pos[self.current_step]
-                            if expert_pos is not None and isinstance(expert_pos, tuple):
-                                ego_pos = expert_pos  # (row, col) 형태
-                            else:
-                                ego_pos = (self.grid_rows // 2, self.grid_cols // 2)
+                # 첫 번째 프레임에서는 ego가 중앙(49, 49)에 위치
+                if self.current_step == 0:
+                    ego_pos = (self.grid_rows // 2, self.grid_cols // 2)
+                else:
+                    # 이후 프레임에서는 expert_ego_pos 사용
+                    if hasattr(episode, 'expert_ego_pos') and self.current_step < len(episode.expert_ego_pos):
+                        expert_pos = episode.expert_ego_pos[self.current_step]
+                        if expert_pos is not None and isinstance(expert_pos, tuple):
+                            ego_pos = expert_pos  # (row, col) 형태
                         else:
                             ego_pos = (self.grid_rows // 2, self.grid_cols // 2)
+                    else:
+                        ego_pos = (self.grid_rows // 2, self.grid_cols // 2)
             
             # 통합된 그리드 생성 및 업데이트 - ego_pos도 전달
             integrated_rgb = self._create_integrated_grid(obstacles_grid, static_env_grid, class_id_grid, ego_pos)
@@ -938,10 +935,11 @@ class EpisodeInteractiveVisualizer:
         if self.current_step < len(episode.states) and isinstance(episode.states[self.current_step], dict):
             state = episode.states[self.current_step]
             
-            # Ego 위치
-            if 'ego_pos' in state:
-                ego_x, ego_y = state['ego_pos']
-                step_text += f"\nEgo Position: ({ego_x:.2f}, {ego_y:.2f})\n"
+            # Ego 위치 (expert_ego_pos로 대체)
+            if hasattr(episode, 'expert_ego_pos') and self.current_step < len(episode.expert_ego_pos):
+                expert_pos = episode.expert_ego_pos[self.current_step]
+                if expert_pos is not None and isinstance(expert_pos, tuple):
+                    step_text += f"\nEgo Position (grid): ({expert_pos[0]}, {expert_pos[1]})\n"
             
             
             # 방향 정보

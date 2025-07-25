@@ -136,8 +136,7 @@ class ExpertDataLoader:
                 'static_environment': grid[1],  # Channel 1: 정적 환경 (/ldm_msg 의 Cliff, Static Obstacles, Missing Points)
                 'ground_class_id': grid[2],  # Channel 2: 지면 semantic class ID (/ldm_msg 의 Semantic Segmentation Class ID)
                 'near_destination_direction': parsed_near_destination_direction,  # 근거리 방향 (build_observation에서 계산된 값)
-                'final_destination_direction': parsed_dest_direction,  # 목적지 방향 (build_observation에서 계산된 값)
-                'ego_pos': (ego_info.x, ego_info.y)  # 자차 위치 (전역좌표)
+                'final_destination_direction': parsed_dest_direction  # 목적지 방향 (build_observation에서 계산된 값)
             }
             
             # 디버깅 포인트 1: observation 확인 (필요시 주석 해제)
