@@ -49,6 +49,9 @@ Provide your review in Korean with the following structure:
 
 ### 전체 평가
 변경사항에 대한 종합적인 의견과 우선순위 제시
+
+### PR 의도 요약
+이번 변경사항의 주요 목적과 의도를 간단히 설명
 ```
 
 **Important Guidelines:**
