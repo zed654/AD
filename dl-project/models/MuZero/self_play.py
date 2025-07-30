@@ -4,11 +4,12 @@ MuZero의 Self-play 게임을 실행하고 데이터를 수집
 """
 import torch
 import numpy as np
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from .mcts import MCTS
 from .environment import BaseEnvironment
 from .action import Action
 from .replay_buffer import ReplayBuffer, Episode
+from .data_parser import build_observation_tensor
 
 
 class GameHistory:
@@ -202,6 +203,7 @@ class SelfPlayManager:
         
         for ep_idx, episode in enumerate(episodes):
             print(f"\nEpisode {ep_idx + 1}/{len(episodes)}에 MCTS 적용 중...")
+            print(f"  - MCTS 시뮬레이션 횟수: {self.config.num_simulations}회")
             
             # 각 스텝에 대해 MCTS 실행
             for step_idx in range(len(episode)):
@@ -209,8 +211,11 @@ class SelfPlayManager:
                 state_dict = episode.states[step_idx]
                 
                 # observation tensor 추출
-                if isinstance(state_dict, dict) and 'obstacles' in state_dict:
-                    observation_tensor = state_dict['obstacles']
+                if isinstance(state_dict, dict):
+                    # 5채널 observation 생성 (공용 함수 사용)
+                    device = self.device if hasattr(self, 'device') else 'cpu'
+                    observation_tensor = build_observation_tensor(state_dict, self.config.observation_shape, device) # train.py 에서도 사용되서, 함수화했음
+
                     
                     # MCTS 실행하여 policy와 value 계산
                     with torch.no_grad():
@@ -240,10 +245,138 @@ class SelfPlayManager:
                                 episode.rewards[step_idx] = 0.0
                 
                 if step_idx % 10 == 0:
-                    print(f"  - 진행률: {step_idx}/{len(episode)} 스텝")
+                    print(f"  - 진행률: {step_idx}/{len(episode)} 스텝 (각 스텝마다 {self.config.num_simulations}회 시뮬레이션)")
+            
+            # Value propagation 추가
+            # 1. 모든 value를 0으로 초기화
+            for i in range(len(episode)):
+                episode.values[i] = 0.0
+            
+            # 2. GameOver 조건에 따른 최종 value 설정
+            final_value = self._get_episode_game_over_value(episode)
+            
+            # 3. Backward value propagation
+            self._calculate_target_value(episode, final_value)
             
             enriched_episodes.append(episode)
             print(f"  - Episode {ep_idx + 1} 완료: {len(episode)} 스텝, "
                   f"평균 value: {np.mean(episode.values):.3f}")
         
-        return enriched_episodes 
+        return enriched_episodes
+    
+    def _get_episode_game_over_value(self, episode: Episode) -> float:
+        """Episode의 GameOver 조건에 따른 최종 value 반환
+        
+        Action에 따른 이동 경로와 expert 경로의 거리 오차를 기반으로 계산
+        """
+        print("\nEpisode GameOver value 계산 중...")
+        print(f"  - 총 스텝: {len(episode)}")
+        
+        # self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
+
+        # Action 기반 Ego 위치 계산
+        ego_row, ego_col = 49, 49  # 시작 위치 (그리드 중앙)
+        action_positions = [(ego_row, ego_col)]  # 시작 위치 포함
+        
+        # 각 action에 따라 위치 업데이트
+        for i in range(len(episode)):
+            if i < len(episode.actions):
+                action_idx = episode.actions[i]
+                action = Action.from_index(action_idx)
+                
+                # Action에 따른 이동 벡터 가져오기
+                move_vector = action.get_movement_vector()
+                
+                # 위치 업데이트 (주의: 좌표계가 180도 회전됨)
+                # 원래: 상단이 -row, 우측이 +col
+                # 180도 회전: 상단이 +row, 우측이 -col
+                ego_row += move_vector[1]  # y축 이동 (상하)
+                ego_col -= move_vector[0]  # x축 이동 (좌우, 부호 반전)
+                
+                action_positions.append((ego_row, ego_col))
+        
+        # Expert와 Action 경로의 평균 거리 오차 계산
+        avg_distance_error = self._calculate_trajectory_distance_error(episode, action_positions)
+        
+        if avg_distance_error is not None:
+            print(f"  - 평균 거리 오차: {avg_distance_error:.2f} 그리드 셀")
+            # 거리 오차를 value로 변환
+            final_value = self._distance_to_value(avg_distance_error)
+            print(f"  - 최종 value: {final_value:.3f}")
+        else:
+            print("  - Expert 위치 정보 없음")
+            final_value = 0.0
+        
+        return final_value
+    
+    def _calculate_trajectory_distance_error(self, episode: Episode, action_positions: List[Tuple[int, int]]) -> Optional[float]:
+        """Expert 경로와 Action 경로 간의 평균 거리 오차 계산
+        
+        Args:
+            episode: GT Episode (expert_ego_pos 포함)
+            action_positions: Action으로 계산한 위치들
+            
+        Returns:
+            평균 거리 오차 (그리드 셀 단위) 또는 None
+        """
+        total_distance_error = 0.0
+        num_comparisons = 0
+        
+        for i in range(len(episode)):
+            if i < len(action_positions) and hasattr(episode, 'expert_ego_pos') and i < len(episode.expert_ego_pos):
+                if episode.expert_ego_pos[i] is not None:
+                    # Action 기반 위치
+                    action_pos = action_positions[i]
+                    
+                    # Expert 위치 (그리드 좌표)
+                    expert_pos = episode.expert_ego_pos[i]
+                    
+                    # 유클리드 거리 계산
+                    distance = np.sqrt((action_pos[0] - expert_pos[0])**2 + 
+                                     (action_pos[1] - expert_pos[1])**2)
+                    
+                    total_distance_error += distance
+                    num_comparisons += 1
+        
+        # 평균 거리 오차 계산
+        if num_comparisons > 0:
+            return total_distance_error / num_comparisons
+        else:
+            return None
+    
+    def _distance_to_value(self, distance: float) -> float:
+        """거리 오차를 value로 변환 (continuous mapping)
+        
+        Args:
+            distance: 평균 거리 오차 (그리드 셀 단위)
+            
+        Returns:
+            value: -1.0 ~ 1.0 범위의 값
+            - 0 거리 → 1.0
+            - 10 거리 → 0.0  
+            - 20 거리 → -1.0
+        """
+        value = 1.0 - (distance / 10.0)
+        return max(-1.0, min(1.0, value))  # -1.0 ~ 1.0 범위로 제한
+    
+    def _calculate_target_value(self, episode: Episode, final_value: float):
+        """n-step return 계산
+    
+        MuZero는 n-step return + bootstrap value를 사용합니다.
+        target_value = sum(discount^k * reward_k) + discount^n * value_n
+        bootstrap value 는 n_steps 만큼 적용됨 (n_steps 만큼 미래의 가치를 현재에 대입하는 것)
+        
+        * Bellman equation 원리임 - Baysian Theory 의 반대 개념으로, 미래의 가치를 현재에 대입하는 것
+        """
+
+        """Episode의 value를 backward propagation으로 계산
+        
+        V[t] = r[t] + γ * V[t+1]
+        """
+        for i in reversed(range(len(episode))):
+            if i == len(episode) - 1:
+                # 마지막 스텝은 final_value 사용
+                episode.values[i] = final_value
+            else:
+                # 이전 스텝들은 reward + discounted next value
+                episode.values[i] = episode.rewards[i] + self.config.discount * episode.values[i + 1] 

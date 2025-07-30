@@ -5,6 +5,7 @@ MuZero 학습 모듈
 import torch
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
+from .data_parser import build_observation_tensor
 
 
 def support_to_scalar(logits, support_size):
@@ -45,32 +46,32 @@ def scalar_to_support(scalars, support_size):
     return floor_idx
 
 
-def calculate_target_value(episode, start_idx, discount, n_steps=5):
-    """n-step return 계산
+# def calculate_target_value(episode, start_idx, discount, n_steps=5):
+#     """n-step return 계산
     
-    MuZero는 n-step return + bootstrap value를 사용합니다.
-    target_value = sum(discount^k * reward_k) + discount^n * value_n
-    bootstrap value 는 n_steps 만큼 적용됨 (n_steps 만큼 미래의 가치를 현재에 대입하는 것)
+#     MuZero는 n-step return + bootstrap value를 사용합니다.
+#     target_value = sum(discount^k * reward_k) + discount^n * value_n
+#     bootstrap value 는 n_steps 만큼 적용됨 (n_steps 만큼 미래의 가치를 현재에 대입하는 것)
     
-    * Bellman equation 원리임 - Baysian Theory 의 반대 개념으로, 미래의 가치를 현재에 대입하는 것
-    """
-    if start_idx >= len(episode):
-        return 0.0
+#     * Bellman equation 원리임 - Baysian Theory 의 반대 개념으로, 미래의 가치를 현재에 대입하는 것
+#     """
+#     if start_idx >= len(episode):
+#         return 0.0
     
-    target_value = 0.0
+#     target_value = 0.0
     
-    # n-step return 계산
-    for i in range(n_steps):
-        if start_idx + i >= len(episode):
-            break
-        target_value += (discount ** i) * episode.rewards[start_idx + i]
+#     # n-step return 계산
+#     for i in range(n_steps):
+#         if start_idx + i >= len(episode):
+#             break
+#         target_value += (discount ** i) * episode.rewards[start_idx + i]
     
-    # Bootstrap value 추가 (n스텝 후의 value)
-    bootstrap_idx = start_idx + n_steps
-    if bootstrap_idx < len(episode) and episode.values[bootstrap_idx] is not None:
-        target_value += (discount ** n_steps) * episode.values[bootstrap_idx]
+#     # Bootstrap value 추가 (n스텝 후의 value)
+#     bootstrap_idx = start_idx + n_steps
+#     if bootstrap_idx < len(episode) and episode.values[bootstrap_idx] is not None:
+#         target_value += (discount ** n_steps) * episode.values[bootstrap_idx]
     
-    return target_value
+#     return target_value
 
 
 def train_network(network, replay_buffer, config, device):
@@ -153,10 +154,11 @@ def train_network(network, replay_buffer, config, device):
             
             # 초기 관측값 ... PyTorch 모델 배치형태 맞추려고 unsqueeze 함 ([B, C, H, W] -> [1, C, H, W])
             state = episode.states[start_idx]
-            # state가 dict인 경우 obstacles 추출 (이전 이름 grid도 지원)
+            
+            # state가 dict인 경우 5채널 observation 생성
             if isinstance(state, dict):
-                obstacles = state.get('obstacles', state.get('grid'))  # obstacles 우선, 없으면 grid
-                observation = obstacles.unsqueeze(0).to(device)
+                # 5채널 observation 생성 (공용 함수 사용)
+                observation = build_observation_tensor(state, config.observation_shape, device).unsqueeze(0)  # 배치 차원 추가
             else:
                 observation = state.unsqueeze(0).to(device)
             
@@ -167,7 +169,8 @@ def train_network(network, replay_buffer, config, device):
             
             # 첫 스텝의 손실 계산 (k=0)
             # Value loss
-            target_value_scalar = calculate_target_value(episode, start_idx, config.discount)
+            # target_value_scalar = calculate_target_value(episode, start_idx, config.discount)
+            target_value_scalar = episode.values[start_idx] if episode.values[start_idx] is not None else 0.0
             target_value_idx = scalar_to_support(
                 torch.tensor([target_value_scalar], device=device),
                 config.support_size
@@ -211,7 +214,8 @@ def train_network(network, replay_buffer, config, device):
                 reward_loss += torch.nn.functional.cross_entropy(reward, target_reward_idx)
                 
                 # Value loss (k+1번째 상태의 value)
-                target_value_scalar = calculate_target_value(episode, start_idx + k + 1, config.discount)
+                # target_value_scalar = calculate_target_value(episode, start_idx + k + 1, config.discount)
+                target_value_scalar = episode.values[start_idx + k + 1] if episode.values[start_idx + k + 1] is not None else target_value_scalar
                 target_value_idx = scalar_to_support(
                     torch.tensor([target_value_scalar], device=device),
                     config.support_size

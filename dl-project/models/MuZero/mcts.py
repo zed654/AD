@@ -6,6 +6,7 @@ import torch
 import numpy as np
 import math
 from typing import List, Optional, Dict, Tuple
+from .network import AbstractNetwork
 
 
 class MinMaxStats:
@@ -81,7 +82,7 @@ class MCTS:
     """Monte Carlo Tree Search 구현"""
     
     def __init__(self, 
-                 network,
+                 network: 'AbstractNetwork',
                  action_space_size: int,
                  num_simulations: int,
                  discount: float = 0.997,

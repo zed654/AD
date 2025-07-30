@@ -10,7 +10,7 @@ import argparse
 import json
 
 # MuZero 관련 import
-from models.MuZero.models import MuZeroFullyConnectedNetwork
+from models.MuZero.models import MuZeroFullyConnectedNetwork, MuZeroFullyConnectedNetworkDirOnlyForTest
 from models.MuZero.config import MuZeroConfig
 # MCTS는 SelfPlayManager 내부에서 사용됨
 from models.MuZero.action import Action
@@ -29,6 +29,19 @@ def get_network(config, device):
     """설정에 따라 적절한 MuZero 네트워크를 생성합니다."""
     if config.network == "fullyconnected":
         return MuZeroFullyConnectedNetwork(
+            config.observation_shape,
+            config.stacked_observations,
+            len(config.action_space),
+            config.encoding_size,
+            config.fc_reward_layers,
+            config.fc_value_layers,
+            config.fc_policy_layers,
+            config.fc_representation_layers,
+            config.fc_dynamics_layers,
+            config.support_size,
+        ).to(device)
+    elif config.network == "fullyconnected_test":
+        return MuZeroFullyConnectedNetworkDirOnlyForTest(
             config.observation_shape,
             config.stacked_observations,
             len(config.action_space),
@@ -121,18 +134,29 @@ def train_mode(config, checkpoint_path=None):
             episode_length=config.max_episode_length,  # config에서 읽기
             overlap=config.gt_episode_overlap  # config에서 읽기
         )
+    elif config.observation_provider_type == "ros2":
+        print("\n🤖 ROS2 실시간 데이터 로드 중...")
+        expert_episodes = []
+    elif config.observation_provider_type == "mock":
+        print("\n⚠️  Mock 데이터 사용 (학습용 실제 데이터가 준비되지 않음)")
+        expert_episodes = []
+    else:
+        raise ValueError(f"지원하지 않는 observation_provider_type: {config.observation_provider_type}")
+    
+    print(f"   Episode 생성 완료: {len(expert_episodes)}개")
         
-        print(f"   GT Episode 생성 완료: {len(expert_episodes)}개")
-        
-        # GT Episode에 MCTS 결과 추가
-        print("\n🧠 GT Episode에 MCTS 적용 중...")
+    # Episode에 MCTS 결과 추가
+    if len(expert_episodes) > 0:
+        print("\n🧠 Episode에 MCTS 적용 중...")
         enriched_episodes = self_play_manager.enrich_episodes_with_mcts(expert_episodes)
-        
-        # Enriched Episode를 Replay Buffer에 추가
-        for episode in enriched_episodes:
-            replay_buffer.save_episode(episode)
-        
-        print(f"   전문가 데이터 + MCTS 결과 추가 완료: {len(enriched_episodes)}개 에피소드")
+    else:
+        enriched_episodes = []
+    
+    # Enriched Episode를 Replay Buffer에 추가
+    for episode in enriched_episodes:
+        replay_buffer.save_episode(episode)
+    
+    print(f"   전문가 데이터 + MCTS 결과 추가 완료: {len(enriched_episodes)}개 에피소드")
     
     # 학습 루프
     print(f"\n🚀 학습 시작 (총 {config.num_training_epochs}회)")
@@ -140,25 +164,8 @@ def train_mode(config, checkpoint_path=None):
     for epoch in range(start_epoch, config.num_training_epochs):
         print(f"\n📍 Epoch {epoch + 1}/{config.num_training_epochs}")
         
-        # 1. Self-play로 데이터 수집
-        print("  1️⃣ Self-play 데이터 수집...")
-        games = self_play_manager.play_games(
-            num_games=config.num_selfplay_games, 
-            temperature=1.0
-        )
-        
-        # 게임 통계
-        stats = calculate_game_statistics(games)
-        print(f"     - 평균 길이: {stats['avg_length']:.1f}")
-        print(f"     - 평균 보상: {stats['avg_reward']:.2f}")
-        logger.epoch_end(epoch + 1, stats)
-        
-        # Replay Buffer에 저장
-        for game in games:
-            replay_buffer.save_game(game)
-        
-        # 2. 네트워크 학습
-        print("  2️⃣ 네트워크 학습...")
+        # 네트워크 학습
+        print("  📖 네트워크 학습...")
         train_network(network, replay_buffer, config, device)
         
         # 3. 주기적으로 체크포인트 저장

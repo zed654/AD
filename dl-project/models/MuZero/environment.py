@@ -41,7 +41,7 @@ class DrivingEnvironment(BaseEnvironment):
             self.observation_shape = (1, 1, 4)
         else:
             # config에서 환경 설정 가져오기
-            self.max_steps = config.env_max_steps
+            self.max_steps = config.max_episode_length
             self.collision_threshold = config.collision_threshold
             self.goal_threshold = config.goal_threshold
             self.observation_shape = config.observation_shape

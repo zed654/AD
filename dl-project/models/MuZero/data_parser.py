@@ -479,3 +479,61 @@ class ObservationBuilder:
             info['trajectory'] = [(pt[0], pt[1], pt[2], pt[3]) for pt in trajectory]  # (x, y, yaw, velocity)
         
         return info
+
+
+def build_observation_tensor(state_dict: Dict, observation_shape: Tuple[int, int, int], device: str = 'cpu') -> 'torch.Tensor':
+    """
+    state_dict로부터 5채널 observation tensor를 생성하는 공용 함수
+    
+    Args:
+        state_dict: Episode의 state dictionary
+        observation_shape: (channels, height, width) 형태의 관측값 shape
+        device: 텐서를 생성할 디바이스
+        
+    Returns:
+        5채널 observation tensor (shape: observation_shape)
+    """
+    import torch
+    
+    # 5채널 observation 생성
+    observation_tensor = torch.zeros(observation_shape, device=device)
+    
+    # Channel 0: Dynamic obstacles
+    if 'obstacles' in state_dict and state_dict['obstacles'] is not None:
+        data = state_dict['obstacles']
+        if isinstance(data, torch.Tensor):
+            observation_tensor[0] = data.to(device)
+        else:
+            observation_tensor[0] = torch.from_numpy(data).to(device)
+    
+    # Channel 1: Static environment
+    if 'static_environment' in state_dict and state_dict['static_environment'] is not None:
+        data = state_dict['static_environment']
+        if isinstance(data, torch.Tensor):
+            observation_tensor[1] = data.to(device)
+        else:
+            observation_tensor[1] = torch.from_numpy(data).to(device)
+    
+    # Channel 2: Ground class_id
+    if 'ground_class_id' in state_dict and state_dict['ground_class_id'] is not None:
+        data = state_dict['ground_class_id']
+        if isinstance(data, torch.Tensor):
+            observation_tensor[2] = data.to(device)
+        else:
+            observation_tensor[2] = torch.from_numpy(data).to(device)
+    
+    # Channel 3: Near destination direction
+    if 'near_destination_direction' in state_dict:
+        near_dir = state_dict['near_destination_direction']
+        if near_dir:
+            observation_tensor[3, 0, 0] = near_dir.get('x', 0.0)
+            observation_tensor[3, 0, 1] = near_dir.get('y', 0.0)
+    
+    # Channel 4: Final destination direction
+    if 'final_destination_direction' in state_dict:
+        final_dir = state_dict['final_destination_direction']
+        if final_dir:
+            observation_tensor[4, 0, 0] = final_dir.get('x', 0.0)
+            observation_tensor[4, 0, 1] = final_dir.get('y', 0.0)
+    
+    return observation_tensor
