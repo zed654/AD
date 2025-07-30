@@ -142,23 +142,25 @@ class MCTS:
                 
             node = root
             search_path = [node]
+            current_action = None
             
             # 리프 노드까지 선택
             while node.expanded():
-                action, node = self._select_child(node) # PUCT 통해 Action 선택
+                current_action, node = self._select_child(node) # PUCT 통해 Action 선택
                 search_path.append(node)
-                
-            # 리프 노드의 부모 노드 찾기
-            parent = search_path[-2]
-            action = None
-            for a, child in parent.children.items():
-                if child == node:
-                    action = a
-                    break
-                    
+            
             # 리프 노드 평가 및 확장
-            value = self._evaluate(node, parent.hidden_state, action)
-            node.expand(self._recurrent_inference(parent.hidden_state, action))
+            # root.expand()가 이미 실행되었으므로 search_path는 최소 2개 요소를 가짐
+            parent = search_path[-2] if len(search_path) >= 2 else root
+            
+            # 첫 시뮬레이션에서 root가 리프인 경우는 없음 (root.expand() 이미 호출됨)
+            # 하지만 혹시 모를 엣지 케이스를 위해 action 체크
+            if current_action is None:
+                # 이 경우는 발생하면 안 됨 (root는 이미 expand됨)
+                raise ValueError("MCTS: No action selected. This should not happen.")
+            
+            value = self._evaluate(node, parent.hidden_state, current_action)
+            node.expand(self._recurrent_inference(parent.hidden_state, current_action))
             
             # 백업 (역전파)
             self._backup(search_path, value)
@@ -168,6 +170,7 @@ class MCTS:
             
         # 액션 선택 및 정책 타겟 계산
         action = self._select_action(root, temperature=1.0) # 시뮬레이션 종료 후 방문 횟수에 따른 액션 선택
+        # action = 6  # Test 용 - 최종 선택도 2로 강제 FIXME: remove this line
         policy_targets = self._get_policy_targets(root)
         
         # 트리의 전체 노드 개수 (디버깅용)

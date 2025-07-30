@@ -285,7 +285,8 @@ class EpisodeInteractiveVisualizer:
                     class_id_np = None
                     
                     if len(obs_full.shape) == 3 and obs_full.shape[0] >= 3:
-                        # 3채널 데이터: channel 0 = obstacles, channel 1 = static_env, channel 2 = ground_class_id
+                        # 6채널 데이터: channel 0 = obstacles, channel 1 = static_env, channel 2 = ground_class_id
+                        # channel 3,4 = directions, channel 5 = simulated_ego_pos
                         obstacles_np = obs_full[0]  # 첫 번째 채널 (동적 장애물)
                         static_env_np = obs_full[1]  # 두 번째 채널 (정적 환경)
                         class_id_np = obs_full[2]   # 세 번째 채널 (ground_class_id)
@@ -940,6 +941,11 @@ class EpisodeInteractiveVisualizer:
                 expert_pos = episode.expert_ego_pos[self.current_step]
                 if expert_pos is not None and isinstance(expert_pos, tuple):
                     step_text += f"\nEgo Position (grid): ({expert_pos[0]}, {expert_pos[1]})\n"
+            
+            # Simulated Ego Position (state에 저장된 경우)
+            if 'simulated_ego_pos' in state and state['simulated_ego_pos']:
+                sim_pos = state['simulated_ego_pos']
+                step_text += f"Simulated Ego Pos: ({sim_pos[0]}, {sim_pos[1]})\n"
             
             
             # 방향 정보

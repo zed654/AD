@@ -66,10 +66,10 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         self.action_space_size = action_space_size
         self.full_support_size = 2 * support_size + 1
         
-        # 방향 벡터(4) + 전체 observation flatten(5*99*99) = 49,009차원
+        # 방향 벡터(4) + 전체 observation flatten(6*99*99) = 58,810차원
         self.representation_network = torch.nn.DataParallel(
             mlp(
-                4 + observation_shape[0] * observation_shape[1] * observation_shape[2],  # 4 + 49,005 = 49,009
+                4 + observation_shape[0] * observation_shape[1] * observation_shape[2],  # 4 + 58,806 = 58,810
                 fc_representation_layers,
                 encoding_size,
             )
@@ -237,16 +237,16 @@ class MuZeroFullyConnectedNetworkDirOnlyForTest(AbstractNetwork):
         # Channel 3: Near destination direction (0,0)=x, (0,1)=y
         # Channel 4: Final destination direction (0,0)=x, (0,1)=y
         direction_vectors = torch.zeros((batch_size, 4), device=device) # (batch_size, 4) 사이즈 생성
-        if observation.shape[1] >= 5:  # 5채널 구조인 경우
+        if observation.shape[1] >= 5:  # 5채널 이상 구조인 경우
             direction_vectors[:, 0] = observation[:, 3, 0, 0]  # near_x
             direction_vectors[:, 1] = observation[:, 3, 0, 1]  # near_y
             direction_vectors[:, 2] = observation[:, 4, 0, 0]  # final_x
             direction_vectors[:, 3] = observation[:, 4, 0, 1]  # final_y
         
-        # 2. 전체 5채널 데이터를 flatten (5 * 99 * 99 = 49,005차원)
+        # 2. 전체 6채널 데이터를 flatten (6 * 99 * 99 = 58,806차원)
         flattened_observation = observation.view(batch_size, -1)
         
-        # 3. 방향 벡터와 전체 observation을 결합 (4 + 49,005 = 49,009차원)
+        # 3. 방향 벡터와 전체 observation을 결합 (4 + 58,806 = 58,810차원)
         combined_input = torch.cat([direction_vectors, flattened_observation], dim=1)
         
         # Representation network 통과

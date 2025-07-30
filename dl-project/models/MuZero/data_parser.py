@@ -483,7 +483,7 @@ class ObservationBuilder:
 
 def build_observation_tensor(state_dict: Dict, observation_shape: Tuple[int, int, int], device: str = 'cpu') -> 'torch.Tensor':
     """
-    state_dict로부터 5채널 observation tensor를 생성하는 공용 함수
+    state_dict로부터 6채널 observation tensor를 생성하는 공용 함수
     
     Args:
         state_dict: Episode의 state dictionary
@@ -491,11 +491,11 @@ def build_observation_tensor(state_dict: Dict, observation_shape: Tuple[int, int
         device: 텐서를 생성할 디바이스
         
     Returns:
-        5채널 observation tensor (shape: observation_shape)
+        6채널 observation tensor (shape: observation_shape)
     """
     import torch
     
-    # 5채널 observation 생성
+    # 6채널 observation 생성
     observation_tensor = torch.zeros(observation_shape, device=device)
     
     # Channel 0: Dynamic obstacles
@@ -535,5 +535,28 @@ def build_observation_tensor(state_dict: Dict, observation_shape: Tuple[int, int
         if final_dir:
             observation_tensor[4, 0, 0] = final_dir.get('x', 0.0)
             observation_tensor[4, 0, 1] = final_dir.get('y', 0.0)
+    
+    # Channel 5: Simulated ego position
+    if 'simulated_ego_pos' in state_dict:
+        ego_pos = state_dict['simulated_ego_pos']
+        if ego_pos is not None:
+            # ego_pos는 (x, y) 튜플 또는 (row, col) 튜플
+            if isinstance(ego_pos, tuple) and len(ego_pos) == 2:
+                # expert_data_loader에서는 (row, col) 형태로 전달
+                # environment에서는 (x, y) 형태로 전달
+                if isinstance(ego_pos[0], int):  # (row, col) 형태
+                    row, col = ego_pos
+                    center = observation_shape[1] // 2  # 49
+                    ego_x = float(row - center)  # 전방이 양수
+                    ego_y = float(center - col)  # 오른쪽이 양수
+                else:  # (x, y) 형태
+                    ego_x, ego_y = ego_pos
+            else:
+                print("Warning: Invalid simulated ego position format, using default (0.0, 0.0)")
+                ego_x, ego_y = 0.0, 0.0
+            
+            # Channel 5의 (0, 0)에 x, (0, 1)에 y 저장
+            observation_tensor[5, 0, 0] = float(ego_x)
+            observation_tensor[5, 0, 1] = float(ego_y)
     
     return observation_tensor

@@ -63,9 +63,26 @@ class SelfPlayManager:
         # 환경 초기화
         observation = self.environment.reset()
         
-        # observation이 dict인 경우, 'obstacles' tensor만 추출
+        # observation이 dict인 경우, 6채널 observation tensor 생성
         if isinstance(observation, dict):
-            observation_tensor = observation['obstacles']
+            # obstacles는 이미 tensor이므로 numpy로 변환
+            if hasattr(observation['obstacles'], 'numpy'):
+                obstacles_np = observation['obstacles'].squeeze(0).numpy()  # 배치 차원 제거
+            else:
+                obstacles_np = observation['obstacles'].squeeze(0)
+            
+            # state_dict 구성
+            state_dict = {
+                'obstacles': obstacles_np,
+                'static_environment': observation.get('static_environment'),
+                'ground_class_id': observation.get('ground_class_id'),
+                'near_destination_direction': observation.get('near_destination_direction'),
+                'final_destination_direction': observation.get('final_destination_direction'),
+                'simulated_ego_pos': observation.get('simulated_ego_pos', (49, 49))
+            }
+            
+            # 6채널 observation tensor 생성
+            observation_tensor = build_observation_tensor(state_dict, self.config.observation_shape, self.device)
         else:
             observation_tensor = observation
         
@@ -124,9 +141,26 @@ class SelfPlayManager:
             # 다음 상태로 전환
             observation = next_observation
             
-            # observation이 dict인 경우, 'obstacles' tensor만 추출
+            # observation이 dict인 경우, 6채널 observation tensor 생성
             if isinstance(observation, dict):
-                observation_tensor = observation['obstacles']
+                # obstacles는 이미 tensor이므로 numpy로 변환
+                if hasattr(observation['obstacles'], 'numpy'):
+                    obstacles_np = observation['obstacles'].squeeze(0).numpy()  # 배치 차원 제거
+                else:
+                    obstacles_np = observation['obstacles'].squeeze(0)
+                
+                # state_dict 구성
+                state_dict = {
+                    'obstacles': obstacles_np,
+                    'static_environment': observation.get('static_environment'),
+                    'ground_class_id': observation.get('ground_class_id'),
+                    'near_destination_direction': observation.get('near_destination_direction'),
+                    'final_destination_direction': observation.get('final_destination_direction'),
+                    'simulated_ego_pos': observation.get('simulated_ego_pos', (49, 49))
+                }
+                
+                # 6채널 observation tensor 생성
+                observation_tensor = build_observation_tensor(state_dict, self.config.observation_shape, self.device)
             else:
                 observation_tensor = observation
                 
@@ -205,6 +239,9 @@ class SelfPlayManager:
             print(f"\nEpisode {ep_idx + 1}/{len(episodes)}에 MCTS 적용 중...")
             print(f"  - MCTS 시뮬레이션 횟수: {self.config.num_simulations}회")
             
+            # Simulated ego position 추적 (그리드 좌표)
+            simulated_ego_row, simulated_ego_col = 49, 49  # 그리드 중앙에서 시작. self.observation_shape 의 중앙임
+            
             # 각 스텝에 대해 MCTS 실행
             for step_idx in range(len(episode)):
                 # observation 가져오기 (dict 형태)
@@ -212,12 +249,18 @@ class SelfPlayManager:
                 
                 # observation tensor 추출
                 if isinstance(state_dict, dict):
-                    # 5채널 observation 생성 (공용 함수 사용)
-                    device = self.device if hasattr(self, 'device') else 'cpu'
-                    observation_tensor = build_observation_tensor(state_dict, self.config.observation_shape, device) # train.py 에서도 사용되서, 함수화했음
-
+                    # 현재 simulated_ego_pos 업데이트
+                    state_dict_copy = state_dict.copy()
+                    state_dict_copy['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
                     
-                    # MCTS 실행하여 policy와 value 계산
+                    # 6채널 observation 생성 (공용 함수 사용)
+                    device = self.device if hasattr(self, 'device') else 'cpu'
+                    observation_tensor = build_observation_tensor(state_dict_copy, self.config.observation_shape, device)
+                    
+                    # MCTS 실행
+                    # - representation(): observation → latent
+                    # - 시뮬레이션: dynamics()로 미래 예측, prediction()으로 policy/value 계산
+                    # - 최적 action 선택 및 root node의 value/policy 반환
                     with torch.no_grad():
                         mcts_result = self.mcts.run(
                             observation_tensor,
@@ -228,21 +271,25 @@ class SelfPlayManager:
                     episode.policies[step_idx] = mcts_result['policy_targets']
                     episode.values[step_idx] = mcts_result['root_value']
                     
-                    # 보상 계산 (GT에서는 목표 도달 거리 기반)
-                    if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos) - 1:
-                        # 현재와 다음 스텝의 expert 위치
-                        if episode.expert_ego_pos[step_idx] is not None:
-                            current_expert_pos = episode.expert_ego_pos[step_idx]
-                            
-                            # 이전 위치와의 거리 계산
-                            if step_idx > 0 and episode.expert_ego_pos[step_idx - 1] is not None:
-                                prev_expert_pos = episode.expert_ego_pos[step_idx - 1]
-                                distance = np.sqrt((current_expert_pos[0] - prev_expert_pos[0])**2 + 
-                                                 (current_expert_pos[1] - prev_expert_pos[1])**2)
-                                # 이동했으면 양의 보상, 정지했으면 음의 보상
-                                episode.rewards[step_idx] = distance / 10.0 - 0.1 if distance > 0.5 else -0.1
-                            else:
-                                episode.rewards[step_idx] = 0.0
+                    # MCTS가 선택한 action 저장
+                    selected_action = mcts_result['action']
+                    episode.actions[step_idx] = selected_action
+                    
+                    # Action에 따라 simulated_ego_pos 업데이트 (최종 value 계산용)
+                    action = Action.from_index(selected_action)
+                    dx, dy = action.get_movement_vector()
+                    # 180도 회전 좌표계에서 그리드 좌표 업데이트:
+                    # dy > 0 (상단) → row 증가 (전방)
+                    # dx > 0 (우측) → col 감소 (좌측)
+                    simulated_ego_row += dy  # 전방/후방
+                    simulated_ego_col -= dx  # 좌/우
+                    
+                    # Episode state에도 업데이트 (최종 거리 계산을 위해)
+                    episode.states[step_idx]['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
+                    
+                    # 보상은 dynamics 네트워크가 예측한 값을 사용해야 함
+                    # GT Episode enrichment에서는 reward를 0으로 설정 (나중에 backward propagation으로 계산)
+                    episode.rewards[step_idx] = 0.0
                 
                 if step_idx % 10 == 0:
                     print(f"  - 진행률: {step_idx}/{len(episode)} 스텝 (각 스텝마다 {self.config.num_simulations}회 시뮬레이션)")
@@ -267,82 +314,80 @@ class SelfPlayManager:
     def _get_episode_game_over_value(self, episode: Episode) -> float:
         """Episode의 GameOver 조건에 따른 최종 value 반환
         
-        Action에 따른 이동 경로와 expert 경로의 거리 오차를 기반으로 계산
+        다양한 요소들을 고려하여 최종 value 계산:
+        - Collision Rate - 충돌 여부
+        - minADE - 경로 추종 정확도 (expert와의 거리 오차)
+        - minFDE - 예측 경로 중, 예측의 최종 도착지점과 실제 도착지점의 차이
+        - Miss Rate - 예측을 크게 빗나갈 확률 (Threshold 걸어넣고, 예측이 Threshold를 넘는 경우)
         """
         print("\nEpisode GameOver value 계산 중...")
         print(f"  - 총 스텝: {len(episode)}")
         
-        # self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
-
-        # Action 기반 Ego 위치 계산
-        ego_row, ego_col = 49, 49  # 시작 위치 (그리드 중앙)
-        action_positions = [(ego_row, ego_col)]  # 시작 위치 포함
+        # 1. 경로 추종 정확도 기반 value
+        trajectory_value = self._calculate_trajectory_following_value(episode)
         
-        # 각 action에 따라 위치 업데이트
-        for i in range(len(episode)):
-            if i < len(episode.actions):
-                action_idx = episode.actions[i]
-                action = Action.from_index(action_idx)
-                
-                # Action에 따른 이동 벡터 가져오기
-                move_vector = action.get_movement_vector()
-                
-                # 위치 업데이트 (주의: 좌표계가 180도 회전됨)
-                # 원래: 상단이 -row, 우측이 +col
-                # 180도 회전: 상단이 +row, 우측이 -col
-                ego_row += move_vector[1]  # y축 이동 (상하)
-                ego_col -= move_vector[0]  # x축 이동 (좌우, 부호 반전)
-                
-                action_positions.append((ego_row, ego_col))
+        # 2. 충돌 기반 value (TODO: 구현 예정)
+        collision_value = self._calculate_collision_value(episode)
         
-        # Expert와 Action 경로의 평균 거리 오차 계산
-        avg_distance_error = self._calculate_trajectory_distance_error(episode, action_positions)
+        # 3. 기타 조건들 (TODO: 필요시 추가)
+        # goal_reaching_value = self._calculate_goal_reaching_value(episode)
+        # smoothness_value = self._calculate_smoothness_value(episode)
         
-        if avg_distance_error is not None:
-            print(f"  - 평균 거리 오차: {avg_distance_error:.2f} 그리드 셀")
-            # 거리 오차를 value로 변환
-            final_value = self._distance_to_value(avg_distance_error)
-            print(f"  - 최종 value: {final_value:.3f}")
-        else:
-            print("  - Expert 위치 정보 없음")
-            final_value = 0.0
+        # 최종 value 계산 (가중 평균 또는 다른 방식)
+        final_value = trajectory_value  # 현재는 경로 추종만 고려
         
+        print(f"  - 최종 value: {final_value:.3f}")
         return final_value
     
-    def _calculate_trajectory_distance_error(self, episode: Episode, action_positions: List[Tuple[int, int]]) -> Optional[float]:
-        """Expert 경로와 Action 경로 간의 평균 거리 오차 계산
+    def _calculate_trajectory_following_value(self, episode: Episode) -> float:
+        """경로 추종 정확도 기반 value 계산
         
-        Args:
-            episode: GT Episode (expert_ego_pos 포함)
-            action_positions: Action으로 계산한 위치들
-            
-        Returns:
-            평균 거리 오차 (그리드 셀 단위) 또는 None
+        simulated_ego_pos와 expert_ego_pos 간의 평균 거리 오차를 기반으로 계산
         """
         total_distance_error = 0.0
         num_comparisons = 0
         
         for i in range(len(episode)):
-            if i < len(action_positions) and hasattr(episode, 'expert_ego_pos') and i < len(episode.expert_ego_pos):
-                if episode.expert_ego_pos[i] is not None:
-                    # Action 기반 위치
-                    action_pos = action_positions[i]
-                    
-                    # Expert 위치 (그리드 좌표)
+            # state에서 simulated_ego_pos 추출
+            if i < len(episode.states) and isinstance(episode.states[i], dict):
+                state = episode.states[i]
+                sim_pos = state.get('simulated_ego_pos')
+                
+                # expert_ego_pos 추출
+                if hasattr(episode, 'expert_ego_pos') and i < len(episode.expert_ego_pos):
                     expert_pos = episode.expert_ego_pos[i]
                     
-                    # 유클리드 거리 계산
-                    distance = np.sqrt((action_pos[0] - expert_pos[0])**2 + 
-                                     (action_pos[1] - expert_pos[1])**2)
-                    
-                    total_distance_error += distance
-                    num_comparisons += 1
+                    if sim_pos is not None and expert_pos is not None:
+                        # 둘 다 (row, col) 그리드 좌표
+                        if isinstance(expert_pos, tuple) and len(expert_pos) == 2 and \
+                           isinstance(sim_pos, tuple) and len(sim_pos) == 2:
+                            expert_row, expert_col = expert_pos
+                            sim_row, sim_col = sim_pos
+                            
+                            # 유클리드 거리 계산 (그리드 좌표 기준)
+                            distance = np.sqrt((sim_row - expert_row)**2 + (sim_col - expert_col)**2)
+                            total_distance_error += distance
+                            num_comparisons += 1
         
         # 평균 거리 오차 계산
         if num_comparisons > 0:
-            return total_distance_error / num_comparisons
+            avg_distance_error = total_distance_error / num_comparisons
+            print(f"  - 평균 거리 오차: {avg_distance_error:.2f} 그리드 셀")
+            return self._distance_to_value(avg_distance_error)
         else:
-            return None
+            print("  - Expert 위치 정보 없음")
+            return 0.0
+    
+    def _calculate_collision_value(self, episode: Episode) -> float:
+        """충돌 기반 value 계산
+        
+        TODO: 구현 예정
+        - Episode 내 충돌 발생 여부 체크
+        - 충돌 시 큰 페널티 부여
+        """
+        # 현재는 기본값 반환
+        return 0.0
+
     
     def _distance_to_value(self, distance: float) -> float:
         """거리 오차를 value로 변환 (continuous mapping)

@@ -63,12 +63,14 @@ class DrivingEnvironment(BaseEnvironment):
         self.game_done = False  # 게임 종료 여부
         self.done_reason = None
         self.last_action = None
+        self.simulated_ego_pos = (0.0, 0.0)  # 시뮬레이션 ego 위치 (x, y) - 그리드 중심 기준 상대 좌표
         
     def reset(self) -> torch.Tensor:
         """환경 초기화"""
         self.current_step = 0
         self.game_done = False
         self.done_reason = None
+        self.simulated_ego_pos = (0.0, 0.0)  # 원점에서 시작
         
         # ObservationProvider로부터 초기 관측값 가져오기
         observation_dict = self.observation_provider.reset()
@@ -119,7 +121,8 @@ class DrivingEnvironment(BaseEnvironment):
             'objects': objects,
             'near_destination_direction': near_destination_direction,
             'final_destination_direction': final_destination_direction,
-            'ego_pos': (self.ego_position[0], self.ego_position[1]) if self.ego_position is not None else None
+            'ego_pos': (self.ego_position[0], self.ego_position[1]) if self.ego_position is not None else None,
+            'simulated_ego_pos': self.simulated_ego_pos  # (x, y) 형태의 상대 좌표
         }
         
         return state
@@ -190,7 +193,8 @@ class DrivingEnvironment(BaseEnvironment):
             'objects': objects,
             'near_destination_direction': near_destination_direction,
             'final_destination_direction': final_destination_direction,
-            'ego_pos': (self.ego_position[0], self.ego_position[1]) if self.ego_position is not None else None
+            'ego_pos': (self.ego_position[0], self.ego_position[1]) if self.ego_position is not None else None,
+            'simulated_ego_pos': self.simulated_ego_pos  # (x, y) 형태의 상대 좌표
         }
         
         # state, reward, 게임종료여부, 추가정보 반환
@@ -284,6 +288,23 @@ class DrivingEnvironment(BaseEnvironment):
     
     def _update_state(self, action: Action):
         """액션에 따른 상태 업데이트"""
+        # 액션의 이동 벡터 가져오기 (그리드 단위)
+        dx, dy = action.get_movement_vector()
+        
+        # Self-play용 ego 위치 업데이트 (x, y 좌표)
+        # dx는 x축(좌우), dy는 y축(상하)
+        # 180도 회전 좌표계에서:
+        # - x축: 전방이 양수 (row 증가 방향)
+        # - y축: 오른쪽이 양수 (col 감소 방향)
+        current_x, current_y = self.simulated_ego_pos
+        new_x = current_x + dy  # y 이동 → x 변화 (전방/후방)
+        new_y = current_y - dx  # x 이동 → y 변화 (좌/우, 부호 반전)
+        
+        # 그리드 범위 체크 (중심 기준 ±49)
+        grid_half = self.config.observation_shape[1] // 2  # 49
+        if -grid_half <= new_x <= grid_half and -grid_half <= new_y <= grid_half:
+            self.simulated_ego_pos = (new_x, new_y)
+        
         # GT 데이터가 있는 경우 프레임 데이터에서 업데이트
         if hasattr(self.observation_provider, 'get_current_frame_data'):
             frame_data = self.observation_provider.get_current_frame_data()
@@ -295,9 +316,6 @@ class DrivingEnvironment(BaseEnvironment):
                     return
         
         # GT 데이터가 없는 경우 간단한 시뮬레이션
-        # 액션의 이동 벡터 가져오기 (그리드 단위)
-        dx, dy = action.get_movement_vector()
-        
         # 실제 이동량 계산 (0.2m 셀 크기 * 그리드 이동량)
         cell_size = 0.2
         actual_dx = dx * cell_size
