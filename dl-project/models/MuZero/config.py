@@ -58,7 +58,7 @@ class MuZeroConfig:
         self.pb_c_init = 1.25
 
         # 네트워크 설정
-        self.network = "fullyconnected_test"  # "resnet" 또는 "fullyconnected" 또는 "fullyconnected_test"
+        self.network = "fullyconnected"  # "resnet" 또는 "fullyconnected" 또는 "fullyconnected_test"
         self.support_size = 10
         
         # Fully Connected Network 설정

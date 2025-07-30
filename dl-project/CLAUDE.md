@@ -69,7 +69,7 @@ README.md 파일 내 기록
 tensorboard --logdir models/MuZero/results
 ```
 
-## Architecture Overview (Updated 2025-07-25)
+## Architecture Overview (Updated 2025-07-30)
 
 ### Training/Evaluation Data Parsing
 /home/chp/ai_ws/AD/dl-project/models/MuZero/data_parser.py 를 통해 학습할 데이터들을 GT 인 Json 으로부터 가져온다.
@@ -116,7 +116,7 @@ The `models/SSR/` contains template implementations for Structured State Represe
 2. **Training Data**: 
    - Self-play: Generated through MCTS simulations
    - Expert data: Loaded from GT JSON when using observation_provider_type="gt"
-3. **Observation Shape**: Configured as (3, 99, 99) representing the driving environment state (channel, height, width)
+3. **Observation Shape**: Configured as (6, 99, 99) representing the driving environment state (channel, height, width)
    - Grid size: 99x99 cells (19.8m x 19.8m area with 0.2m per cell)
    - Ego position managed separately via Episode's expert_ego_pos field (grid coordinates), not displayed in grid
    - **Coordinate system**: 180-degree rotated view (forward=down, right=left) for vehicle perspective
@@ -124,6 +124,9 @@ The `models/SSR/` contains template implementations for Structured State Represe
    - Channel 0: Dynamic objects from /obstacles_tracking_msg (pedestrians, vehicles)
    - Channel 1: Static environment from /ldm_msg (cliff, static obstacles, missing points)
    - Channel 2: Ground semantic class_id from /ldm_msg (segmentation information)
+   - Channel 3: Near destination direction vector (x, y)
+   - Channel 4: Final destination direction vector (x, y)
+   - Channel 5: Simulated ego position (row, col in grid coordinates)
 4. **Time Matching**: 
    - Data extraction is now based on Ego (odomgyro) timestamps
    - Uses `time_matching_threshold_sec` (50ms) for closest match within range
@@ -135,6 +138,65 @@ The `models/SSR/` contains template implementations for Structured State Represe
 6. **Value vs Reward**: 
    - Reward: Immediate reward for single step
    - Value: Expected sum of future rewards (used for training targets)
+
+## Recent Updates (2025-07-30)
+
+### MuZero 네트워크 구조 개선
+1. **Dynamics 함수 개선**:
+   - 불필요한 min-max 정규화 제거 (latent space 일관성 문제 해결)
+   - 배치별 정규화가 같은 상태를 다르게 표현하는 문제 수정
+   - 명확한 docstring 추가: g(s_t, a_t) -> (r_t, s_{t+1})
+
+2. **LayerNorm 전면 적용**:
+   - `mlp()` 함수에 `use_layer_norm` 파라미터 추가
+   - 모든 네트워크에 LayerNorm 적용:
+     - representation_network
+     - dynamics_latent_network
+     - dynamics_reward_network
+     - prediction_policy_network
+     - prediction_value_network
+   - 안정적인 gradient flow와 학습 개선
+
+3. **Representation 함수 개선**:
+   - latent state 정규화 제거
+   - LayerNorm이 네트워크 내부에서 정규화 담당
+   - 일관된 latent representation 보장
+
+### 6채널 Observation 구조 및 Simulated Ego Position 추가
+1. **Observation 구조 확장**:
+   - observation_shape을 (5, 99, 99)에서 (6, 99, 99)로 확장
+   - Channel 5: Simulated ego position 추가
+   - Channel 5의 [5, 0, 0]에 row 좌표, [5, 0, 1]에 col 좌표 저장
+
+2. **Simulated Ego Position 관리**:
+   - GT 데이터: 항상 그리드 중앙 (49, 49)에서 시작
+   - Self-play: MCTS가 선택한 action에 따라 누적 이동
+   - 그리드 좌표 (row, col) 형태로 관리
+   - environment.py와 self_play.py에서 일관되게 처리
+
+3. **코드 수정 사항**:
+   - `config.py`: observation_shape = (6, 99, 99)
+   - `data_parser.py`: build_observation_tensor()에 Channel 5 처리 추가
+   - `models.py`: representation network 입력 차원 58,810으로 수정
+   - `expert_data_loader.py`: simulated_ego_pos 초기값 (49, 49) 설정
+   - `self_play.py`: enrich_episodes_with_mcts()에서 action에 따른 위치 업데이트
+
+### MCTS 코드 개선 및 게임 오버 Value 계산 구조화
+1. **MCTS 버그 수정**:
+   - 불필요한 action 재계산 코드 제거
+   - parent-child 관계 재탐색 로직 삭제
+   - 엣지 케이스 처리 개선
+
+2. **게임 오버 Value 계산 함수화**:
+   - `_get_episode_game_over_value()`: 메인 함수로 다양한 평가 요소 통합
+   - `_calculate_trajectory_following_value()`: 경로 추종 정확도 평가
+   - `_calculate_collision_value()`: 충돌 기반 평가 (TODO)
+   - 향후 확장 가능한 구조로 설계
+
+3. **Value Backward Propagation**:
+   - Episode 마지막 스텝의 value로부터 역방향 전파
+   - V[t] = r[t] + γ * V[t+1] 공식 사용
+   - discount factor로 미래 가치 할인
 
 ## Recent Updates (2025-07-25)
 

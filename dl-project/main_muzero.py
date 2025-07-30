@@ -10,7 +10,7 @@ import argparse
 import json
 
 # MuZero 관련 import
-from models.MuZero.models import MuZeroFullyConnectedNetwork, MuZeroFullyConnectedNetworkDirOnlyForTest
+from models.MuZero.models import MuZeroFullyConnectedNetwork
 from models.MuZero.config import MuZeroConfig
 # MCTS는 SelfPlayManager 내부에서 사용됨
 from models.MuZero.action import Action
@@ -29,19 +29,6 @@ def get_network(config, device):
     """설정에 따라 적절한 MuZero 네트워크를 생성합니다."""
     if config.network == "fullyconnected":
         return MuZeroFullyConnectedNetwork(
-            config.observation_shape,
-            config.stacked_observations,
-            len(config.action_space),
-            config.encoding_size,
-            config.fc_reward_layers,
-            config.fc_value_layers,
-            config.fc_policy_layers,
-            config.fc_representation_layers,
-            config.fc_dynamics_layers,
-            config.support_size,
-        ).to(device)
-    elif config.network == "fullyconnected_test":
-        return MuZeroFullyConnectedNetworkDirOnlyForTest(
             config.observation_shape,
             config.stacked_observations,
             len(config.action_space),

@@ -33,11 +33,23 @@ def mlp(
     output_size,
     output_activation=torch.nn.Identity,
     activation=torch.nn.ELU,
+    use_layer_norm=False,
 ):
-    """Multi-Layer Perceptron 생성"""
+    """Multi-Layer Perceptron 생성
+    
+    Args:
+        input_size: 입력 크기
+        layer_sizes: 은닉층 크기 리스트
+        output_size: 출력 크기
+        output_activation: 출력 활성화 함수
+        activation: 은닉층 활성화 함수
+        use_layer_norm: LayerNorm 사용 여부
+    """
     layers = []
     for i, layer_size in enumerate(layer_sizes):
         layers.append(torch.nn.Linear(input_size, layer_size))
+        if use_layer_norm:
+            layers.append(torch.nn.LayerNorm(layer_size))
         layers.append(activation())
         input_size = layer_size
 
@@ -47,131 +59,6 @@ def mlp(
 
 
 class MuZeroFullyConnectedNetwork(AbstractNetwork):
-    """Fully Connected MuZero Network"""
-    
-    def __init__(
-        self,
-        observation_shape,
-        stacked_observations,
-        action_space_size,
-        encoding_size,
-        fc_reward_layers,
-        fc_value_layers,
-        fc_policy_layers,
-        fc_representation_layers,
-        fc_dynamics_layers,
-        support_size,
-    ):
-        super().__init__()
-        self.action_space_size = action_space_size
-        self.full_support_size = 2 * support_size + 1
-        
-        # 방향 벡터(4) + 전체 observation flatten(6*99*99) = 58,810차원
-        self.representation_network = torch.nn.DataParallel(
-            mlp(
-                4 + observation_shape[0] * observation_shape[1] * observation_shape[2],  # 4 + 58,806 = 58,810
-                fc_representation_layers,
-                encoding_size,
-            )
-        )
-
-        self.dynamics_latent_network = torch.nn.DataParallel(
-            mlp(
-                encoding_size + self.action_space_size,
-                fc_dynamics_layers,
-                encoding_size,
-            )
-        )
-        self.dynamics_reward_network = torch.nn.DataParallel(
-            mlp(encoding_size, fc_reward_layers, self.full_support_size)
-        )
-
-        self.prediction_policy_network = torch.nn.DataParallel(
-            mlp(encoding_size, fc_policy_layers, self.action_space_size)
-        )
-        self.prediction_value_network = torch.nn.DataParallel(
-            mlp(encoding_size, fc_value_layers, self.full_support_size)
-        )
-
-    def prediction(self, latent):
-        policy_logits = self.prediction_policy_network(latent)
-        value = self.prediction_value_network(latent)
-        return policy_logits, value
-
-    def representation(self, observation):
-        latent = self.representation_network(
-            observation.view(observation.shape[0], -1)
-        )
-        # Scale latent between [0, 1] (See appendix paper Training)
-        min_latent = latent.min(1, keepdim=True)[0]
-        max_latent = latent.max(1, keepdim=True)[0]
-        scale_latent = max_latent - min_latent
-        scale_latent[scale_latent < 1e-5] += 1e-5
-        latent_normalized = (
-            latent - min_latent
-        ) / scale_latent
-        return latent_normalized
-
-    def dynamics(self, latent, action):
-        """dynamics_neural_network의 간단한 버전"""
-        # Stack latent with a game specific one hot encoded action
-        action_one_hot = (
-            torch.zeros((action.shape[0], self.action_space_size))
-            .to(action.device)
-            .float()
-        )
-        
-        # action이 1차원이면 2차원으로 변환
-        if len(action.shape) == 1:
-            action = action.unsqueeze(1)
-        
-        action_one_hot.scatter_(1, action.long(), 1.0)
-        
-        x = torch.cat((latent, action_one_hot), dim=1)
-
-        next_latent = self.dynamics_latent_network(x)
-        reward = self.dynamics_reward_network(next_latent)
-
-        # Scale latent between [0, 1]
-        min_next_latent = next_latent.min(1, keepdim=True)[0]
-        max_next_latent = next_latent.max(1, keepdim=True)[0]
-        scale_next_latent = max_next_latent - min_next_latent
-        scale_next_latent[scale_next_latent < 1e-5] += 1e-5
-        next_latent_normalized = (
-            next_latent - min_next_latent
-        ) / scale_next_latent
-
-        return next_latent_normalized, reward
-
-    def initial_inference(self, observation):
-        latent = self.representation(observation)
-        policy_logits, value = self.prediction(latent)
-        
-        # reward equal to 0 for consistency
-        reward = torch.log(
-            (
-                torch.zeros(1, self.full_support_size)
-                .scatter(1, torch.tensor([[self.full_support_size // 2]]).long(), 1.0)
-                .repeat(len(observation), 1)
-                .to(observation.device)
-            )
-        )
-
-        return (
-            value,
-            reward,
-            policy_logits,
-            latent,
-        )
-
-    def recurrent_inference(self, latent, action):
-        next_latent, reward = self.dynamics(latent, action)
-        policy_logits, value = self.prediction(next_latent)
-        return value, reward, policy_logits, next_latent 
-
-
-
-class MuZeroFullyConnectedNetworkDirOnlyForTest(AbstractNetwork):
     """방향 벡터만 사용하는 테스트용 MuZero Network"""
     
     def __init__(
@@ -202,6 +89,7 @@ class MuZeroFullyConnectedNetworkDirOnlyForTest(AbstractNetwork):
                 total_input_size,  # 방향 벡터 + 전체 observation
                 fc_representation_layers,
                 encoding_size,
+                use_layer_norm=True  # LayerNorm 적용
             )
         )
 
@@ -210,20 +98,45 @@ class MuZeroFullyConnectedNetworkDirOnlyForTest(AbstractNetwork):
                 encoding_size + self.action_space_size,
                 fc_dynamics_layers,
                 encoding_size,
+                use_layer_norm=True  # LayerNorm 적용
             )
         )
         self.dynamics_reward_network = torch.nn.DataParallel(
-            mlp(encoding_size, fc_reward_layers, self.full_support_size)
+            mlp(
+                encoding_size, 
+                fc_reward_layers, 
+                self.full_support_size,
+                use_layer_norm=True  # LayerNorm 적용
+            )
         )
 
         self.prediction_policy_network = torch.nn.DataParallel(
-            mlp(encoding_size, fc_policy_layers, self.action_space_size)
+            mlp(
+                encoding_size, 
+                fc_policy_layers, 
+                self.action_space_size,
+                use_layer_norm=True  # LayerNorm 적용
+            )
         )
         self.prediction_value_network = torch.nn.DataParallel(
-            mlp(encoding_size, fc_value_layers, self.full_support_size)
+            mlp(
+                encoding_size, 
+                fc_value_layers, 
+                self.full_support_size,
+                use_layer_norm=True  # LayerNorm 적용
+            )
         )
 
     def prediction(self, latent):
+        """Prediction function: f(s) -> (p, v)
+        
+        Args:
+            latent: latent state representation
+            
+        Returns:
+            policy_logits: action에 대한 logits (softmax 전)
+            value: 상태 가치 (categorical distribution)
+        """
         policy_logits = self.prediction_policy_network(latent)
         value = self.prediction_value_network(latent)
         return policy_logits, value
@@ -252,23 +165,25 @@ class MuZeroFullyConnectedNetworkDirOnlyForTest(AbstractNetwork):
         # Representation network 통과
         latent = self.representation_network(combined_input)
         
-        # Normalize - Scale latent between [0, 1] (See appendix paper Training)
-        min_latent = latent.min(1, keepdim=True)[0]
-        max_latent = latent.max(1, keepdim=True)[0]
-        scale_latent = max_latent - min_latent
-        scale_latent[scale_latent < 1e-5] += 1e-5
-        latent_normalized = (
-            latent - min_latent
-        ) / scale_latent
-        return latent_normalized
+        # 정규화 없이 반환 (LayerNorm이 정규화 담당)
+        return latent
 
     def dynamics(self, latent, action):
-        """dynamics_neural_network의 간단한 버전"""
-        # Stack latent with a game specific one hot encoded action
-        action_one_hot = (
-            torch.zeros((action.shape[0], self.action_space_size))
-            .to(action.device)
-            .float()
+        """Dynamics function: g(s_t, a_t) -> (r_t, s_{t+1})
+        
+        Args:
+            latent: 현재 latent state
+            action: 수행할 action
+            
+        Returns:
+            next_latent: 다음 latent state
+            reward: 예측된 보상 (categorical distribution)
+        """
+        # Action을 one-hot 인코딩
+        action_one_hot = torch.zeros(
+            (action.shape[0], self.action_space_size),
+            device=action.device,
+            dtype=torch.float32
         )
         
         # action이 1차원이면 2차원으로 변환
@@ -277,23 +192,22 @@ class MuZeroFullyConnectedNetworkDirOnlyForTest(AbstractNetwork):
         
         action_one_hot.scatter_(1, action.long(), 1.0)
         
-        x = torch.cat((latent, action_one_hot), dim=1)
+        # Latent와 action 결합
+        x = torch.cat([latent, action_one_hot], dim=1)
 
+        # Dynamics network를 통해 다음 latent state 예측
         next_latent = self.dynamics_latent_network(x)
+        
+        # 다음 latent state로부터 reward 예측
         reward = self.dynamics_reward_network(next_latent)
 
-        # Scale latent between [0, 1]
-        min_next_latent = next_latent.min(1, keepdim=True)[0]
-        max_next_latent = next_latent.max(1, keepdim=True)[0]
-        scale_next_latent = max_next_latent - min_next_latent
-        scale_next_latent[scale_next_latent < 1e-5] += 1e-5
-        next_latent_normalized = (
-            next_latent - min_next_latent
-        ) / scale_next_latent
-
-        return next_latent_normalized, reward
+        # 정규화 없이 반환 (네트워크 내부의 LayerNorm이 정규화 담당)
+        return next_latent, reward
 
     def initial_inference(self, observation):
+        """
+            초기 추론: 관측값으로부터 가치, 보상, 정책, 은닉 상태를 예측
+        """
         latent = self.representation(observation)
         policy_logits, value = self.prediction(latent)
         
@@ -315,6 +229,9 @@ class MuZeroFullyConnectedNetworkDirOnlyForTest(AbstractNetwork):
         )
 
     def recurrent_inference(self, latent, action):
+        """
+            재귀적 추론: 초기추론 이후 은닉 상태와 액션으로부터 다음 상태 예측
+        """
         next_latent, reward = self.dynamics(latent, action)
         policy_logits, value = self.prediction(next_latent)
         return value, reward, policy_logits, next_latent 
