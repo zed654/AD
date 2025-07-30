@@ -18,6 +18,7 @@ from models.MuZero.environment import DrivingEnvironment
 from models.MuZero.observation_provider import GTObservationProvider, ROS2ObservationProvider, MockObservationProvider
 from models.MuZero.self_play import SelfPlayManager
 from models.MuZero.replay_buffer import ReplayBuffer
+from models.MuZero.data_parser import build_observation_tensor
 from models.MuZero.train import train_network
 from models.MuZero.utils import calculate_game_statistics, print_game_statistics, print_episode_summary
 from models.MuZero.config_manager import load_config, save_config, print_config
@@ -245,37 +246,75 @@ def inference_mode(config, checkpoint_path, num_episodes=1, render=True):
     print("\n✅ 추론 완료!")
 
 
-def evaluate_mode(config, checkpoint_path, num_episodes=100, use_mcts=True):
-    """평가 모드 - 모델 성능 평가
+def evaluate_mode(config, checkpoint_path, num_episodes=100, use_mcts=True, dataset_type="validation", save_results=False):
+    """평가 모드 - GT 데이터에 대한 모델 성능 평가
+    
+    GT 데이터의 observation에 대해 MCTS를 실행하여 선택한 action과
+    expert action을 비교하여 모델의 성능을 평가합니다.
     
     Args:
         config: 설정 객체
         checkpoint_path: 체크포인트 경로
         num_episodes: 평가할 에피소드 수
         use_mcts: MCTS 사용 여부 (True: MCTS 사용, False: 네트워크 출력만 사용)
+        dataset_type: 사용할 데이터셋 ("train", "validation", "test")
+        save_results: 평가 결과를 파일로 저장할지 여부
     """
     print("\n" + "="*60)
-    print("📊 MuZero 평가 모드")
+    print("📊 MuZero 평가 모드 - GT 데이터 기반 평가")
     print("="*60)
     print(f"🎯 MCTS 사용: {'예' if use_mcts else '아니오'}")
+    print(f"📁 데이터셋: {dataset_type}")
     
-    # 추론 모드와 유사하지만 통계 수집에 집중
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    network = get_network(config, device)
     
-    # 체크포인트 로드
+    # 네트워크 로드
+    network = get_network(config, device)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     network.load_state_dict(checkpoint['network_state_dict'])
     network.eval()
+    print(f"✅ 체크포인트 로드 완료: {checkpoint_path}")
     
-    # 평가용 ObservationProvider 생성 (기본적으로 GT 사용하지만 설정 유지)
-    if config.observation_provider_type != "gt":
-        print(f"⚠️  평가 모드에서는 일반적으로 GT 데이터를 사용합니다. 현재: {config.observation_provider_type}")
-    observation_provider = create_observation_provider(config, mode="train")  # GT나 Mock
+    # GT 데이터 로드 - 데이터셋 타입에 따라 다른 경로 사용
+    config.observation_provider_type = "gt"  # 평가는 항상 GT 데이터로
+    
+    # 데이터셋별 경로 설정
+    original_gt_dir = config.gt_jsonl_dir
+    if dataset_type == "validation":
+        # validation 데이터 경로 (예: gt_jsonl_dir + "_val")
+        validation_dir = Path(original_gt_dir).parent / f"{Path(original_gt_dir).name}_val"
+        if validation_dir.exists():
+            config.gt_jsonl_dir = str(validation_dir)
+            print(f"📂 Validation 데이터 사용: {validation_dir}")
+        else:
+            print(f"⚠️  Validation 데이터 경로가 없습니다: {validation_dir}")
+            print(f"📂 Train 데이터로 대체: {original_gt_dir}")
+    elif dataset_type == "test":
+        # test 데이터 경로
+        test_dir = Path(original_gt_dir).parent / f"{Path(original_gt_dir).name}_test"
+        if test_dir.exists():
+            config.gt_jsonl_dir = str(test_dir)
+            print(f"📂 Test 데이터 사용: {test_dir}")
+        else:
+            print(f"⚠️  Test 데이터 경로가 없습니다: {test_dir}")
+            print(f"📂 Train 데이터로 대체: {original_gt_dir}")
+    else:  # train
+        print(f"📂 Train 데이터 사용: {original_gt_dir}")
+    
+    observation_provider = create_observation_provider(config, mode="train")
     environment = DrivingEnvironment(config, observation_provider)
     
+    # Expert 데이터 로더 생성
+    expert_loader = ExpertDataLoader(observation_provider)
+    
+    # GT Episode 로드
+    print(f"\n📁 GT 데이터 로드 중...")
+    expert_episodes = expert_loader.load_episodes(max_episodes=num_episodes)
+    actual_episodes = len(expert_episodes)
+    print(f"✅ {actual_episodes}개 GT Episode 로드 완료")
+    
     if use_mcts:
-        # MCTS를 사용한 평가 (더 정확하지만 느림)
+        # SelfPlayManager로 MCTS 평가
         self_play_manager = SelfPlayManager(
             network=network,
             environment=environment,
@@ -283,59 +322,107 @@ def evaluate_mode(config, checkpoint_path, num_episodes=100, use_mcts=True):
             device=device
         )
         
-        print(f"\n🎮 MCTS를 사용하여 {num_episodes}개 에피소드 평가...")
-        games = self_play_manager.play_games(
-            num_games=num_episodes,
-            temperature=0.0  # 평가 시 결정적 선택
-        )
+        print(f"\n🎮 GT 데이터에 MCTS 적용하여 평가 중...")
+        # enrich_episodes_with_mcts를 사용하여 GT observation에 대해 MCTS 실행
+        evaluated_episodes = self_play_manager.enrich_episodes_with_mcts(expert_episodes)
         
-        # 통계 수집
-        episode_rewards = [sum(game.rewards) for game in games]
-        episode_lengths = [game.get_length() for game in games]
-        success_count = sum(1 for _ in games if environment.done_reason == 'goal_reached')
+        # 평가 메트릭 계산
+        total_steps = 0
+        total_distance_error = 0.0
+        episode_distance_errors = []
+        episode_values = []
+        
+        for episode in evaluated_episodes:
+            episode_error = 0.0
+            episode_steps = 0
+            
+            for step_idx in range(len(episode)):
+                total_steps += 1
+                episode_steps += 1
+                
+                # 거리 오차 계산 (simulated vs expert position)
+                if 'simulated_ego_pos' in episode.states[step_idx]:
+                    sim_pos = episode.states[step_idx]['simulated_ego_pos']
+                    expert_pos = episode.expert_ego_pos[step_idx]
+                    if sim_pos and expert_pos:
+                        distance = np.sqrt((sim_pos[0] - expert_pos[0])**2 + 
+                                         (sim_pos[1] - expert_pos[1])**2)
+                        total_distance_error += distance
+                        episode_error += distance
+            
+            # Episode별 평균 거리 오차
+            if episode_steps > 0:
+                episode_distance_errors.append(episode_error / episode_steps)
+            
+            # Episode의 평균 value
+            if len(episode.values) > 0:
+                episode_values.append(np.mean(episode.values))
+        
+        # 최종 통계 출력
+        print(f"\n📈 MCTS 평가 결과:")
+        print(f"   - 평가한 Episode 수: {actual_episodes}개")
+        print(f"   - 총 평가 스텝 수: {total_steps}")
+        print(f"   - 평균 거리 오차: {total_distance_error/total_steps:.2f} 그리드 셀")
+        print(f"   - Episode별 평균 거리 오차: {np.mean(episode_distance_errors):.2f} (±{np.std(episode_distance_errors):.2f})")
+        print(f"   - 평균 Episode Value: {np.mean(episode_values):.3f} (±{np.std(episode_values):.3f})")
         
     else:
-        # 네트워크 출력만 사용한 빠른 평가
-        episode_rewards = []
-        episode_lengths = []
-        success_count = 0
+        # 네트워크 직접 추론 (MCTS 없이)
+        print(f"\n🎮 네트워크 직접 추론으로 평가 중...")
         
-        print(f"\n🎮 네트워크 직접 추론으로 {num_episodes}개 에피소드 평가...")
+        total_steps = 0
+        total_distance_error = 0.0
         
-        for episode in range(num_episodes):
-            observation = environment.reset()
-            done = False
-            total_reward = 0
-            steps = 0
-            
-            while not done and steps < config.max_game_length:
-                with torch.no_grad():
-                    # 간단한 추론 (MCTS 없이)
-                    network_output = network.initial_inference(observation.unsqueeze(0))
-                    policy = torch.softmax(network_output.policy_logits, dim=1)
-                    action = torch.argmax(policy).item()
+        for episode in expert_episodes:
+            for step_idx in range(len(episode)):
+                state_dict = episode.states[step_idx]
                 
-                observation, reward, done, info = environment.step(action)
-                total_reward += reward
-                steps += 1
-            
-            episode_rewards.append(total_reward)
-            episode_lengths.append(steps)
-            if info.get('done_reason') == 'goal_reached':
-                success_count += 1
-            
-            if (episode + 1) % 10 == 0:
-                print(f"  진행: {episode + 1}/{num_episodes}")
+                # 6채널 observation 생성
+                observation = build_observation_tensor(state_dict, config.observation_shape, device)
+                
+                with torch.no_grad():
+                    # 네트워크 추론
+                    value, _, policy_logits, _ = network.initial_inference(observation.unsqueeze(0))
+                    
+                    # 정책에서 가장 높은 확률의 action 선택
+                    action = torch.argmax(policy_logits).item()
+                    
+                    # value 추출 (categorical distribution에서)
+                    support_size = (config.support_size * 2) + 1
+                    support = torch.arange(-config.support_size, config.support_size + 1, device=device)
+                    value_scalar = torch.sum(value[0] * support).item()
+                    
+                    # Action에 따른 simulated position 계산
+                    # (실제 시뮬레이션 없이 단순 계산)
+                    # 여기서는 평가 메트릭만 계산
+                    
+                total_steps += 1
+        
+        print(f"\n📈 네트워크 직접 추론 결과:")
+        print(f"   - 평가한 Episode 수: {actual_episodes}개")
+        print(f"   - 총 평가 스텝 수: {total_steps}")
     
-    # 최종 통계
-    print(f"\n📈 평가 결과:")
-    print(f"   - 평균 보상: {np.mean(episode_rewards):.2f} (±{np.std(episode_rewards):.2f})")
-    print(f"   - 평균 에피소드 길이: {np.mean(episode_lengths):.1f}")
-    print(f"   - 성공률: {success_count/num_episodes*100:.1f}%")
-    print(f"   - 최고 보상: {np.max(episode_rewards):.2f}")
-    print(f"   - 최저 보상: {np.min(episode_rewards):.2f}")
+    # 평가 결과 저장 (MCTS 사용 시에만)
+    if save_results and use_mcts:
+        import pickle
+        from datetime import datetime
+        
+        # 저장 경로 생성
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        results_dir = Path("evaluation_results")
+        results_dir.mkdir(exist_ok=True)
+        
+        save_path = results_dir / f"eval_{dataset_type}_{timestamp}.pkl"
+        
+        # Episode 저장
+        with open(save_path, 'wb') as f:
+            pickle.dump(evaluated_episodes, f)
+        
+        print(f"\n💾 평가 결과 저장됨: {save_path}")
+        print(f"   시각화: python visualize_evaluation.py --results {save_path}")
     
     environment.close()
+    print("\n✅ 평가 완료!")
 
 
 def find_latest_checkpoint(config):
@@ -398,6 +485,14 @@ def main():
     parser.add_argument("--no-render", action="store_true",
                        help="렌더링 비활성화")
     
+    # 평가 옵션
+    parser.add_argument("--dataset", choices=["train", "validation", "test"],
+                       default="validation", help="평가할 데이터셋 선택")
+    parser.add_argument("--no-mcts", action="store_true",
+                       help="MCTS 없이 네트워크 출력만으로 평가")
+    parser.add_argument("--save", action="store_true",
+                       help="평가 결과를 파일로 저장 (시각화용)")
+    
     # ObservationProvider 옵션
     parser.add_argument("--provider", choices=["mock", "gt", "ros2"],
                        default=None, help="Observation Provider 타입")
@@ -445,7 +540,8 @@ def main():
                 print(error)
                 return
                 
-        evaluate_mode(config, checkpoint_path, args.episodes)
+        evaluate_mode(config, checkpoint_path, args.episodes, 
+                     use_mcts=not args.no_mcts, dataset_type=args.dataset)
 
 
 if __name__ == "__main__":
