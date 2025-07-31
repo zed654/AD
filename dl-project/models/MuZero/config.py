@@ -30,14 +30,14 @@ class MuZeroConfig:
         # Channel 5: Simulated ego position (1.0 at ego location)
         self.original_resolution = 0.1  # 원본 데이터 해상도 (10cm)
         self.downsample_factor = 2  # 다운샘플링 비율 (2x2 셀을 1개로)
-        self.max_episode_length = 50  # 에피소드 최대 스텝 수 (약 10초, 5Hz 기준)
+        self.max_episode_step_length = 50  # 에피소드 최대 스텝 수 (약 10초, 5Hz 기준)
         self.collision_threshold = 0.5  # 충돌 판정 거리
         self.goal_threshold = 1.0  # 목표 도달 판정 거리
         self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
         
         # GT Episode 생성 설정
-        self.gt_num_episodes = 5 #20  # GT 데이터에서 생성할 에피소드 수
-        self.gt_episode_overlap = 2 #25  # 에피소드 간 겹침 스텝 수
+        self.gt_num_episodes = 20  # GT 데이터에서 생성할 에피소드 수
+        self.gt_episode_overlap = 10 #25  # 에피소드 간 겹침 스텝 수
         
         # Observation Provider 설정
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
@@ -46,7 +46,7 @@ class MuZeroConfig:
         # Self-Play 설정
         self.num_workers = 1
         self.selfplay_on_gpu = False
-        self.num_simulations = 3 #50
+        self.num_simulations = 50
         self.discount = 0.997
         self.temperature_threshold = None
         self.num_stochastic_steps = 30  # 초기 30스텝 동안 확률적 행동 선택

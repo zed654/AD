@@ -40,14 +40,14 @@ class ExpertDataLoader:
     
     def create_episodes_from_json(self, 
                                  num_episodes: int = 10,
-                                 episode_length: int = 50,
+                                 episode_step_length: int = 50,
                                  overlap: int = 25) -> List[Episode]:
         """
         JSON 데이터에서 Episode 생성
         
         Args:
             num_episodes: 생성할 에피소드 수
-            episode_length: 각 에피소드 길이
+            episode_step_length: 각 에피소드 길이
             overlap: 에피소드 간 겹치는 프레임 수
         
         Returns:
@@ -61,13 +61,13 @@ class ExpertDataLoader:
         total_frames = self.parser.get_frame_count()
         
         # 시작 위치 계산 (overlap 고려)
-        step = episode_length - overlap
-        start_positions = list(range(0, total_frames - episode_length, step))[:num_episodes]
+        step = episode_step_length - overlap
+        start_positions = list(range(0, total_frames - episode_step_length, step))[:num_episodes]
         
         for ep_idx, start_idx in enumerate(start_positions):
             print(f"Episode {ep_idx + 1}/{num_episodes} 생성 중...")
             
-            episode = self._create_single_episode(start_idx, episode_length, ep_idx)
+            episode = self._create_single_episode(start_idx, episode_step_length, ep_idx)
             if episode and len(episode) > 10:  # 최소 길이 체크
                 episodes.append(episode)
         
