@@ -97,6 +97,51 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         ax.grid(True, alpha=0.3)
         ax.set_title(f'Epoch {epoch} - Episode {ep_idx+1} (All {visualization_steps} steps)')
         
+        # 마지막 프레임의 환경 정보 시각화 (배경으로)
+        if len(enriched_episode.states) > 0:
+            last_state = enriched_episode.states[-1]  # 마지막 프레임 사용
+            
+            # Channel 0: Dynamic objects (빨간색 계열)
+            if 'obstacles' in last_state and last_state['obstacles'] is not None:
+                obstacles = last_state['obstacles']
+                obstacle_mask = obstacles > 0
+                obstacle_points = np.where(obstacle_mask)
+                ax.scatter(obstacle_points[1], obstacle_points[0], 
+                          c='red', s=20, alpha=0.3, marker='s', label='Dynamic Objects')
+            
+            # Channel 1: Static environment (노란색 계열)
+            if 'static_environment' in last_state and last_state['static_environment'] is not None:
+                static_env = last_state['static_environment']
+                static_mask = static_env > 0
+                static_points = np.where(static_mask)
+                ax.scatter(static_points[1], static_points[0], 
+                          c='yellow', s=20, alpha=0.3, marker='^', label='Static Environment')
+            
+            # Direction vectors (화살표로 표시)
+            center_row, center_col = 49, 49  # 그리드 중앙
+            
+            # Near destination direction (초록색 화살표)
+            if 'near_destination_direction' in last_state and last_state['near_destination_direction']:
+                near_dir = last_state['near_destination_direction']
+                if near_dir and 'x' in near_dir and 'y' in near_dir:
+                    # 180도 회전 좌표계 적용
+                    dx = -near_dir['y'] * 10  # 오른쪽이 왼쪽
+                    dy = near_dir['x'] * 10   # 전방이 아래쪽
+                    ax.arrow(center_col, center_row, dx, dy,
+                            head_width=2, head_length=1, fc='green', ec='green',
+                            alpha=0.7, label='Near Direction')
+            
+            # Final destination direction (파란색 화살표)
+            if 'final_destination_direction' in last_state and last_state['final_destination_direction']:
+                final_dir = last_state['final_destination_direction']
+                if final_dir and 'x' in final_dir and 'y' in final_dir:
+                    # 180도 회전 좌표계 적용
+                    dx = -final_dir['y'] * 15  # 더 긴 화살표
+                    dy = final_dir['x'] * 15
+                    ax.arrow(center_col, center_row, dx, dy,
+                            head_width=2, head_length=1, fc='darkblue', ec='darkblue',
+                            alpha=0.7, label='Final Direction')
+        
         # Expert 경로 (파란색)
         expert_rows = [pos[0] for pos in enriched_episode.expert_ego_pos]
         expert_cols = [pos[1] for pos in enriched_episode.expert_ego_pos]
@@ -139,8 +184,8 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         if len(expert_cols) > 1:
             ax.scatter(expert_cols[-1], expert_rows[-1], c='orange', s=100, marker='s', label='End', zorder=6)
         
-        # 범례
-        ax.legend(loc='upper right')
+        # 범례 (항목이 많아서 크기와 위치 조정)
+        ax.legend(loc='upper right', fontsize=8, ncol=2)
         
         # Loss 정보 텍스트 박스 추가 (최신 Loss)
         if loss_history and 'latest_loss' in loss_history:
