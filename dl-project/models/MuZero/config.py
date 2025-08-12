@@ -75,7 +75,7 @@ class MuZeroConfig:
         self.save_model = True
         self.training_steps = 1000  # 500 -> 1000 (밤새 충분한 학습)
         self.batch_size = 32  # 16 -> 32 (안정적인 학습)
-        self.unroll_steps = 5  # K-step unrolling 길이 (MuZero 논문 기본값)
+        self.unroll_steps = 49  # K-step unrolling 길이 (전체 Episode 커버 - Monte Carlo에 가까운 학습)
         self.checkpoint_interval = 5  # 10 → 5로 변경 (5 에폭마다 시각화)
         self.value_loss_weight = 1
         self.train_on_gpu = torch.cuda.is_available()
@@ -87,7 +87,7 @@ class MuZeroConfig:
         # 학습률 설정
         self.lr_init = 0.001  # 0.02 -> 0.001로 감소
         self.lr_decay_rate = 0.9  # 0.8 -> 0.9로 더 천천히 감소
-        self.lr_decay_steps = 1000
+        self.lr_decay_steps = 100  # 1000 -> 100으로 더 자주 감소
         
         # 추가 학습 설정 (개선된 인터페이스용)
         self.num_training_epochs = 200  # 5 → 20 (밤새 학습)

@@ -244,8 +244,12 @@ class SelfPlayManager:
             # Simulated ego position 추적 (그리드 좌표)
             simulated_ego_row, simulated_ego_col = 49, 49  # 그리드 중앙에서 시작. self.observation_shape 의 중앙임
             
+            # dones 필드 초기화 (충돌 tracking용)
+            if not hasattr(episode, 'dones'):
+                episode.dones = [False] * len(episode.states)
+            
             # 각 스텝에 대해 MCTS 실행
-            for step_idx in range(len(episode)):
+            for step_idx in range(len(episode.states)):
                 # observation 가져오기 (dict 형태)
                 state_dict = episode.states[step_idx]
                 
@@ -276,170 +280,148 @@ class SelfPlayManager:
                     
                     # MCTS가 선택한 action 저장
                     selected_action = mcts_result['action']
+                    # selected_action = 6  # Action 고정 테스트 (2=POS2=전방/상단)
                     episode.actions[step_idx] = selected_action
                     
                     # Action에 따라 simulated_ego_pos 업데이트 (최종 value 계산용)
                     action = Action.from_index(selected_action)
                     dx, dy = action.get_movement_vector()
                     # 180도 회전 좌표계에서 그리드 좌표 업데이트:
-                    # dy > 0 (상단) → row 증가 (전방)
-                    # dx > 0 (우측) → col 감소 (좌측)
+                    # dy > 0 (상단) → row 증가 (전방으로 이동 = 아래로)
+                    # dx > 0 (우측) → col 감소 (180도 회전으로 오른쪽이 왼쪽)
                     simulated_ego_row += dy  # 전방/후방
-                    simulated_ego_col -= dx  # 좌/우
+                    simulated_ego_col -= dx  # 좌/우 (environment.py와 일치)
                     
                     # Episode state에도 업데이트 (최종 거리 계산을 위해)
                     episode.states[step_idx]['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
                     
+                    # 디버깅: 데이터 타입 확인 (처음 몇 스텝만)
+                    if step_idx < 2:
+                        obs_type = type(episode.states[step_idx].get('obstacles', None))
+                        print(f"    - 스텝 {step_idx} 후 obstacles 타입: {obs_type}")
+                    
                     # GT 학습을 위한 환경 reward 계산
-                    # TODO: 실제 환경 보상 정의 필요
-                    episode.rewards[step_idx] = self._calculate_target_reward(
+                    reward = self._calculate_target_reward(
                         episode, step_idx, selected_action, 
                         (simulated_ego_row, simulated_ego_col)
                     )
+                    episode.rewards[step_idx] = reward
+                    
+                    # 충돌 발생 시 Episode 종료
+                    if reward == -1.0:
+                        print(f"    - 충돌로 인해 Episode 종료 (스텝 {step_idx + 1}/{len(episode.states)})")
+                        # 현재 스텝을 터미널로 표시 (잘라내기 전에 먼저 설정)
+                        if step_idx < len(episode.dones):
+                            episode.dones[step_idx] = True
+                        # Episode 길이를 충돌 지점까지로 잘라냄
+                        episode.states = episode.states[:step_idx + 1]
+                        episode.rewards = episode.rewards[:step_idx + 1]
+                        episode.policies = episode.policies[:step_idx + 1]
+                        episode.values = episode.values[:step_idx + 1]
+                        episode.actions = episode.actions[:step_idx + 1]
+                        episode.dones = episode.dones[:step_idx + 1]
+                        if hasattr(episode, 'expert_ego_pos'):
+                            episode.expert_ego_pos = episode.expert_ego_pos[:step_idx + 1]
+                        break  # MCTS 적용 루프 종료
                 
                 if step_idx % 10 == 0:
-                    print(f"  - 진행률: {step_idx}/{len(episode)} 스텝 (각 스텝마다 {self.config.num_simulations}회 시뮬레이션)")
+                    print(f"  - 진행률: {step_idx}/{len(episode.states)} 스텝 (각 스텝마다 {self.config.num_simulations}회 시뮬레이션)")
             
-            # Value propagation 추가
-            # 1. 모든 value를 0으로 초기화
-            for i in range(len(episode)):
-                episode.values[i] = 0.0
-            
-            # 2. GameOver 조건에 따른 최종 value 설정
-            final_value = self._get_episode_game_over_value(episode)
-            
-            # 3. Backward value propagation
-            self._calculate_target_value(episode, final_value)
+            # n-step bootstrap target value 계산
+            # MCTS root values는 보존하고 target_values는 별도로 계산됨
+            episode.target_values = self._calculate_target_value(episode)
             
             enriched_episodes.append(episode)
-            print(f"  - Episode {ep_idx + 1} 완료: {len(episode)} 스텝, "
-                  f"평균 value: {np.mean(episode.values):.3f}")
+            # target_values 출력 (학습에 사용되는 실제 타깃)
+            avg_target_value = np.mean(episode.target_values) if hasattr(episode, 'target_values') else np.mean(episode.values)
+            print(f"  - Episode {ep_idx + 1} 완료: {len(episode.states)} 스텝, "
+                  f"평균 target value: {avg_target_value:.3f}")
         
         return enriched_episodes
     
-    def _get_episode_game_over_value(self, episode: Episode) -> float:
-        """Episode의 GameOver 조건에 따른 최종 value 반환
-        
-        다양한 요소들을 고려하여 최종 value 계산:
-        - Collision Rate - 충돌 여부
-        - minADE - 경로 추종 정확도 (expert와의 거리 오차)
-        - minFDE - 예측 경로 중, 예측의 최종 도착지점과 실제 도착지점의 차이
-        - Missing Rate - 예측을 크게 빗나갈 확률 (Threshold 걸어넣고, 예측이 Threshold를 넘는 경우)
-        """
-        print("\nEpisode GameOver value 계산 중...")
-        print(f"  - 총 스텝: {len(episode)}")
-        
-        # 1. 경로 추종 정확도 기반 value
-        trajectory_value = self._calculate_trajectory_following_value(episode)
-        
-        # 2. 충돌 기반 value
-        collision_value = self._calculate_collision_value(episode)
-        
-        # 3. Missing Rate 기반 value
-        # missing_rate_value = self._calculate_missing_rate_value(episode)
-        
-        # 4. 기타 조건들 (TODO: 필요시 추가)
-        # goal_reaching_value = self._calculate_goal_reaching_value(episode)
-        # smoothness_value = self._calculate_smoothness_value(episode)
-        
-        # 최종 value 계산
-        # 충돌이 발생하면 즉시 -1.0 반환
-        if collision_value < 0:
-            print("  - 충돌 발생! 최종 value: -1.0")
-            return -1.0
-        
-        # 충돌이 없으면 다른 값들을 조합
-        # trajectory_value: -1.0 ~ 1.0 (경로 추종 정확도)
-        # missing_rate_value: -1.0 ~ 0.0 (벗어난 비율의 음수)
-        # final_value = trajectory_value * 0.7 + missing_rate_value * 0.3  # 가중 평균
-        final_value = trajectory_value
-        
-        print(f"  - 최종 value: {final_value:.3f} (경로추종: {trajectory_value:.3f}, Missing: {missing_rate_value:.3f})")
-        
-        return final_value
     
-    def _calculate_trajectory_following_value(self, episode: Episode) -> float:
+    def _calculate_trajectory_following_reward(self, episode: Episode, step_idx: int) -> float:
         """경로 추종 정확도 기반 value 계산
         
-        simulated_ego_pos와 expert_ego_pos 간의 평균 거리 오차를 기반으로 계산
+        특정 step_idx에서 simulated_ego_pos와 expert_ego_pos 간의 거리 오차를 기반으로 계산
         """
-        total_distance_error = 0.0
-        num_comparisons = 0
-        
-        for i in range(len(episode)):
-            # state에서 simulated_ego_pos 추출
-            if i < len(episode.states) and isinstance(episode.states[i], dict):
-                state = episode.states[i]
-                sim_pos = state.get('simulated_ego_pos')
+        # step_idx에 해당하는 스텝에서만 계산
+        if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
+            state = episode.states[step_idx]
+            sim_pos = state.get('simulated_ego_pos')
+            
+            # expert_ego_pos 추출
+            if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
+                expert_pos = episode.expert_ego_pos[step_idx]
                 
-                # expert_ego_pos 추출
-                if hasattr(episode, 'expert_ego_pos') and i < len(episode.expert_ego_pos):
-                    expert_pos = episode.expert_ego_pos[i]
-                    
-                    if sim_pos is not None and expert_pos is not None:
-                        # 둘 다 (row, col) 그리드 좌표
-                        if isinstance(expert_pos, tuple) and len(expert_pos) == 2 and \
-                           isinstance(sim_pos, tuple) and len(sim_pos) == 2:
-                            expert_row, expert_col = expert_pos
-                            sim_row, sim_col = sim_pos
-                            
-                            # 유클리드 거리 계산 (그리드 좌표 기준)
-                            distance = np.sqrt((sim_row - expert_row)**2 + (sim_col - expert_col)**2)
-                            total_distance_error += distance
-                            num_comparisons += 1
+                if sim_pos is not None and expert_pos is not None:
+                    # 둘 다 (row, col) 그리드 좌표
+                    if isinstance(expert_pos, tuple) and len(expert_pos) == 2 and \
+                       isinstance(sim_pos, tuple) and len(sim_pos) == 2:
+                        expert_row, expert_col = expert_pos
+                        sim_row, sim_col = sim_pos
+                        
+                        # 유클리드 거리 계산 (그리드 좌표 기준)
+                        distance = np.sqrt((sim_row - expert_row)**2 + (sim_col - expert_col)**2)
+                        
+                        # 거리를 value로 변환하여 반환
+                        return self._distance_to_value(distance)
         
-        # 평균 거리 오차 계산
-        if num_comparisons > 0:
-            avg_distance_error = total_distance_error / num_comparisons
-            print(f"  - 평균 거리 오차: {avg_distance_error:.2f} 그리드 셀")
-            return self._distance_to_value(avg_distance_error)
-        else:
-            print("  - Expert 위치 정보 없음")
-            return 0.0
+        # 정보가 없으면 0.0 반환
+        print(f"  - [Target Reward 계산 이상] 스텝 {step_idx}에서 simulated_ego_pos 또는 expert_ego_pos 정보가 없음. value: 0.0")
+        return 0.0
     
-    def _calculate_collision_value(self, episode: Episode) -> float:
-        """충돌 기반 value 계산
+    def _calculate_collision_reward(self, episode: Episode, step_idx: int) -> float:
+        """충돌 기반 reward 계산
         
-        Episode 내 충돌 발생 여부 체크
+        특정 step_idx 시점에서 충돌 발생 여부 체크
         충돌 시 큰 페널티 부여
         """
-        # 모든 스텝에서 충돌 체크
-        for step_idx in range(len(episode)):
-            if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
-                state = episode.states[step_idx]
-                sim_pos = state.get('simulated_ego_pos', (49, 49))
-                
-                # 3x3 영역 체크 (중심 + 8방향)
-                collision_detected = False
-                for dr in [-1, 0, 1]:
-                    for dc in [-1, 0, 1]:
-                        check_row = sim_pos[0] + dr
-                        check_col = sim_pos[1] + dc
-                        
-                        # 그리드 범위 체크
-                        if 0 <= check_row < 99 and 0 <= check_col < 99:
-                            # Channel 0: Dynamic objects 체크
-                            if 'obstacles' in state and state['obstacles'] is not None:
-                                if isinstance(state['obstacles'], np.ndarray):
-                                    if state['obstacles'][check_row, check_col] > 0:
-                                        collision_detected = True
-                                        print(f"    - 충돌 감지! 스텝 {step_idx}에서 위치 ({check_row}, {check_col}) ; 대상객체: Obstacles Tracking")
-                                        break
-                            
-                            # Channel 1: Static environment 체크
-                            if 'static_environment' in state and state['static_environment'] is not None:
-                                if isinstance(state['static_environment'], np.ndarray):
-                                    if state['static_environment'][check_row, check_col] > 0:
-                                        collision_detected = True
-                                        print(f"    - 충돌 감지! 스텝 {step_idx}에서 위치 ({check_row}, {check_col}) ; 대상객체: Static Environment")
-                                        break
+        
+        # step_idx 시점에서만 충돌 체크
+        if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
+            state = episode.states[step_idx]
+            sim_pos = state.get('simulated_ego_pos', (49, 49))
+            
+            # 3x3 영역 체크 (중심 + 8방향)
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    check_row = sim_pos[0] + dr
+                    check_col = sim_pos[1] + dc
                     
-                    if collision_detected:
-                        break
-                
-                if collision_detected:
-                    print(f"    - 충돌 감지! 스텝 {step_idx}에서 위치 ({sim_pos[0]}, {sim_pos[1]})")
-                    return -1.0  # 충돌 시 최대 페널티
+                    # 그리드 범위 체크
+                    if 0 <= check_row < 99 and 0 <= check_col < 99:
+                        # Channel 0: Dynamic objects 체크
+                        if 'obstacles' in state and state['obstacles'] is not None:
+                            obs = state['obstacles']
+                            # torch.Tensor와 numpy.ndarray 모두 처리
+                            if hasattr(obs, 'shape') and len(obs.shape) >= 2:  # 2D tensor나 array인 경우
+                                try:
+                                    if isinstance(obs, torch.Tensor):
+                                        val = obs[check_row, check_col].item()
+                                    else:  # numpy array
+                                        val = obs[check_row, check_col]
+                                    if val > 0:
+                                        # 충돌 감지됨
+                                        return -1.0  # 충돌 시 최대 페널티
+                                except (IndexError, TypeError):
+                                    pass  # 인덱싱 실패 시 무시
+                        
+                        # Channel 1: Static environment 체크
+                        if 'static_environment' in state and state['static_environment'] is not None:
+                            static = state['static_environment']
+                            # torch.Tensor와 numpy.ndarray 모두 처리
+                            if hasattr(static, 'shape') and len(static.shape) >= 2:  # 2D tensor나 array인 경우
+                                try:
+                                    if isinstance(static, torch.Tensor):
+                                        val = static[check_row, check_col].item()
+                                    else:  # numpy array
+                                        val = static[check_row, check_col]
+                                    if val > 0:
+                                        # 충돌 감지됨
+                                        return -1.0  # 충돌 시 최대 페널티
+                                except (IndexError, TypeError):
+                                    pass  # 인덱싱 실패 시 무시
         
         return 0.0  # 충돌 없음
 
@@ -453,7 +435,7 @@ class SelfPlayManager:
         total_count = 0
         
         # 모든 스텝에서 거리 체크
-        for step_idx in range(len(episode)):
+        for step_idx in range(len(episode.states)):
             if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
                 state = episode.states[step_idx]
                 sim_pos = state.get('simulated_ego_pos')
@@ -493,42 +475,33 @@ class SelfPlayManager:
         Args:
             episode: 현재 Episode
             step_idx: 현재 스텝
-            action: 선택된 action (현재 미사용)
-            sim_pos: 시뮬레이션 위치 (row, col)
+            action: 선택된 action (미래 확장용)
+            sim_pos: 시뮬레이션 위치 (미래 확장용)
             
         Returns:
             환경 reward (-1 ~ 1 범위)
         """
-        reward = 0.0
+        # 예외처리 - step_idx가 episode.states 범위를 벗어나는 경우
+        if step_idx >= len(episode.states):
+            print(f"  - [Target Reward 계산 이상] 스텝 {step_idx}에서 episode.states가 부족합니다. value: 0.0")
+            return 0.0
         
-        # Expert following reward 계산 (trajectory_following 로직 응용)
-        if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
-            expert_pos = episode.expert_ego_pos[step_idx]
-            
-            # 현재 거리 계산
-            curr_dist = self._calculate_grid_distance(sim_pos, expert_pos)
-            
-            # Step-wise reward: 거리에 따른 즉각적인 피드백
-            # 가까울수록 positive (최대 0.2), 멀수록 negative (최소 -0.2)
-            distance_reward = 0.2 * (1.0 - min(curr_dist / 20.0, 2.0))  # 20 cells = neutral
-            reward += distance_reward
-            
-            # 이전 스텝과의 개선도 보너스
-            if step_idx > 0:
-                prev_sim_pos = episode.states[step_idx - 1].get('simulated_ego_pos', (49, 49))
-                prev_expert_pos = episode.expert_ego_pos[step_idx - 1]
-                prev_dist = self._calculate_grid_distance(prev_sim_pos, prev_expert_pos)
-                
-                # 거리가 줄어들면 추가 보너스
-                improvement = prev_dist - curr_dist
-                reward += improvement * 0.05  # 작은 보너스
+        # 1. 경로 추종 정확도 기반 reward
+        # - 현재 simulated_ego_pos와 expert_ego_pos 간의 거리 오차 계산
+        trajectory_reward = self._calculate_trajectory_following_reward(episode, step_idx)
         
-        # 경계 체크 페널티 (그리드 밖)
-        if sim_pos[0] < 5 or sim_pos[0] >= 94 or sim_pos[1] < 5 or sim_pos[1] >= 94:
-            reward -= 0.3  # 경계 근처 페널티
+        # 2. 충돌 기반 value
+        collision_reward = self._calculate_collision_reward(episode, step_idx)
+
+        if collision_reward == -1.0:
+            # 충돌 발생 시 큰 페널티
+            print(f"  - 충돌 발생! 스텝 {step_idx}에서 충돌 감지됨. 페널티: -1.0")
+            return -1.0
+        else:
+            # 충돌이 없으면 경로 추종 reward만 사용
+            return trajectory_reward
         
-        # Reward를 -1 ~ 1 범위로 클리핑
-        return np.clip(reward, -1.0, 1.0)
+        # return np.clip(reward, -1.0, 1.0)
     
     def _calculate_grid_distance(self, pos1: Tuple[int, int], pos2: Tuple[int, int]) -> float:
         """두 그리드 좌표 간 유클리드 거리 계산"""
@@ -551,57 +524,73 @@ class SelfPlayManager:
         value = 1.0 - (distance / 10.0)
         return max(-1.0, min(1.0, value))  # -1.0 ~ 1.0 범위로 제한
     
-    def _calculate_target_value(self, episode: Episode, final_value: float):
+    def _calculate_target_value(self, episode: Episode):
         """
-        n-step return + bootstrap value (MuZero target)
-        z_t^{(n)} = sum_{k=0}^{n-1} γ^k r_{t+k} + γ^n * v0(s_{t+n})
-        터미널(j_boot >= T)이면:
-        - terminal_bootstrap == "none": 부트스트랩 생략
-        - terminal_bootstrap == "final_value": γ^{steps_added} * final_value 추가
+        MuZero n-step targets (정석)
+        z_t = sum_{k=0}^{steps-1} γ^k r_{t+k} + γ^{steps} * V(s_{t+steps})
+        - 여기서 steps = min(n, 터미널 도달 전까지의 실제 합산 스텝 수)
+        - dones[j]==True면 그 전이에서 종료(부트스트랩 금지)
+        - 예측 로그(root values)와 타깃은 분리 저장
         """
-        n = self.config.unroll_steps
-        gamma = self.config.discount
-        terminal_bootstrap = getattr(self.config, "terminal_bootstrap", "final_value")  # "none" or "final_value"
+        n = int(self.config.unroll_steps)
+        gamma = float(self.config.discount)
 
-        # 원본 MCTS value 보존(있으면 사용, 없으면 네트워크 추론)
-        mcts_values = episode.values.copy()
+        rewards = episode.rewards
+        T = len(rewards)
+        
+        # dones 필드 처리 - 길이를 rewards와 맞춤
+        if hasattr(episode, "dones") and episode.dones is not None:
+            dones = episode.dones
+            # dones 길이가 rewards보다 짧으면 False로 채움
+            if len(dones) < T:
+                dones = list(dones) + [False] * (T - len(dones))
+        else:
+            dones = [False] * T
 
-        T = len(episode)
-        target_values = [0.0] * T
+        # 예측 로그(root values) 소스: root_values > values > None
+        root_values = getattr(episode, "root_values", None)
+        if root_values is None:
+            root_values = getattr(episode, "values", None)
+        if root_values is None:
+            root_values = [None] * T
 
-        for i in range(T):
+        targets = [0.0] * T
+
+        for t in range(T):
             G = 0.0
-            gpow = 1.0
-            steps_added = 0
+            discount = 1.0
+            steps = 0
+            hit_terminal = False
 
-            # n-step 보상 합
-            for k in range(n):
-                j = i + k
-                if j >= T:
-                    break
-                G += gpow * float(episode.rewards[j])
-                gpow *= gamma
-                steps_added += 1
-                # dones가 있다면 여기서 끊기: if episode.dones[j]: break
+            # n-step 누적 (조기 종료)
+            while steps < n and (t + steps) < T:
+                j = t + steps
+                G += discount * float(rewards[j])
 
-            # 부트스트랩
-            j_boot = i + n
+                if dones[j]:                 # 전이 (s_j,a_j)->s_{j+1} 직후 터미널
+                    hit_terminal = True
+                    break                     # 부트스트랩 금지
+
+                discount *= gamma
+                steps += 1
+
+            if hit_terminal:
+                targets[t] = G
+                continue
+
+            # 부트스트랩: 비터미널인 경우에만, s_{t+steps}
+            j_boot = t + steps
             if j_boot < T:
-                v_boot = mcts_values[j_boot]
+                v_boot = root_values[j_boot]
                 if v_boot is None:
-                    v_boot = self._infer_value_from_state(episode, j_boot)  # v0(s_{i+n})
-                G += gpow * float(v_boot)          # gpow == γ^{steps_added}
-            else:
-                # 터미널 도달: 정책 선택
-                if terminal_bootstrap == "final_value":
-                    G += gpow * float(final_value)  # γ^{steps_added} * final_value
-                # "none"이면 아무것도 더하지 않음(= MC 합만)
+                    v_boot = self._infer_value_from_state(episode, j_boot)
+                G += discount * float(v_boot)
 
-            target_values[i] = float(G)
+            targets[t] = G
 
-        # 학습 타깃 기록
-        for i in range(T):
-            episode.values[i] = target_values[i]
+        # 예측 로그를 보존하고 타깃은 별도 필드에 저장
+        # episode.target_values = targets
+        return targets
     
     def _infer_value_from_state(self, episode: Episode, idx: int) -> float:
         """주어진 상태에서 네트워크로 value 추론"""

@@ -872,8 +872,11 @@ class EpisodeInteractiveVisualizer:
             reward = episode.rewards[self.current_step]
             step_text += f"Reward: {reward:.3f}\n"
         
-        # Value
-        if self.current_step < len(episode.values):
+        # Value (target_values 우선 표시, 없으면 values)
+        if hasattr(episode, 'target_values') and self.current_step < len(episode.target_values):
+            value = episode.target_values[self.current_step]
+            step_text += f"Target Value: {value:.3f}\n"
+        elif self.current_step < len(episode.values):
             value = episode.values[self.current_step]
             step_text += f"Value: {value:.3f}\n"
         

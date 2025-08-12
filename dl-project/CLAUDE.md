@@ -139,17 +139,60 @@ The `models/SSR/` contains template implementations for Structured State Represe
    - Reward: Immediate reward for single step
    - Value: Expected sum of future rewards (used for training targets)
 
+## Recent Updates (2025-08-13)
+
+### Target Values 분리 및 학습 개선
+1. **Target Values와 MCTS Values 분리**:
+   - `episode.values`: MCTS root value (네트워크 예측값)
+   - `episode.target_values`: n-step bootstrap 학습 타깃
+   - train.py에서 target_values 우선 사용하도록 수정
+   - 예측값과 타깃값 명확히 분리하여 학습 안정성 향상
+
+2. **n-step Bootstrap 정석 구현**:
+   - `_calculate_target_value()` 함수 완전 재작성
+   - 터미널 상태 처리 개선 (dones 필드 활용)
+   - 충돌 시 Episode 즉시 종료 및 부트스트랩 중단
+   - Monte Carlo return과 TD learning 적절히 조합
+
+3. **충돌 감지 및 Episode 종료**:
+   - 충돌 발생 시 reward = -1.0 부여
+   - Episode를 충돌 지점에서 즉시 잘라냄
+   - dones 필드로 터미널 상태 명시적 관리
+   - 불필요한 계산 방지 및 메모리 효율성 개선
+
+### 시각화 개선
+1. **학습 진행 상황 시각화 강화** (visualizations/*.png):
+   - Target Rewards 표시: 총합, 평균, non-zero 개수
+   - Target Values 표시: 평균, 최소/최대값
+   - Target Policy 표시: 가장 높은 확률의 action
+   - MCTS Values와 비교하여 학습 품질 평가 가능
+
+2. **Episode 시각화 개선**:
+   - target_values 우선 표시 (없으면 values)
+   - 충돌 정보 및 경로 추종 정확도 표시
+
+### 좌표계 일관성 확보
+1. **180도 회전 좌표계 통일**:
+   - 전방(상단) → row 증가 (아래 방향)
+   - 우측 → col 감소 (180도 회전으로 왼쪽)
+   - environment.py, data_parser.py, self_play.py 모두 일치
+
+2. **Action 좌표 변환**:
+   - `simulated_ego_row += dy` (전방/후방)
+   - `simulated_ego_col -= dx` (좌/우)
+   - 모든 모듈에서 동일한 변환 규칙 적용
+
 ## Recent Updates (2025-08-12)
 
 ### Episode 평가 함수 구현 및 개선
-1. **충돌 감지 함수 구현** (`_calculate_collision_value`):
+1. **충돌 감지 함수 구현** (`_calculate_collision_reward`):
    - simulated_ego_pos 주변 3x3 그리드 영역에서 장애물 체크
    - Channel 0 (Dynamic objects)와 Channel 1 (Static environment) 모두 검사
    - 충돌 감지 시 즉시 -1.0 반환하여 최대 페널티 부여
    - 로봇 크기(60cm)를 고려한 3x3 그리드(60cm x 60cm) 충돌 판정
 
 2. **경로 추종 평가 통합**:
-   - `_calculate_trajectory_following_value`만 사용하도록 단순화
+   - `_calculate_trajectory_following_reward`만 사용하도록 단순화
    - Missing Rate 함수 제거 (중복 기능)
    - 평균 거리 오차를 연속적인 value로 변환 (0 거리→1.0, 10 거리→0.0, 20 거리→-1.0)
 
@@ -232,9 +275,8 @@ The `models/SSR/` contains template implementations for Structured State Represe
    - 엣지 케이스 처리 개선
 
 2. **게임 오버 Value 계산 함수화**:
-   - `_get_episode_game_over_value()`: 메인 함수로 다양한 평가 요소 통합
-   - `_calculate_trajectory_following_value()`: 경로 추종 정확도 평가
-   - `_calculate_collision_value()`: 충돌 기반 평가 (TODO)
+   - `_calculate_trajectory_following_reward()`: 경로 추종 정확도 평가
+   - `_calculate_collision_reward()`: 충돌 기반 평가 (TODO)
    - 향후 확장 가능한 구조로 설계
 
 3. **Value Backward Propagation**:

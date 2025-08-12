@@ -176,8 +176,12 @@ def train_network(network, replay_buffer, config, device):
             
             # 첫 스텝의 손실 계산 (k=0)
             # Value loss
-            # target_value_scalar = calculate_target_value(episode, start_idx, config.discount)
-            target_value_scalar = episode.values[start_idx] if episode.values[start_idx] is not None else 0.0
+            # target_values 사용 (n-step bootstrap으로 계산된 학습 타깃)
+            if hasattr(episode, 'target_values') and episode.target_values is not None:
+                target_value_scalar = episode.target_values[start_idx] if start_idx < len(episode.target_values) else 0.0
+            else:
+                # Fallback: target_values가 없으면 values 사용
+                target_value_scalar = episode.values[start_idx] if episode.values[start_idx] is not None else 0.0
             target_value_idx = scalar_to_support(
                 torch.tensor([target_value_scalar], device=device),
                 config.support_size
@@ -221,8 +225,14 @@ def train_network(network, replay_buffer, config, device):
                 reward_loss += torch.nn.functional.cross_entropy(reward, target_reward_idx)
                 
                 # Value loss (k+1번째 상태의 value)
-                # target_value_scalar = calculate_target_value(episode, start_idx + k + 1, config.discount)
-                target_value_scalar = episode.values[start_idx + k + 1] if episode.values[start_idx + k + 1] is not None else target_value_scalar
+                # target_values 사용 (n-step bootstrap으로 계산된 학습 타깃)
+                if hasattr(episode, 'target_values') and episode.target_values is not None:
+                    if start_idx + k + 1 < len(episode.target_values):
+                        target_value_scalar = episode.target_values[start_idx + k + 1]
+                else:
+                    # Fallback: target_values가 없으면 values 사용
+                    if start_idx + k + 1 < len(episode.values):
+                        target_value_scalar = episode.values[start_idx + k + 1] if episode.values[start_idx + k + 1] is not None else target_value_scalar
                 target_value_idx = scalar_to_support(
                     torch.tensor([target_value_scalar], device=device),
                     config.support_size

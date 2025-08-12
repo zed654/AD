@@ -23,6 +23,8 @@ from models.MuZero.utils import build_observation_tensor, calculate_game_statist
 from models.MuZero.config_manager import load_config, save_config, print_config
 from models.MuZero.logger import get_logger
 from models.MuZero.expert_data_loader import ExpertDataLoader
+import matplotlib
+matplotlib.use('Agg')  # non-interactive 백엔드 사용 (Figure 창이 뜨지 않음)
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
@@ -198,6 +200,49 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
             ax.text(0.02, 0.98, loss_text, transform=ax.transAxes, fontsize=10,
                    verticalalignment='top',
                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+        
+        # Episode 통계 및 Target Values 정보 추가
+        stats_text = f"Episode {ep_idx+1} Stats:\n"
+        stats_text += f"Steps: {len(enriched_episode.states)}\n"
+        
+        # Target Rewards 정보
+        stats_text += f"\n[Target Rewards]\n"
+        stats_text += f"Total: {sum(enriched_episode.rewards):.2f}\n"
+        stats_text += f"Avg: {np.mean(enriched_episode.rewards):.3f}\n"
+        stats_text += f"Non-zero: {np.count_nonzero(enriched_episode.rewards)}/{len(enriched_episode.rewards)}\n"
+        
+        # Target Values 정보
+        if hasattr(enriched_episode, 'target_values') and enriched_episode.target_values:
+            stats_text += f"\n[Target Values]\n"
+            stats_text += f"Avg: {np.mean(enriched_episode.target_values):.3f}\n"
+            stats_text += f"Min/Max: {np.min(enriched_episode.target_values):.3f}/{np.max(enriched_episode.target_values):.3f}\n"
+        
+        # MCTS Predictions (for comparison)
+        if enriched_episode.values:
+            stats_text += f"\n[MCTS Values]\n"
+            stats_text += f"Avg: {np.mean(enriched_episode.values):.3f}\n"
+        
+        # Target Policy 정보 (가장 많이 선택된 action)
+        if enriched_episode.policies and any(p is not None for p in enriched_episode.policies):
+            from models.MuZero.action import Action
+            # 각 action의 평균 확률 계산
+            num_actions = len(enriched_episode.policies[0]) if enriched_episode.policies[0] is not None else 9
+            avg_policy = np.zeros(num_actions)
+            count = 0
+            for policy in enriched_episode.policies:
+                if policy is not None:
+                    avg_policy += policy
+                    count += 1
+            if count > 0:
+                avg_policy /= count
+                top_action_idx = np.argmax(avg_policy)
+                top_action = Action.from_index(top_action_idx)
+                stats_text += f"\n[Target Policy]\n"
+                stats_text += f"Top Action: {top_action.position.value} ({avg_policy[top_action_idx]:.2%})"
+        
+        ax.text(0.02, 0.02, stats_text, transform=ax.transAxes, fontsize=8,
+               verticalalignment='bottom',
+               bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
         
         # Loss 그래프 그리기 (있는 경우)
         if loss_history and len(loss_history['epochs']) > 0 and 'ax_loss' in locals():
@@ -587,9 +632,11 @@ def evaluate_mode(config, checkpoint_path=None):
             if episode_steps > 0:
                 episode_distance_errors.append(episode_error / episode_steps)
             
-            # Episode의 평균 value
-            if len(episode.values) > 0:
-                episode_values.append(np.mean(episode.values))
+            # Episode의 평균 value (target_values 우선 사용)
+            if hasattr(episode, 'target_values') and len(episode.target_values) > 0:
+                episode_values.append(np.mean(episode.target_values))
+            elif len(episode.values) > 0:
+                episode_values.append(np.mean(episode.values)) 
         
         # 최종 통계 출력
         print(f"\n📈 MCTS 평가 결과:")
