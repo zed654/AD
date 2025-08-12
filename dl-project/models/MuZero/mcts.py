@@ -210,8 +210,17 @@ class MCTS:
     def _puct_score(self, parent: Node, child: Node) -> float:
         """PUCT (Predictor + UCT) 점수 계산
         
-        MuZero 논문: Q(s,a) = r(s,a) + γ * V(s')
-        여기서 r(s,a)는 즉각적 보상, V(s')는 다음 상태의 가치
+            score = Q(s, a) + U(s, a)
+            Q(s, a) = W(s, a)/N(s, a)
+                W(s, a) 는 자식 노드의 가치 합 ... Sigma(reward + γ * V(next)) -> V(next) 인 이유는, 액션 a 를 했을 때의 기대값이기 때문
+            U(s, a) = c_puct * P(s, a) * sqrt(N(s, all)) / (N(s, a) + 1)
+
+            Q(s, a) 는 예측항 (좋은 수 반복)
+            U(s, a) 는 탐색항 (안가본 수 시도)
+
+                이 수식이 유의미한 이유는, Q(s,a) 와 U(s,a) 모두 정규화되어있기 때문.
+                    Q(s,a)는 self.min_max_stats.normalize(q_sa)로 정규화되고,
+                    U(s,a) 는 Policy 자체는 0~1로 정규화되어있고, 방문횟수 수식부분(N../N(a)+1) 는 방문 초기에 값이 크지만 점점 떨어지게 유도되어있음
         """
         pb_c = math.log((parent.visit_count + self.c2 + 1) / self.c2) + self.c1
         # parent.visit_count가 0일 때도 탐색이 가능하도록 최소값 1 보장
@@ -228,7 +237,7 @@ class MCTS:
         else:
             value_score = 0
             
-        return prior_score + value_score
+        return value_score + prior_score
         
     # _evaluate 함수는 더 이상 필요없음 (인라인으로 처리)
     # def _evaluate(self, node: Node, parent_hidden_state: torch.Tensor, action: int) -> float:

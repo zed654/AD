@@ -53,6 +53,8 @@ class SelfPlayManager:
             action_space_size=len(config.action_space),
             num_simulations=config.num_simulations,
             discount=config.discount,
+            c1=config.pb_c_init,
+            c2=config.pb_c_base,
             device=device
         )
         
@@ -290,7 +292,7 @@ class SelfPlayManager:
                     
                     # GT 학습을 위한 환경 reward 계산
                     # TODO: 실제 환경 보상 정의 필요
-                    episode.rewards[step_idx] = self._calculate_gt_reward(
+                    episode.rewards[step_idx] = self._calculate_target_reward(
                         episode, step_idx, selected_action, 
                         (simulated_ego_row, simulated_ego_col)
                     )
@@ -393,7 +395,7 @@ class SelfPlayManager:
         return 0.0
 
     
-    def _calculate_gt_reward(self, episode: Episode, step_idx: int, action: int, 
+    def _calculate_target_reward(self, episode: Episode, step_idx: int, action: int, 
                              sim_pos: Tuple[int, int]) -> float:
         """GT 학습을 위한 환경 reward 계산
         

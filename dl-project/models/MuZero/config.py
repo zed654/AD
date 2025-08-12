@@ -42,7 +42,7 @@ class MuZeroConfig:
         # Observation Provider 설정
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
         self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # GT 데이터 경로
-        self.use_obstacle_channels = False  # False: 방향 벡터만 사용, True: 장애물 채널도 사용
+        self.use_obstacle_channels = True  # False: 방향 벡터만 사용, True: 장애물 채널도 사용
 
         # Self-Play 설정
         self.num_workers = 1
@@ -54,7 +54,7 @@ class MuZeroConfig:
         self.max_game_length = 500  # Self-play 안전장치 (무한루프 방지)
         self.num_selfplay_games = 5  # Self-play로 실행할 게임 수
 
-        # UCB 공식
+        # PUCB 하이퍼 파라미터 설정
         self.pb_c_base = 19652
         self.pb_c_init = 1.25
 
@@ -90,7 +90,7 @@ class MuZeroConfig:
         self.lr_decay_steps = 1000
         
         # 추가 학습 설정 (개선된 인터페이스용)
-        self.num_training_epochs = 20  # 5 → 20 (밤새 학습)
+        self.num_training_epochs = 200  # 5 → 20 (밤새 학습)
         self.replay_buffer_size = 200  # 100 → 200 (더 많은 데이터 보관)
         
         # 체크포인트 저장 설정
