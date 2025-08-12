@@ -212,14 +212,10 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         policy_logits, value = self.prediction(latent)
         
         # reward equal to 0 for consistency
-        reward = torch.log(
-            (
-                torch.zeros(1, self.full_support_size)
-                .scatter(1, torch.tensor([[self.full_support_size // 2]]).long(), 1.0)
-                .repeat(len(observation), 1)
-                .to(observation.device)
-            )
-        )
+        # 중앙값(0)에 해당하는 logits 생성 (log-softmax 이전 상태)
+        # 큰 음수로 초기화하고 중앙 인덱스만 0으로 설정
+        reward = torch.full((len(observation), self.full_support_size), -1e8, device=observation.device)
+        reward[:, self.full_support_size // 2] = 0  # 중앙값(0)에 높은 확률 할당
 
         return (
             value,

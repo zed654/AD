@@ -64,22 +64,23 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         if len(episode) < 10:  # 너무 짧은 Episode는 스킵
             continue
             
-        # 시각화할 부분만 추출 (첫 10 스텝)
-        visualization_steps = min(10, len(episode))
+        # 전체 Episode 시각화
+        visualization_steps = len(episode)
         
-        # 추출한 Episode 부분을 새로운 Episode로 만듦
+        # Episode 전체를 복사 (수정하지 않기 위해)
         from models.MuZero.replay_buffer import Episode
-        partial_episode = Episode()
+        full_episode = Episode()
         for i in range(visualization_steps):
-            partial_episode.states.append(episode.states[i])
-            partial_episode.expert_ego_pos.append(episode.expert_ego_pos[i])
-            partial_episode.actions.append(0)  # 임시 action
-            partial_episode.rewards.append(0.0)  # 임시 reward
-            partial_episode.values.append(0.0)  # 임시 value
-            partial_episode.policies.append(None)  # 임시 policy
+            full_episode.states.append(episode.states[i])
+            full_episode.expert_ego_pos.append(episode.expert_ego_pos[i])
+            full_episode.actions.append(0)  # 임시 action
+            full_episode.rewards.append(0.0)  # 임시 reward
+            full_episode.values.append(0.0)  # 임시 value
+            full_episode.policies.append(None)  # 임시 policy
         
         # 현재 네트워크로 MCTS enrichment 수행
-        enriched_episodes = self_play_manager.enrich_episodes_with_mcts([partial_episode])
+        print(f"    Episode {ep_idx+1}: {visualization_steps} 스텝 처리 중...")
+        enriched_episodes = self_play_manager.enrich_episodes_with_mcts([full_episode])
         enriched_episode = enriched_episodes[0]
         
         # 시각화 - Loss 정보가 있으면 2개 subplot, 없으면 1개
@@ -94,7 +95,7 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         ax.set_aspect('equal')
         ax.invert_yaxis()  # y축 반전 (row가 아래로 증가)
         ax.grid(True, alpha=0.3)
-        ax.set_title(f'Epoch {epoch} - Episode {ep_idx+1} (First {visualization_steps} steps)')
+        ax.set_title(f'Epoch {epoch} - Episode {ep_idx+1} (All {visualization_steps} steps)')
         
         # Expert 경로 (파란색)
         expert_rows = [pos[0] for pos in enriched_episode.expert_ego_pos]

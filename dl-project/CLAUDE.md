@@ -139,6 +139,24 @@ The `models/SSR/` contains template implementations for Structured State Represe
    - Reward: Immediate reward for single step
    - Value: Expected sum of future rewards (used for training targets)
 
+## Recent Updates (2025-08-12)
+
+### MCTS 및 네트워크 안정성 개선
+1. **MCTS 버그 수정**:
+   - `_recurrent_inference`에서 `hidden_state`를 올바른 device로 이동
+   - 루트 노드 `visit_count=0`일 때 PUCT 탐색항이 0이 되는 문제 수정 (`max(parent.visit_count, 1)` 사용)
+   - `_get_policy_targets`에서 분모가 0인 경우 처리 (균등 분포 반환)
+   - softmax 계산 시 `dim=-1` 사용으로 일관성 개선
+
+2. **초기 reward 계산 개선**:
+   - `models.py`의 `initial_inference`에서 `torch.log(one_hot)` 사용으로 인한 `-inf` 문제 해결
+   - logits를 직접 생성: 모든 값을 -1e8로 초기화하고 중앙 인덱스(reward=0)만 0으로 설정
+   - softmax 적용 시 안전하게 reward=0을 표현
+
+3. **코드 수정 상세**:
+   - `mcts.py`: hidden_state device 설정, PUCT 최소값 보장, policy 분모 0 방지
+   - `models.py`: reward logits 생성 방식 개선으로 수치 안정성 확보
+
 ## Recent Updates (2025-07-30)
 
 ### MuZero 네트워크 구조 개선

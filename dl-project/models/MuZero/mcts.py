@@ -51,7 +51,7 @@ class Node:
         """네트워크 출력을 사용해 노드 확장"""
         # policy_logits를 확률로 변환
         if isinstance(network_output['policy_logits'], torch.Tensor):
-            priors = torch.softmax(network_output['policy_logits'], dim=0).cpu().numpy()
+            priors = torch.softmax(network_output['policy_logits'], dim=-1).cpu().numpy()
         else:
             priors = network_output['policy_logits']
             
@@ -159,8 +159,16 @@ class MCTS:
                 # 이 경우는 발생하면 안 됨 (root는 이미 expand됨)
                 raise ValueError("MCTS: No action selected. This should not happen.")
             
-            value = self._evaluate(node, parent.hidden_state, current_action)
-            node.expand(self._recurrent_inference(parent.hidden_state, current_action))
+            # 네트워크 한 번만 호출
+            network_output = self._recurrent_inference(parent.hidden_state, current_action)
+            
+            # 노드 정보 업데이트
+            node.hidden_state = network_output['hidden_state']
+            node.reward = network_output['reward']
+            value = network_output['value']
+            
+            # 자식 노드 생성
+            node.expand(network_output)
             
             # 백업 (역전파)
             self._backup(search_path, value)
@@ -200,40 +208,55 @@ class MCTS:
         return best_action, best_child
         
     def _puct_score(self, parent: Node, child: Node) -> float:
-        """PUCT (Predictor + UCT) 점수 계산"""
+        """PUCT (Predictor + UCT) 점수 계산
+        
+        MuZero 논문: Q(s,a) = r(s,a) + γ * V(s')
+        여기서 r(s,a)는 즉각적 보상, V(s')는 다음 상태의 가치
+        """
         pb_c = math.log((parent.visit_count + self.c2 + 1) / self.c2) + self.c1
-        pb_c *= math.sqrt(parent.visit_count) / (child.visit_count + 1)
+        # parent.visit_count가 0일 때도 탐색이 가능하도록 최소값 1 보장
+        pb_c *= math.sqrt(max(parent.visit_count, 1)) / (child.visit_count + 1)
         
         prior_score = pb_c * child.prior
         
         if child.visit_count > 0:
-            value_score = self.min_max_stats.normalize(child.value())
+            # Q(s,a) = reward + γ * V(next)
+            # child.reward: s에서 a를 취했을 때의 즉각적 보상
+            # child.value(): 자식 노드들의 평균 가치 (다음 상태의 가치)
+            q_sa = child.reward + self.discount * child.value()
+            value_score = self.min_max_stats.normalize(q_sa)
         else:
             value_score = 0
             
         return prior_score + value_score
         
-    def _evaluate(self, node: Node, parent_hidden_state: torch.Tensor, action: int) -> float:
-        """리프 노드 평가"""
-        # 재귀적 추론으로 다음 상태 예측
-        network_output = self._recurrent_inference(parent_hidden_state, action)
-        
-        node.hidden_state = network_output['hidden_state']
-        node.reward = network_output['reward']
-        
-        # 가치 반환
-        return network_output['value']
+    # _evaluate 함수는 더 이상 필요없음 (인라인으로 처리)
+    # def _evaluate(self, node: Node, parent_hidden_state: torch.Tensor, action: int) -> float:
+    #     """리프 노드 평가"""
+    #     # 재귀적 추론으로 다음 상태 예측
+    #     network_output = self._recurrent_inference(parent_hidden_state, action)
+    #     
+    #     node.hidden_state = network_output['hidden_state']
+    #     node.reward = network_output['reward']
+    #     
+    #     # 가치 반환
+    #     return network_output['value']
         
     def _backup(self, search_path: List[Node], value: float):
         """검색 경로를 따라 가치 역전파"""
         for node in reversed(search_path):  # Leaf -> root 순서
             node.value_sum += value         # W(s, a) 업데이트
             node.visit_count += 1           # N(s, a) 업데이트
-            self.min_max_stats.update(node.value()) # Q 값 정규화
+            
+            # Q(s,a) = r + γV를 min-max 통계에 반영
+            # 현재 전파 중인 value를 사용 (평균이 아닌 실제 백업 값)
+            q_value = node.reward + self.discount * value
+            
+            # Min-max 통계 업데이트
+            self.min_max_stats.update(q_value)
             
             # 다음 노드를 위한 value 계산 (할인된 가치로 업데이트)
-            #   즉, 현재 자신의 reward 와 자식 노드의 가치를 할인하여 업데이트
-            value = node.reward + self.discount * value
+            value = q_value
             
     def _select_action(self, root: Node, temperature: float = 1.0) -> int:
         """방문 횟수에 기반한 액션 선택"""
@@ -260,8 +283,13 @@ class MCTS:
         for action, child in root.children.items():
             policy[action] = child.visit_count
             
-        # 정규화
-        policy = policy / np.sum(policy)
+        # 정규화 (분모가 0인 경우 균등 분포 반환)
+        total_visits = np.sum(policy)
+        if total_visits > 0:
+            policy = policy / total_visits
+        else:
+            # 방문이 없는 경우 균등 분포
+            policy = np.ones(self.action_space_size) / self.action_space_size
         return policy
         
     def _initial_inference(self, observation: torch.Tensor) -> Dict:
@@ -285,6 +313,9 @@ class MCTS:
         # 배치 차원 추가
         if len(hidden_state.shape) == 1:
             hidden_state = hidden_state.unsqueeze(0)
+        
+        # hidden_state를 올바른 device로 이동
+        hidden_state = hidden_state.to(self.device)
             
         # 액션을 텐서로 변환
         action_tensor = torch.tensor([action], device=self.device)
@@ -306,14 +337,17 @@ class MCTS:
         )
         
         # value와 reward를 스칼라 값으로 변환
+        # Categorical distribution: logits -> probabilities -> scalar
         if value.shape[1] == len(support):
-            value_scalar = torch.sum(value[0] * support).item()
+            value_probs = torch.softmax(value[0], dim=0)
+            value_scalar = torch.sum(value_probs * support).item()
         else:
             # Support 크기가 맞지 않으면 0 반환
             value_scalar = 0.0
         
         if reward.shape[1] == len(support):
-            reward_scalar = torch.sum(reward[0] * support).item()
+            reward_probs = torch.softmax(reward[0], dim=0)
+            reward_scalar = torch.sum(reward_probs * support).item()
         else:
             reward_scalar = 0.0
         
