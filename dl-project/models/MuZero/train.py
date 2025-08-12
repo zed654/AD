@@ -5,7 +5,7 @@ MuZero 학습 모듈
 import torch
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
-from .data_parser import build_observation_tensor
+from .utils import build_observation_tensor
 
 
 def support_to_scalar(logits, support_size):
@@ -113,8 +113,14 @@ def train_network(network, replay_buffer, config, device):
     )
     
     # 학습 설정
-    K = 5  # Unroll 스텝 수
-    training_steps = min(config.training_steps, 100)  # 데모를 위해 100스텝으로 제한
+    K = config.unroll_steps  # Unroll 스텝 수 (config에서 가져옴)
+    training_steps = config.training_steps  # K-Step Unrolling 하면서 Weight 업데이트하는 횟수
+    
+    # Replay buffer가 비어있으면 학습 스킵
+    if replay_buffer.size() == 0:
+        print("경고: Replay buffer가 비어있어 학습을 건너뜁니다.")
+        return
+    
     batch_size = min(config.batch_size, replay_buffer.size())  # 배치 크기 조정
     
     print(f"학습 설정:")
@@ -131,7 +137,7 @@ def train_network(network, replay_buffer, config, device):
     print("\n=== MuZero 네트워크 학습 시작 ===")
     for step in range(training_steps):
         # 배치 샘플링
-        batch = replay_buffer.get_batch(batch_size)
+        batch = replay_buffer.get_batch(batch_size) # Replay Buffer 에서 batch_size 만큼 랜덤하게 Episode 를 뽑아냄 
         if batch is None:
             print(f"Step {step}: 배치 샘플링 실패 (데이터 부족)")
             continue
@@ -158,9 +164,10 @@ def train_network(network, replay_buffer, config, device):
             # state가 dict인 경우 5채널 observation 생성
             if isinstance(state, dict):
                 # 5채널 observation 생성 (공용 함수 사용)
-                observation = build_observation_tensor(state, config.observation_shape, device).unsqueeze(0)  # 배치 차원 추가
+                observation = build_observation_tensor(state, config.observation_shape, device, config.use_obstacle_channels).unsqueeze(0)  # 배치 차원 추가
             else:
                 observation = state.unsqueeze(0).to(device)
+                print(f"경고: 상태가 dict가 아니므로 5채널 observation 생성에 실패했습니다. {state.shape} 형태의 상태를 사용합니다.")
             
             # 초기 추론 (representation + prediction)
             # latent_0 = representation(observation)
@@ -277,9 +284,10 @@ def train_network(network, replay_buffer, config, device):
     writer.close()
     print("\n학습 완료!")
     
-    # 모델 저장
-    if config.save_model:
-        model_path = config.results_path / "model.pth"
-        model_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(network.state_dict(), model_path)
-        print(f"모델 저장: {model_path}") 
+    # 마지막 loss 값들 반환
+    return {
+        'total_loss': total_loss.item() if total_loss != 0 else 0.0,
+        'value_loss': value_loss.item() if value_loss != 0 else 0.0,
+        'reward_loss': reward_loss.item() if reward_loss != 0 else 0.0,
+        'policy_loss': policy_loss.item() if policy_loss != 0 else 0.0
+    } 

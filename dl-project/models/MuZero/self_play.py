@@ -9,7 +9,7 @@ from .mcts import MCTS
 from .environment import BaseEnvironment
 from .action import Action
 from .replay_buffer import ReplayBuffer, Episode
-from .data_parser import build_observation_tensor
+from .utils import build_observation_tensor
 
 
 class GameHistory:
@@ -82,7 +82,7 @@ class SelfPlayManager:
             }
             
             # 6채널 observation tensor 생성
-            observation_tensor = build_observation_tensor(state_dict, self.config.observation_shape, self.device)
+            observation_tensor = build_observation_tensor(state_dict, self.config.observation_shape, self.device, self.config.use_obstacle_channels)
         else:
             observation_tensor = observation
         
@@ -160,7 +160,7 @@ class SelfPlayManager:
                 }
                 
                 # 6채널 observation tensor 생성
-                observation_tensor = build_observation_tensor(state_dict, self.config.observation_shape, self.device)
+                observation_tensor = build_observation_tensor(state_dict, self.config.observation_shape, self.device, self.config.use_obstacle_channels)
             else:
                 observation_tensor = observation
                 
@@ -255,7 +255,7 @@ class SelfPlayManager:
                     
                     # 6채널 observation 생성 (공용 함수 사용)
                     device = self.device if hasattr(self, 'device') else 'cpu'
-                    observation_tensor = build_observation_tensor(state_dict_copy, self.config.observation_shape, device)
+                    observation_tensor = build_observation_tensor(state_dict_copy, self.config.observation_shape, device, self.config.use_obstacle_channels)
                     
                     # MCTS 실행
                     # - representation(): observation → latent
@@ -269,6 +269,7 @@ class SelfPlayManager:
                     
                     # Episode에 MCTS 결과 업데이트
                     episode.policies[step_idx] = mcts_result['policy_targets']
+                    # MCTS가 계산한 value 저장 (bootstrap에 사용됨)
                     episode.values[step_idx] = mcts_result['root_value']
                     
                     # MCTS가 선택한 action 저장
@@ -287,9 +288,12 @@ class SelfPlayManager:
                     # Episode state에도 업데이트 (최종 거리 계산을 위해)
                     episode.states[step_idx]['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
                     
-                    # 보상은 dynamics 네트워크가 예측한 값을 사용해야 함
-                    # GT Episode enrichment에서는 reward를 0으로 설정 (나중에 backward propagation으로 계산)
-                    episode.rewards[step_idx] = 0.0
+                    # GT 학습을 위한 환경 reward 계산
+                    # TODO: 실제 환경 보상 정의 필요
+                    episode.rewards[step_idx] = self._calculate_gt_reward(
+                        episode, step_idx, selected_action, 
+                        (simulated_ego_row, simulated_ego_col)
+                    )
                 
                 if step_idx % 10 == 0:
                     print(f"  - 진행률: {step_idx}/{len(episode)} 스텝 (각 스텝마다 {self.config.num_simulations}회 시뮬레이션)")
@@ -389,6 +393,58 @@ class SelfPlayManager:
         return 0.0
 
     
+    def _calculate_gt_reward(self, episode: Episode, step_idx: int, action: int, 
+                             sim_pos: Tuple[int, int]) -> float:
+        """GT 학습을 위한 환경 reward 계산
+        
+        trajectory_following_value의 스텝별 버전
+        
+        Args:
+            episode: 현재 Episode
+            step_idx: 현재 스텝
+            action: 선택된 action (현재 미사용)
+            sim_pos: 시뮬레이션 위치 (row, col)
+            
+        Returns:
+            환경 reward (-1 ~ 1 범위)
+        """
+        reward = 0.0
+        
+        # Expert following reward 계산 (trajectory_following 로직 응용)
+        if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
+            expert_pos = episode.expert_ego_pos[step_idx]
+            
+            # 현재 거리 계산
+            curr_dist = self._calculate_grid_distance(sim_pos, expert_pos)
+            
+            # Step-wise reward: 거리에 따른 즉각적인 피드백
+            # 가까울수록 positive (최대 0.2), 멀수록 negative (최소 -0.2)
+            distance_reward = 0.2 * (1.0 - min(curr_dist / 20.0, 2.0))  # 20 cells = neutral
+            reward += distance_reward
+            
+            # 이전 스텝과의 개선도 보너스
+            if step_idx > 0:
+                prev_sim_pos = episode.states[step_idx - 1].get('simulated_ego_pos', (49, 49))
+                prev_expert_pos = episode.expert_ego_pos[step_idx - 1]
+                prev_dist = self._calculate_grid_distance(prev_sim_pos, prev_expert_pos)
+                
+                # 거리가 줄어들면 추가 보너스
+                improvement = prev_dist - curr_dist
+                reward += improvement * 0.05  # 작은 보너스
+        
+        # 경계 체크 페널티 (그리드 밖)
+        if sim_pos[0] < 5 or sim_pos[0] >= 94 or sim_pos[1] < 5 or sim_pos[1] >= 94:
+            reward -= 0.3  # 경계 근처 페널티
+        
+        # Reward를 -1 ~ 1 범위로 클리핑
+        return np.clip(reward, -1.0, 1.0)
+    
+    def _calculate_grid_distance(self, pos1: Tuple[int, int], pos2: Tuple[int, int]) -> float:
+        """두 그리드 좌표 간 유클리드 거리 계산"""
+        if pos1 is None or pos2 is None:
+            return float('inf')
+        return np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
+    
     def _distance_to_value(self, distance: float) -> float:
         """거리 오차를 value로 변환 (continuous mapping)
         
@@ -405,23 +461,71 @@ class SelfPlayManager:
         return max(-1.0, min(1.0, value))  # -1.0 ~ 1.0 범위로 제한
     
     def _calculate_target_value(self, episode: Episode, final_value: float):
-        """n-step return 계산
-    
-        MuZero는 n-step return + bootstrap value를 사용합니다.
-        target_value = sum(discount^k * reward_k) + discount^n * value_n
-        bootstrap value 는 n_steps 만큼 적용됨 (n_steps 만큼 미래의 가치를 현재에 대입하는 것)
-        
-        * Bellman equation 원리임 - Baysian Theory 의 반대 개념으로, 미래의 가치를 현재에 대입하는 것
         """
+        n-step return + bootstrap value (MuZero target)
+        z_t^{(n)} = sum_{k=0}^{n-1} γ^k r_{t+k} + γ^n * v0(s_{t+n})
+        터미널(j_boot >= T)이면:
+        - terminal_bootstrap == "none": 부트스트랩 생략
+        - terminal_bootstrap == "final_value": γ^{steps_added} * final_value 추가
+        """
+        n = self.config.unroll_steps
+        gamma = self.config.discount
+        terminal_bootstrap = getattr(self.config, "terminal_bootstrap", "final_value")  # "none" or "final_value"
 
-        """Episode의 value를 backward propagation으로 계산
-        
-        V[t] = r[t] + γ * V[t+1]
-        """
-        for i in reversed(range(len(episode))):
-            if i == len(episode) - 1:
-                # 마지막 스텝은 final_value 사용
-                episode.values[i] = final_value
+        # 원본 MCTS value 보존(있으면 사용, 없으면 네트워크 추론)
+        mcts_values = episode.values.copy()
+
+        T = len(episode)
+        target_values = [0.0] * T
+
+        for i in range(T):
+            G = 0.0
+            gpow = 1.0
+            steps_added = 0
+
+            # n-step 보상 합
+            for k in range(n):
+                j = i + k
+                if j >= T:
+                    break
+                G += gpow * float(episode.rewards[j])
+                gpow *= gamma
+                steps_added += 1
+                # dones가 있다면 여기서 끊기: if episode.dones[j]: break
+
+            # 부트스트랩
+            j_boot = i + n
+            if j_boot < T:
+                v_boot = mcts_values[j_boot]
+                if v_boot is None:
+                    v_boot = self._infer_value_from_state(episode, j_boot)  # v0(s_{i+n})
+                G += gpow * float(v_boot)          # gpow == γ^{steps_added}
             else:
-                # 이전 스텝들은 reward + discounted next value
-                episode.values[i] = episode.rewards[i] + self.config.discount * episode.values[i + 1] 
+                # 터미널 도달: 정책 선택
+                if terminal_bootstrap == "final_value":
+                    G += gpow * float(final_value)  # γ^{steps_added} * final_value
+                # "none"이면 아무것도 더하지 않음(= MC 합만)
+
+            target_values[i] = float(G)
+
+        # 학습 타깃 기록
+        for i in range(T):
+            episode.values[i] = target_values[i]
+    
+    def _infer_value_from_state(self, episode: Episode, idx: int) -> float:
+        """주어진 상태에서 네트워크로 value 추론"""
+        state_dict = episode.states[idx]
+        obs = build_observation_tensor(state_dict, self.config.observation_shape, 
+                                     self.device, self.config.use_obstacle_channels).unsqueeze(0)
+        
+        with torch.no_grad():
+            value_logits, _, _, _ = self.network.initial_inference(obs)
+            
+            # Support distribution을 스칼라 값으로 변환
+            support = torch.arange(-self.config.support_size, 
+                                  self.config.support_size + 1, 
+                                  device=self.device, dtype=torch.float32)
+            prob = torch.softmax(value_logits, dim=1)
+            value = torch.sum(prob * support, dim=1).item()
+            
+        return value 

@@ -36,17 +36,18 @@ class MuZeroConfig:
         self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
         
         # GT Episode 생성 설정
-        self.gt_num_episodes = 20  # GT 데이터에서 생성할 에피소드 수
+        self.gt_num_episodes = 50  # GT 데이터에서 생성할 에피소드 수 (20 → 50)
         self.gt_episode_overlap = 10 #25  # 에피소드 간 겹침 스텝 수
         
         # Observation Provider 설정
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
         self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # GT 데이터 경로
+        self.use_obstacle_channels = False  # False: 방향 벡터만 사용, True: 장애물 채널도 사용
 
         # Self-Play 설정
         self.num_workers = 1
         self.selfplay_on_gpu = False
-        self.num_simulations = 50
+        self.num_simulations = 30  # 50 → 30 (밤새 더 많은 Episode 처리)
         self.discount = 0.997
         self.temperature_threshold = None
         self.num_stochastic_steps = 30  # 초기 30스텝 동안 확률적 행동 선택
@@ -62,19 +63,20 @@ class MuZeroConfig:
         self.support_size = 10
         
         # Fully Connected Network 설정
-        self.encoding_size = 8
-        self.fc_representation_layers = []
-        self.fc_dynamics_layers = [16]
-        self.fc_reward_layers = [16]
-        self.fc_value_layers = [16]
-        self.fc_policy_layers = [16]
+        self.encoding_size = 64  # 8 -> 64로 증가
+        self.fc_representation_layers = [128, 64]  # 히든 레이어 추가
+        self.fc_dynamics_layers = [64, 32]  # 16 -> 더 큰 네트워크
+        self.fc_reward_layers = [32, 16]
+        self.fc_value_layers = [32, 16]
+        self.fc_policy_layers = [32, 16]
 
         # 학습 설정
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
-        self.training_steps = 100 #10000
-        self.batch_size = 32 #128
-        self.checkpoint_interval = 10
+        self.training_steps = 1000  # 500 -> 1000 (밤새 충분한 학습)
+        self.batch_size = 32  # 16 -> 32 (안정적인 학습)
+        self.unroll_steps = 5  # K-step unrolling 길이 (MuZero 논문 기본값)
+        self.checkpoint_interval = 5  # 10 → 5로 변경 (5 에폭마다 시각화)
         self.value_loss_weight = 1
         self.train_on_gpu = torch.cuda.is_available()
 
@@ -83,18 +85,24 @@ class MuZeroConfig:
         self.momentum = 0.9
 
         # 학습률 설정
-        self.lr_init = 0.02
-        self.lr_decay_rate = 0.8
+        self.lr_init = 0.001  # 0.02 -> 0.001로 감소
+        self.lr_decay_rate = 0.9  # 0.8 -> 0.9로 더 천천히 감소
         self.lr_decay_steps = 1000
         
         # 추가 학습 설정 (개선된 인터페이스용)
-        self.num_training_epochs = 10 # 100  # 전체 학습 에폭 수
-        self.replay_buffer_size = 100  # Replay Buffer 크기
+        self.num_training_epochs = 20  # 5 → 20 (밤새 학습)
+        self.replay_buffer_size = 200  # 100 → 200 (더 많은 데이터 보관)
         
         # 체크포인트 저장 설정
         self.checkpoint_save_dir = "checkpoints"  # 체크포인트 저장 디렉토리 이름
         self.checkpoint_final_name = "muzero_final.pth"  # 최종 모델 파일명
         self.checkpoint_epoch_prefix = "muzero_epoch_"  # 에폭별 체크포인트 파일명 접두사
+        
+        # 평가 설정
+        self.eval_num_episodes = 100  # 평가할 에피소드 수
+        self.eval_use_mcts = True  # 평가 시 MCTS 사용 여부
+        self.eval_dataset_type = "validation"  # 평가 데이터셋 ("train", "validation", "test")
+        self.eval_save_results = False  # 평가 결과 저장 여부
 
     def visit_softmax_temperature_fn(self, trained_steps):
         """

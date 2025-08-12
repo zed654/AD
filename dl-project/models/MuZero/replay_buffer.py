@@ -83,13 +83,11 @@ class ReplayBuffer:
         self.save_episode(episode)
         
     def get_batch(self, batch_size: int) -> Optional[List[Episode]]:
-        """학습용 배치 샘플링"""
+        """학습용 배치 샘플링 (sample_episodes 사용)"""
         if len(self.buffer) < batch_size:
             return None
         
-        # 랜덤하게 에피소드 선택
-        indices = np.random.choice(len(self.buffer), batch_size, replace=False)
-        return [self.buffer[i] for i in indices]
+        return self.sample_episodes(batch_size)
     
     def size(self) -> int:
         """현재 버퍼 크기"""
@@ -101,4 +99,24 @@ class ReplayBuffer:
     
     def clear(self):
         """버퍼 초기화"""
-        self.buffer = [] 
+        self.buffer = []
+    
+    def sample_episodes(self, num_episodes: int) -> List[Episode]:
+        """랜덤하게 에피소드들을 샘플링
+        
+        Args:
+            num_episodes: 샘플링할 에피소드 수
+            
+        Returns:
+            샘플링된 Episode 리스트
+        """
+        if not self.buffer:
+            return []
+        
+        num_samples = min(num_episodes, len(self.buffer))
+        indices = np.random.choice(len(self.buffer), num_samples, replace=False)
+        return [self.buffer[i] for i in indices]
+    
+    def __len__(self):
+        """저장된 에피소드 수"""
+        return len(self.buffer) 

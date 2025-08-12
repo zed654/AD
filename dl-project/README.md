@@ -91,7 +91,11 @@ python main_muzero.py inference --episodes 100 --no-render
 
 #### 저장된 모델 성능 평가
 ```bash
-python main_muzero.py evaluate --checkpoint checkpoints/muzero_final.pth --episodes 100
+# 다른 GT 데이터 사용
+python3 main_muzero.py evaluate --gt-data path/to/other.jsonl
+
+# 특정 체크포인트 사용  
+python3 main_muzero.py evaluate --checkpoint path/to/specific.pth
 ```
 
 ---
