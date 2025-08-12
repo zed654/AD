@@ -252,7 +252,7 @@ def is_person(class_id: int) -> bool:
     return class_id in OBJECT_CATEGORIES["person"]["ids"]
 
 
-def get_grid_value_from_class_id(class_id: int) -> float:
+def get_grid_value_from_object_class_id(class_id: int) -> float:
     """
     객체 클래스 ID를 MuZero 그리드 값으로 변환합니다.
     
@@ -268,6 +268,26 @@ def get_grid_value_from_class_id(class_id: int) -> float:
         return GRID_VALUE_VEHICLE
     else:  # 기타 객체
         return GRID_VALUE_OTHER_OBJECT
+
+
+def get_grid_value_from_ldm_obstacles_type(obstacles_type: int) -> float:
+    """
+    LDM obstacles_type을 MuZero 그리드 값으로 변환합니다.
+    
+    Args:
+        obstacles_type: LDM obstacles_type (1=Cliff, 2=Static, 3=Missing)
+        
+    Returns:
+        그리드 값 (0.0 ~ 1.0)
+    """
+    if obstacles_type == 1:
+        return GRID_VALUE_CLIFF
+    elif obstacles_type == 2:
+        return GRID_VALUE_STATIC_OBSTACLE
+    elif obstacles_type == 3:
+        return GRID_VALUE_MISSING_POINTS
+    else:
+        return GRID_VALUE_EMPTY
 
 
 def get_grid_value_info(value: float) -> Tuple[str, str]:

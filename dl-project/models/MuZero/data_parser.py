@@ -23,7 +23,8 @@ from rosetta import (
     get_object_name, get_object_color,
     get_ldm_segmentation_name, get_ldm_segmentation_color,
     get_object_category, is_vehicle, is_person,
-    get_grid_value_from_class_id, get_grid_value_info
+    get_grid_value_from_object_class_id, get_grid_value_from_ldm_obstacles_type,
+    get_grid_value_info
 )
 
 
@@ -360,7 +361,7 @@ class ObservationBuilder:
         # 주의: Ego는 Grid에 표시하지 않음. ego_pos로 별도 전달됨
         for obj in objects:
             # 객체의 중심점과 모든 꼭짓점을 그리드에 표시
-            grid_value = get_grid_value_from_class_id(obj.class_id)
+            grid_value = get_grid_value_from_object_class_id(obj.class_id)
             
             # 중심점 표시
             rel_x, rel_y = CoordinateTransformer.global_to_ego(
@@ -396,12 +397,10 @@ class ObservationBuilder:
             grid_col = self.ego_grid_col - int(rel_y / self.cell_size)  # 180도 회전: 오른쪽이 왼쪽
             
             if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
-                if ldm.obstacles_type == 1:  # Cliff/경사
-                    grid[1, grid_row, grid_col] = GRID_VALUE_CLIFF
-                elif ldm.obstacles_type == 2:  # Static obstacles
-                    grid[1, grid_row, grid_col] = GRID_VALUE_STATIC_OBSTACLE
-                elif ldm.obstacles_type == 3:  # Missing points
-                    grid[1, grid_row, grid_col] = GRID_VALUE_MISSING_POINTS
+                # rosetta.py의 함수 사용하여 그리드 값 변환
+                grid_value = get_grid_value_from_ldm_obstacles_type(ldm.obstacles_type)
+                if grid_value > 0:  # GRID_VALUE_EMPTY가 아닌 경우만 설정
+                    grid[1, grid_row, grid_col] = grid_value
                 
                 # LDM의 semantic class_id를 Channel 2에 저장 (obstacles_type과 무관하게 모든 LDM 포인트)
                 grid[2, grid_row, grid_col] = ldm.class_id

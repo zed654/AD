@@ -141,12 +141,35 @@ The `models/SSR/` contains template implementations for Structured State Represe
 
 ## Recent Updates (2025-08-12)
 
+### Episode 평가 함수 구현 및 개선
+1. **충돌 감지 함수 구현** (`_calculate_collision_value`):
+   - simulated_ego_pos 주변 3x3 그리드 영역에서 장애물 체크
+   - Channel 0 (Dynamic objects)와 Channel 1 (Static environment) 모두 검사
+   - 충돌 감지 시 즉시 -1.0 반환하여 최대 페널티 부여
+   - 로봇 크기(60cm)를 고려한 3x3 그리드(60cm x 60cm) 충돌 판정
+
+2. **경로 추종 평가 통합**:
+   - `_calculate_trajectory_following_value`만 사용하도록 단순화
+   - Missing Rate 함수 제거 (중복 기능)
+   - 평균 거리 오차를 연속적인 value로 변환 (0 거리→1.0, 10 거리→0.0, 20 거리→-1.0)
+
+3. **최종 value 계산 로직**:
+   - 충돌 발생 시 무조건 -1.0 반환
+   - 충돌이 없으면 경로 추종 정확도를 최종 value로 사용
+   - 명확한 로그 출력으로 각 평가 요소 확인 가능
+
+4. **데이터 파싱 개선**:
+   - `rosetta.py`에 `get_grid_value_from_ldm_obstacles_type()` 함수 추가
+   - LDM obstacles_type을 그리드 값으로 변환하는 함수 통합
+   - Objects와 LDM 데이터 모두 rosetta.py 함수로 일관되게 처리
+
 ### MCTS 및 네트워크 안정성 개선
 1. **MCTS 버그 수정**:
    - `_recurrent_inference`에서 `hidden_state`를 올바른 device로 이동
    - 루트 노드 `visit_count=0`일 때 PUCT 탐색항이 0이 되는 문제 수정 (`max(parent.visit_count, 1)` 사용)
    - `_get_policy_targets`에서 분모가 0인 경우 처리 (균등 분포 반환)
    - softmax 계산 시 `dim=-1` 사용으로 일관성 개선
+   - config의 `pb_c_init`, `pb_c_base` 값을 MCTS에 전달하도록 수정
 
 2. **초기 reward 계산 개선**:
    - `models.py`의 `initial_inference`에서 `torch.log(one_hot)` 사용으로 인한 `-inf` 문제 해결
@@ -156,6 +179,9 @@ The `models/SSR/` contains template implementations for Structured State Represe
 3. **코드 수정 상세**:
    - `mcts.py`: hidden_state device 설정, PUCT 최소값 보장, policy 분모 0 방지
    - `models.py`: reward logits 생성 방식 개선으로 수치 안정성 확보
+   - `self_play.py`: 충돌 감지 및 경로 추종 평가 함수 구현
+   - `rosetta.py`: LDM 데이터 변환 함수 추가
+   - `data_parser.py`: rosetta.py 함수 사용으로 코드 일관성 개선
 
 ## Recent Updates (2025-07-30)
 
@@ -426,7 +452,7 @@ The `models/SSR/` contains template implementations for Structured State Represe
 1. **Grid Value Mapping 통합**:
    - `data_parser.py`에 색상 및 그리드 값 매핑 함수 통합
    - 상수 정의: `GRID_VALUE_EMPTY`, `GRID_VALUE_PEDESTRIAN`, `GRID_VALUE_VEHICLE`, `GRID_VALUE_EGO` 등
-   - 공용 함수: `get_object_color()`, `get_grid_value_from_class_id()`, `get_grid_value_info()`
+   - 공용 함수: `get_object_color()`, `get_grid_value_from_object_class_id()`, `get_grid_value_info()`
 
 2. **Observation 개선**:
    - 객체의 중심점뿐만 아니라 모든 꼭짓점(points)도 그리드에 표시

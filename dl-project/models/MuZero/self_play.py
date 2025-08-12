@@ -324,7 +324,7 @@ class SelfPlayManager:
         - Collision Rate - 충돌 여부
         - minADE - 경로 추종 정확도 (expert와의 거리 오차)
         - minFDE - 예측 경로 중, 예측의 최종 도착지점과 실제 도착지점의 차이
-        - Miss Rate - 예측을 크게 빗나갈 확률 (Threshold 걸어넣고, 예측이 Threshold를 넘는 경우)
+        - Missing Rate - 예측을 크게 빗나갈 확률 (Threshold 걸어넣고, 예측이 Threshold를 넘는 경우)
         """
         print("\nEpisode GameOver value 계산 중...")
         print(f"  - 총 스텝: {len(episode)}")
@@ -332,17 +332,30 @@ class SelfPlayManager:
         # 1. 경로 추종 정확도 기반 value
         trajectory_value = self._calculate_trajectory_following_value(episode)
         
-        # 2. 충돌 기반 value (TODO: 구현 예정)
+        # 2. 충돌 기반 value
         collision_value = self._calculate_collision_value(episode)
         
-        # 3. 기타 조건들 (TODO: 필요시 추가)
+        # 3. Missing Rate 기반 value
+        # missing_rate_value = self._calculate_missing_rate_value(episode)
+        
+        # 4. 기타 조건들 (TODO: 필요시 추가)
         # goal_reaching_value = self._calculate_goal_reaching_value(episode)
         # smoothness_value = self._calculate_smoothness_value(episode)
         
-        # 최종 value 계산 (가중 평균 또는 다른 방식)
-        final_value = trajectory_value  # 현재는 경로 추종만 고려
+        # 최종 value 계산
+        # 충돌이 발생하면 즉시 -1.0 반환
+        if collision_value < 0:
+            print("  - 충돌 발생! 최종 value: -1.0")
+            return -1.0
         
-        print(f"  - 최종 value: {final_value:.3f}")
+        # 충돌이 없으면 다른 값들을 조합
+        # trajectory_value: -1.0 ~ 1.0 (경로 추종 정확도)
+        # missing_rate_value: -1.0 ~ 0.0 (벗어난 비율의 음수)
+        # final_value = trajectory_value * 0.7 + missing_rate_value * 0.3  # 가중 평균
+        final_value = trajectory_value
+        
+        print(f"  - 최종 value: {final_value:.3f} (경로추종: {trajectory_value:.3f}, Missing: {missing_rate_value:.3f})")
+        
         return final_value
     
     def _calculate_trajectory_following_value(self, episode: Episode) -> float:
@@ -387,12 +400,88 @@ class SelfPlayManager:
     def _calculate_collision_value(self, episode: Episode) -> float:
         """충돌 기반 value 계산
         
-        TODO: 구현 예정
-        - Episode 내 충돌 발생 여부 체크
-        - 충돌 시 큰 페널티 부여
+        Episode 내 충돌 발생 여부 체크
+        충돌 시 큰 페널티 부여
         """
-        # 현재는 기본값 반환
-        return 0.0
+        # 모든 스텝에서 충돌 체크
+        for step_idx in range(len(episode)):
+            if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
+                state = episode.states[step_idx]
+                sim_pos = state.get('simulated_ego_pos', (49, 49))
+                
+                # 3x3 영역 체크 (중심 + 8방향)
+                collision_detected = False
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        check_row = sim_pos[0] + dr
+                        check_col = sim_pos[1] + dc
+                        
+                        # 그리드 범위 체크
+                        if 0 <= check_row < 99 and 0 <= check_col < 99:
+                            # Channel 0: Dynamic objects 체크
+                            if 'obstacles' in state and state['obstacles'] is not None:
+                                if isinstance(state['obstacles'], np.ndarray):
+                                    if state['obstacles'][check_row, check_col] > 0:
+                                        collision_detected = True
+                                        print(f"    - 충돌 감지! 스텝 {step_idx}에서 위치 ({check_row}, {check_col}) ; 대상객체: Obstacles Tracking")
+                                        break
+                            
+                            # Channel 1: Static environment 체크
+                            if 'static_environment' in state and state['static_environment'] is not None:
+                                if isinstance(state['static_environment'], np.ndarray):
+                                    if state['static_environment'][check_row, check_col] > 0:
+                                        collision_detected = True
+                                        print(f"    - 충돌 감지! 스텝 {step_idx}에서 위치 ({check_row}, {check_col}) ; 대상객체: Static Environment")
+                                        break
+                    
+                    if collision_detected:
+                        break
+                
+                if collision_detected:
+                    print(f"    - 충돌 감지! 스텝 {step_idx}에서 위치 ({sim_pos[0]}, {sim_pos[1]})")
+                    return -1.0  # 충돌 시 최대 페널티
+        
+        return 0.0  # 충돌 없음
+
+    def _calculate_missing_rate_value(self, episode: Episode) -> float:
+        """Missing Rate 기반 value 계산
+        
+        주행로에서 많이 떨어질 경우, 큰 페널티 부여
+        """
+        threshold = 15  # 15 cells = 3m (각 셀은 20cm)
+        miss_count = 0
+        total_count = 0
+        
+        # 모든 스텝에서 거리 체크
+        for step_idx in range(len(episode)):
+            if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
+                state = episode.states[step_idx]
+                sim_pos = state.get('simulated_ego_pos')
+                
+                # expert_ego_pos 추출
+                if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
+                    expert_pos = episode.expert_ego_pos[step_idx]
+                    
+                    if sim_pos is not None and expert_pos is not None:
+                        # 유클리드 거리 계산 (그리드 좌표 기준)
+                        if isinstance(expert_pos, tuple) and len(expert_pos) == 2 and \
+                           isinstance(sim_pos, tuple) and len(sim_pos) == 2:
+                            distance = np.sqrt((sim_pos[0] - expert_pos[0])**2 + 
+                                             (sim_pos[1] - expert_pos[1])**2)
+                            
+                            total_count += 1
+                            if distance > threshold:
+                                miss_count += 1
+        
+        # Miss Rate 계산
+        if total_count > 0:
+            miss_rate = miss_count / total_count
+            print(f"    - Miss Rate: {miss_rate:.2%} ({miss_count}/{total_count} 스텝이 3m 이상 벗어남)")
+            
+            # Miss Rate를 value로 변환 (0% -> 0.0, 100% -> -1.0)
+            return -miss_rate  # 벗어난 비율만큼 페널티
+        else:
+            return 0.0
 
     
     def _calculate_target_reward(self, episode: Episode, step_idx: int, action: int, 
