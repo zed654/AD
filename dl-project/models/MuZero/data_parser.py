@@ -88,19 +88,45 @@ class GTDataParser:
     def __init__(self, filepath: Path):
         """
         Args:
-            filepath: JSONL 파일 경로
+            filepath: JSONL 파일 경로 또는 폴더 경로
         """
         self.filepath = Path(filepath)
         self.data = self._load_jsonl_data()
         self.current_index = 0
     
     def _load_jsonl_data(self) -> List[Dict]:
-        """JSONL 파일에서 데이터를 로드합니다."""
+        """JSONL 파일(들)에서 데이터를 로드합니다."""
         data = []
-        if not self.filepath.exists():
-            raise FileNotFoundError(f"JSONL 파일을 찾을 수 없습니다: {self.filepath}")
+        
+        if self.filepath.is_file():
+            # 단일 파일 처리
+            if not self.filepath.exists():
+                raise FileNotFoundError(f"JSONL 파일을 찾을 수 없습니다: {self.filepath}")
+            data.extend(self._load_single_jsonl(self.filepath))
+            print(f"단일 JSONL 파일 로드: {self.filepath} ({len(data)} 프레임)")
             
-        with open(self.filepath, 'r') as f:
+        elif self.filepath.is_dir():
+            # 폴더 내 모든 JSONL 파일 처리
+            jsonl_files = list(self.filepath.glob("*.jsonl"))
+            if not jsonl_files:
+                raise FileNotFoundError(f"폴더에 JSONL 파일이 없습니다: {self.filepath}")
+            
+            print(f"폴더에서 {len(jsonl_files)}개 JSONL 파일 발견: {self.filepath}")
+            for jsonl_file in sorted(jsonl_files):  # 정렬된 순서로 로드
+                file_data = self._load_single_jsonl(jsonl_file)
+                data.extend(file_data)
+                print(f"  - {jsonl_file.name}: {len(file_data)} 프레임")
+            
+            print(f"총 {len(data)} 프레임 로드 완료")
+        else:
+            raise FileNotFoundError(f"파일 또는 폴더를 찾을 수 없습니다: {self.filepath}")
+            
+        return data
+    
+    def _load_single_jsonl(self, filepath: Path) -> List[Dict]:
+        """단일 JSONL 파일에서 데이터를 로드합니다."""
+        data = []
+        with open(filepath, 'r') as f:
             for line in f:
                 if line.strip():
                     data.append(json.loads(line))

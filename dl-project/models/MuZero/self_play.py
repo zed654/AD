@@ -514,6 +514,7 @@ class SelfPlayManager:
         
         Args:
             distance: 평균 거리 오차 (그리드 셀 단위)
+            그리드 셀 1개에 0.2 m
             
         Returns:
             value: -1.0 ~ 1.0 범위의 값
@@ -521,8 +522,16 @@ class SelfPlayManager:
             - 10 거리 → 0.0  
             - 20 거리 → -1.0
         """
-        value = 1.0 - (distance / 10.0)
-        return max(-1.0, min(1.0, value))  # -1.0 ~ 1.0 범위로 제한
+        # 자율주행 관점에서의 임계값
+        # 0.5m(2.5셀) 이하: 우수 (0.8~1.0)
+        # 1.0m(5셀) 이하: 보통 (0.0~0.8)
+        # 2.0m(10셀) 이상: 실패 (-1.0~0.0)
+        if distance <= 2.5:
+            return 0.8 + 0.2 * (2.5 - distance) / 2.5
+        elif distance <= 10.0:
+            return -distance / 10.0 + 0.8
+        else:
+            return -1.0
     
     def _calculate_target_value(self, episode: Episode):
         """

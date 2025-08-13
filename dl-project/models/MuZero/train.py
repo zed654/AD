@@ -189,6 +189,7 @@ def train_network(network, replay_buffer, config, device):
             value_loss += torch.nn.functional.cross_entropy(value, target_value_idx)
             
             # Policy loss
+            # [참고] MuZero 논문에서는 CrossEntropy 사용했음
             if episode.policies[start_idx] is not None:
                 target_policy = torch.tensor(episode.policies[start_idx], device=device).unsqueeze(0)
                 # KL divergence loss (target_policy는 확률 분포)

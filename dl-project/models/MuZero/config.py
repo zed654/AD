@@ -41,7 +41,9 @@ class MuZeroConfig:
         
         # Observation Provider 설정
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
-        self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # GT 데이터 경로
+        # GT 데이터 경로: 파일(.jsonl) 또는 폴더 경로 모두 지원
+        self.gt_data_path = Path("data/db3_parser/results/")  # 폴더 경로로 변경하면 모든 JSONL 파일 로드
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일
         self.use_obstacle_channels = True  # False: 방향 벡터만 사용, True: 장애물 채널도 사용
 
         # Self-Play 설정
