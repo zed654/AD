@@ -13,6 +13,12 @@ class MuZeroConfig:
         # 네트워크 설정
         self.seed = 0
         self.max_num_gpus = None
+        
+        # 새로운 Representation 구조 설정
+        self.use_coordconv = False  # CoordConv 사용 여부 (기본 OFF)
+        self.use_goal_map = False   # Goal을 2D 가우시안 히트맵으로 투영 여부 (기본 OFF) 
+        self.use_film = False       # FiLM 채널 단위 주입 실험용 (기본 OFF)
+        self.alpha_init = 0.5       # DirectionalGating alpha 초기값 (0.3~0.7 권장)
 
         # 게임 관련 설정
         self.action_space = list(range(Action.get_action_space_size()))  # Position 9개 액션 (POS0~POS8)
@@ -36,20 +42,25 @@ class MuZeroConfig:
         self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
         
         # GT Episode 생성 설정
-        self.gt_num_episodes = 50  # GT 데이터에서 생성할 에피소드 수 (20 → 50)
-        self.gt_episode_overlap = 10 #25  # 에피소드 간 겹침 스텝 수
+        self.gt_num_episodes = 400 #400  # GT 데이터에서 생성할 에피소드 수 (20 → 50)
+        self.gt_episode_overlap = 25 #10 #25  # 에피소드 간 겹침 스텝 수
         
         # Observation Provider 설정
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
         # GT 데이터 경로: 파일(.jsonl) 또는 폴더 경로 모두 지원
-        self.gt_data_path = Path("data/db3_parser/results/")  # 폴더 경로로 변경하면 모든 JSONL 파일 로드
-        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일
+        # self.gt_data_path = Path("data/db3_parser/results/")  # 폴더 경로로 변경하면 모든 JSONL 파일 로드
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일 ... 정상 주행 데이터 (코너 상황 대표 샘플)
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171226_91.jsonl")  # 단일 파일 ... Episode 5 에서 Near Destination 조금 이상함
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170026_79.jsonl")  # 단일 파일 ... 주행 전 대기상태 데이터임
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170226_81.jsonl")  # 단일 파일 ... 주행 전 대기상태 데이터임
+        self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170326_82.jsonl")  # 단일 파일 ... 정상 주행 데이터
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170426_83.jsonl")  # 단일 파일 ... 정상 주행 데이터
         self.use_obstacle_channels = True  # False: 방향 벡터만 사용, True: 장애물 채널도 사용
 
         # Self-Play 설정
         self.num_workers = 1
         self.selfplay_on_gpu = False
-        self.num_simulations = 30  # 50 → 30 (밤새 더 많은 Episode 처리)
+        self.num_simulations = 30  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
         self.discount = 0.997
         self.temperature_threshold = None
         self.num_stochastic_steps = 30  # 초기 30스텝 동안 확률적 행동 선택
@@ -75,30 +86,50 @@ class MuZeroConfig:
         # 학습 설정
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
-        self.training_steps = 1000  # 500 -> 1000 (밤새 충분한 학습)
-        self.batch_size = 32  # 16 -> 32 (안정적인 학습)
-        self.unroll_steps = 49  # K-step unrolling 길이 (전체 Episode 커버 - Monte Carlo에 가까운 학습)
-        self.checkpoint_interval = 5  # 10 → 5로 변경 (5 에폭마다 시각화)
+        self.training_steps = 10  # 1000 (밤새 충분한 학습) Epoch 하나에 Step 횟수 (=Epoch 당 가중치 업데이트 횟수)
+        self.batch_size = 128  # 32 -> 128 (GPU 메모리 활용도 최대화)
+        self.unroll_steps = 49  # 49, K-step unrolling 길이 (전체 Episode 커버 - Monte Carlo에 가까운 학습)
         self.value_loss_weight = 1
         self.train_on_gpu = torch.cuda.is_available()
+        self.num_training_epochs = 200  # 몇 번의 Epoch 를 돌릴건지
+        self.replay_buffer_size = 400  # 더 많은 데이터 보관용
+
+        # 체크포인트 저장 설정
+        self.checkpoint_interval = 5  # 10 → 5로 변경 (5 에폭마다 시각화)
+        self.checkpoint_save_dir = "checkpoints"  # 체크포인트 저장 디렉토리 이름
+        self.checkpoint_final_name = "muzero_final.pth"  # 최종 모델 파일명
+        self.checkpoint_epoch_prefix = "muzero_epoch_"  # 에폭별 체크포인트 파일명 접두사
+
+        # 체크포인트 재개 설정
+        # self.resume_checkpoint_path = None  # 재개할 체크포인트 경로 (None이면 새로 시작)
+        self.resume_checkpoint_path = "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-03--00-37-40/checkpoints/muzero_epoch_45.pth"
+        # "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-02--10-03-53/checkpoints/muzero_epoch_15.pth"
+        # 예: "models/MuZero/results/2025-09-02--00-11-57/checkpoints/muzero_epoch_5.pth"
+        
+        # 성능 최적화 설정
+        self.use_mixed_precision = True  # Mixed Precision Training (AMP) 활성화
+        self.gradient_accumulation_steps = 4  # Gradient Accumulation으로 대용량 배치 시뮬레이션
+        self.pin_memory = True  # DataLoader pin_memory 설정
+        self.num_data_workers = 4  # CPU 병렬 처리 워커 수
 
         self.optimizer = "Adam"
         self.weight_decay = 1e-4
         self.momentum = 0.9
 
-        # 학습률 설정
-        self.lr_init = 0.001  # 0.02 -> 0.001로 감소
-        self.lr_decay_rate = 0.9  # 0.8 -> 0.9로 더 천천히 감소
-        self.lr_decay_steps = 100  # 1000 -> 100으로 더 자주 감소
+        # 학습률 설정 (프로덕션 값으로 복원)
+        self.lr_init = 0.02  # 원래값 복원 
+        self.lr_decay_rate = 0.8  # 원래값 복원
+        self.lr_decay_steps = 1000  # 원래값 복원
         
-        # 추가 학습 설정 (개선된 인터페이스용)
-        self.num_training_epochs = 200  # 5 → 20 (밤새 학습)
-        self.replay_buffer_size = 200  # 100 → 200 (더 많은 데이터 보관)
         
-        # 체크포인트 저장 설정
-        self.checkpoint_save_dir = "checkpoints"  # 체크포인트 저장 디렉토리 이름
-        self.checkpoint_final_name = "muzero_final.pth"  # 최종 모델 파일명
-        self.checkpoint_epoch_prefix = "muzero_epoch_"  # 에폭별 체크포인트 파일명 접두사
+        
+        # 학습 중 시각화 설정
+        self.enable_training_visualization = True  # 학습 중 시각화 생성 여부
+        self.visualization_interval = 1  # 몇 에폭마다 시각화 생성할지 (기본: checkpoint_interval과 동일)
+        self.visualization_num_episodes = 3  # 시각화할 Episode 수 (최대)
+        self.visualization_min_episode_length = 10  # 시각화할 Episode 최소 길이
+        self.visualization_dpi = 150  # 이미지 저장 DPI
+        self.visualization_figsize = (10, 10)  # 그림 크기 (width, height)
         
         # 평가 설정
         self.eval_num_episodes = 100  # 평가할 에피소드 수

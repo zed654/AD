@@ -37,8 +37,8 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
     """
     print(f"\n  📊 Epoch {epoch} 학습 진행 상황 시각화...")
     
-    # 시각화할 Episode 샘플링 (최대 3개)
-    episodes = replay_buffer.sample_episodes(min(3, len(replay_buffer)))
+    # 시각화할 Episode 샘플링 (config에서 설정)
+    episodes = replay_buffer.sample_episodes(min(config.visualization_num_episodes, len(replay_buffer)))
     
     if not episodes:
         print("    시각화할 Episode가 없습니다.")
@@ -63,7 +63,7 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
     
     # 각 Episode에 대해 시각화
     for ep_idx, episode in enumerate(episodes):
-        if len(episode) < 10:  # 너무 짧은 Episode는 스킵
+        if len(episode) < config.visualization_min_episode_length:  # 너무 짧은 Episode는 스킵
             continue
             
         # 전체 Episode 시각화
@@ -87,17 +87,23 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         
         # 시각화 - Loss 정보가 있으면 2개 subplot, 없으면 1개
         if loss_history and len(loss_history['epochs']) > 0:
-            fig, (ax, ax_loss) = plt.subplots(1, 2, figsize=(20, 10))
+            fig, (ax, ax_loss) = plt.subplots(1, 2, figsize=(config.visualization_figsize[0]*2, config.visualization_figsize[1]))
         else:
-            fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+            fig, ax = plt.subplots(1, 1, figsize=config.visualization_figsize)
         
-        # 그리드 설정 (99x99)
+        # 그리드 설정 (99x99) - visualize_muzero_episode.py와 동일한 방식
         ax.set_xlim(0, 99)
         ax.set_ylim(0, 99)
         ax.set_aspect('equal')
-        ax.invert_yaxis()  # y축 반전 (row가 아래로 증가)
+        # invert_yaxis() 제거 - 자연스러운 수학 좌표계 (아래가 0, 위로 갈수록 증가)
         ax.grid(True, alpha=0.3)
-        ax.set_title(f'Epoch {epoch} - Episode {ep_idx+1} (All {visualization_steps} steps)')
+        # 제목에 출처 정보 포함
+        title = f'Epoch {epoch} - Episode {ep_idx+1} (All {visualization_steps} steps)'
+        if hasattr(episode, 'source_file') and episode.source_file:
+            title += f'\nSource: {episode.source_file}'
+            if hasattr(episode, 'start_frame') and hasattr(episode, 'end_frame'):
+                title += f' (Frames: {episode.start_frame}-{episode.end_frame})'
+        ax.set_title(title)
         
         # 마지막 프레임의 환경 정보 시각화 (배경으로)
         if len(enriched_episode.states) > 0:
@@ -156,6 +162,10 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         sim_cols = []
         current_pos = (49, 49)  # 시작 위치
         
+        # 디버그: action 정보 출력
+        unique_actions = set(enriched_episode.actions)
+        print(f"🔍 Episode {ep_idx+1} - Unique actions: {unique_actions}, Total steps: {len(enriched_episode.actions)}")
+        
         for i in range(len(enriched_episode)):
             # enriched_episode의 action을 사용하여 위치 업데이트
             if i > 0:  # 첫 스텝은 항상 (49, 49)
@@ -177,9 +187,15 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
             sim_rows.append(current_pos[0])
             sim_cols.append(current_pos[1])
         
-        # 예측 경로 그리기
-        ax.plot(sim_cols, sim_rows, 'r--', linewidth=2, label='Predicted Path (Current Network)', alpha=0.7)
-        ax.scatter(sim_cols, sim_rows, c='red', s=50, zorder=5)
+        print(f"🔍 Simulated path: start({sim_rows[0]}, {sim_cols[0]}) -> end({sim_rows[-1]}, {sim_cols[-1]})")
+        
+        # 예측 경로 그리기 (경로가 있을 때만)
+        if len(set(zip(sim_rows, sim_cols))) > 1:  # 서로 다른 위치가 2개 이상 있을 때만
+            ax.plot(sim_cols, sim_rows, 'r--', linewidth=2, label='Predicted Path (Current Network)', alpha=0.7)
+            ax.scatter(sim_cols, sim_rows, c='red', s=50, zorder=5)
+        else:
+            # 모든 점이 같은 위치인 경우 점으로만 표시
+            ax.scatter(sim_cols[0], sim_rows[0], c='red', s=100, marker='x', label='Predicted Path (No Movement)', zorder=5)
         
         # 시작점과 끝점 표시
         ax.scatter(expert_cols[0], expert_rows[0], c='green', s=100, marker='o', label='Start', zorder=6)
@@ -209,6 +225,7 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         stats_text += f"\n[Target Rewards]\n"
         stats_text += f"Total: {sum(enriched_episode.rewards):.2f}\n"
         stats_text += f"Avg: {np.mean(enriched_episode.rewards):.3f}\n"
+        stats_text += f"Min/Max: {np.min(enriched_episode.rewards):.3f}/{np.max(enriched_episode.rewards):.3f}\n"
         stats_text += f"Non-zero: {np.count_nonzero(enriched_episode.rewards)}/{len(enriched_episode.rewards)}\n"
         
         # Target Values 정보
@@ -239,6 +256,22 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
                 top_action = Action.from_index(top_action_idx)
                 stats_text += f"\n[Target Policy]\n"
                 stats_text += f"Top Action: {top_action.position.value} ({avg_policy[top_action_idx]:.2%})"
+        
+        # 방향 벡터 정보 추가 (첫 번째 step의 방향 벡터 사용)
+        if enriched_episode.states and len(enriched_episode.states) > 0:
+            first_state = enriched_episode.states[0]
+            if isinstance(first_state, dict):
+                near_dir = first_state.get('near_destination_direction')
+                dest_dir = first_state.get('final_destination_direction')
+                
+                if near_dir or dest_dir:
+                    stats_text += f"\n[Direction Vectors]\n"
+                    
+                if near_dir and isinstance(near_dir, dict) and 'x' in near_dir and 'y' in near_dir:
+                    stats_text += f"Near: x={near_dir['x']:.3f}, y={near_dir['y']:.3f}\n"
+                
+                if dest_dir and isinstance(dest_dir, dict) and 'x' in dest_dir and 'y' in dest_dir:
+                    stats_text += f"Final: x={dest_dir['x']:.3f}, y={dest_dir['y']:.3f}"
         
         ax.text(0.02, 0.02, stats_text, transform=ax.transAxes, fontsize=8,
                verticalalignment='bottom',
@@ -274,9 +307,8 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         save_dir = config.results_path / "visualizations"
         save_dir.mkdir(exist_ok=True)
         save_path = save_dir / f"epoch_{epoch}_episode_{ep_idx+1}.png"
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.savefig(save_path, dpi=config.visualization_dpi, bbox_inches='tight')
         plt.close()
-        
         print(f"    💾 시각화 저장: {save_path}")
 
 
@@ -294,6 +326,11 @@ def get_network(config, device):
             config.fc_representation_layers,
             config.fc_dynamics_layers,
             config.support_size,
+            # 새로운 파라미터들
+            use_coordconv=config.use_coordconv,
+            use_goal_map=config.use_goal_map,
+            use_film=config.use_film,
+            alpha_init=config.alpha_init,
         ).to(device)
     else:
         raise NotImplementedError(
@@ -400,6 +437,9 @@ def train_mode(config, checkpoint_path=None):
     
     print(f"   전문가 데이터 + MCTS 결과 추가 완료: {len(enriched_episodes)}개 에피소드")
     
+    # Replay Buffer 상세 정보 출력
+    replay_buffer.print_buffer_summary()
+    
     # Loss history 저장용
     loss_history = {
         'epochs': [],
@@ -435,8 +475,12 @@ def train_mode(config, checkpoint_path=None):
                   f"Reward={loss_dict['reward_loss']:.4f}")
         
         # 2.5 학습 진행 상황 시각화 (선택적)
-        if (epoch + 1) % config.checkpoint_interval == 0:
-            visualize_training_progress(network, replay_buffer, epoch + 1, config, device, loss_history)
+        if (epoch + 1) % config.visualization_interval == 0 and config.enable_training_visualization:
+            try:
+                visualize_training_progress(network, replay_buffer, epoch + 1, config, device, loss_history)
+            except Exception as e:
+                print(f"    ⚠️ 시각화 중 오류 발생: {e}")
+                logger.info(f"Visualization error at epoch {epoch+1}: {e}")
         
         # 3. 주기적으로 체크포인트 저장
         if (epoch + 1) % config.checkpoint_interval == 0:
@@ -818,7 +862,15 @@ def main():
     
     # 모드별 실행
     if args.mode == "train":
-        checkpoint_path = args.checkpoint if args.resume else None
+        # 체크포인트 경로 결정: config에 설정되어 있으면 자동 재개
+        checkpoint_path = None
+        if args.resume:
+            # --resume 플래그가 있으면 우선적으로 명령줄 체크포인트 사용
+            checkpoint_path = args.checkpoint or config.resume_checkpoint_path
+        elif config.resume_checkpoint_path:
+            # config에 체크포인트가 설정되어 있으면 자동으로 재개
+            checkpoint_path = config.resume_checkpoint_path
+            print(f"🔄 config.py에서 체크포인트 자동 재개: {checkpoint_path}")
         train_mode(config, checkpoint_path)
     
     elif args.mode == "inference":

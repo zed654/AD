@@ -364,8 +364,13 @@ class SelfPlayManager:
                         # 유클리드 거리 계산 (그리드 좌표 기준)
                         distance = np.sqrt((sim_row - expert_row)**2 + (sim_col - expert_col)**2)
                         
+                        # 디버깅: 거리 계산 과정 로그 출력
+                        reward_value = self._distance_to_value(distance)
+                        if step_idx < 3:  # 처음 3스텝만 로그 출력
+                            print(f"    - [Debug Reward] 스텝 {step_idx}: sim_pos=({sim_row}, {sim_col}), expert_pos=({expert_row}, {expert_col}), distance={distance:.3f}, reward={reward_value:.3f}")
+                        
                         # 거리를 value로 변환하여 반환
-                        return self._distance_to_value(distance)
+                        return reward_value
         
         # 정보가 없으면 0.0 반환
         print(f"  - [Target Reward 계산 이상] 스텝 {step_idx}에서 simulated_ego_pos 또는 expert_ego_pos 정보가 없음. value: 0.0")
@@ -510,28 +515,35 @@ class SelfPlayManager:
         return np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
     
     def _distance_to_value(self, distance: float) -> float:
-        """거리 오차를 value로 변환 (continuous mapping)
+        """거리 오차를 value로 변환 (더 엄격한 매핑)
         
         Args:
             distance: 평균 거리 오차 (그리드 셀 단위)
-            그리드 셀 1개에 0.2 m
+            그리드 셀 1개에 0.2m
             
         Returns:
-            value: -1.0 ~ 1.0 범위의 값
-            - 0 거리 → 1.0
-            - 10 거리 → 0.0  
-            - 20 거리 → -1.0
+            value: -1.0 ~ 1.0 범위의 값 (더 엄격한 기준)
+            - 0~1 거리 (0~0.2m): 1.0 ~ 0.6 (매우 정확)
+            - 1~3 거리 (0.2~0.6m): 0.6 ~ 0.2 (정확)  
+            - 3~5 거리 (0.6~1.0m): 0.2 ~ -0.2 (보통)
+            - 5~8 거리 (1.0~1.6m): -0.2 ~ -0.6 (부정확)
+            - 8+ 거리 (1.6m+): -0.6 ~ -1.0 (매우 부정확)
         """
-        # 자율주행 관점에서의 임계값
-        # 0.5m(2.5셀) 이하: 우수 (0.8~1.0)
-        # 1.0m(5셀) 이하: 보통 (0.0~0.8)
-        # 2.0m(10셀) 이상: 실패 (-1.0~0.0)
-        if distance <= 2.5:
-            return 0.8 + 0.2 * (2.5 - distance) / 2.5
-        elif distance <= 10.0:
-            return -distance / 10.0 + 0.8
-        else:
-            return -1.0
+        if distance <= 1.0:  # 0~0.2m: 매우 정확
+            result = 1.0 - 0.4 * distance  # 1.0 → 0.6
+        elif distance <= 3.0:  # 0.2~0.6m: 정확
+            result = 0.8 - 0.3 * (distance - 1.0)  # 0.6 → 0.2
+        elif distance <= 5.0:  # 0.6~1.0m: 보통
+            result = 0.2 - 0.4 * (distance - 3.0) / 2.0  # 0.2 → -0.2
+        elif distance <= 8.0:  # 1.0~1.6m: 부정확
+            result = -0.2 - 0.4 * (distance - 5.0) / 3.0  # -0.2 → -0.6
+        else:  # 1.6m+: 매우 부정확
+            result = -0.6 - 0.4 * min((distance - 8.0) / 7.0, 1.0)  # -0.6 → -1.0
+        
+        # 범위 제한
+        result = np.clip(result, -1.0, 1.0)
+        
+        return result
     
     def _calculate_target_value(self, episode: Episode):
         """

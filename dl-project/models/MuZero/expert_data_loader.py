@@ -76,7 +76,19 @@ class ExpertDataLoader:
     
     def _create_single_episode(self, start_idx: int, length: int, ep_idx: int = 0) -> Optional[Episode]:
         """단일 Episode 생성"""
-        episode = Episode()
+        # 출처 정보 설정
+        source_file = None
+        if hasattr(self.parser, 'filepath'):
+            if self.parser.filepath.is_file():
+                source_file = self.parser.filepath.name
+            else:
+                source_file = f"folder_{self.parser.filepath.name}"
+        
+        episode = Episode(
+            source_file=source_file,
+            start_frame=start_idx,
+            end_frame=start_idx + length - 1
+        )
         
         # 상태 추적
         self.episode_start_ego = None  # Episode 시작 위치

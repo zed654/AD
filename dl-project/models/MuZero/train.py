@@ -5,6 +5,7 @@ MuZero 학습 모듈
 import torch
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
+from torch.cuda.amp import autocast, GradScaler
 from .utils import build_observation_tensor
 
 
@@ -112,6 +113,22 @@ def train_network(network, replay_buffer, config, device):
         gamma=config.lr_decay_rate
     )
     
+    # Mixed Precision Training (AMP) 설정
+    # 이론적 배경:
+    # - 혼합 정밀도 학습: FP32(32비트)와 FP16(16비트) 부동소수점을 혼합 사용
+    # - GPU Tensor Cores 활용: V100/A100 등에서 FP16 행렬 곱셈이 2-4배 빠름
+    # - 메모리 절약: FP16 사용으로 GPU 메모리 사용량 약 50% 감소
+    # - 수치적 안정성: GradScaler로 gradient underflow 방지 (loss scaling)
+    use_amp = getattr(config, 'use_mixed_precision', False) and device != 'cpu'
+    scaler = GradScaler() if use_amp else None  # FP16 gradient scaling으로 underflow 방지
+    
+    # Gradient Accumulation 설정
+    # 이론적 배경:
+    # - 효과적 배치 크기 증가: 메모리 제한 하에서 큰 배치 효과 시뮬레이션
+    # - 안정적인 학습: 더 큰 유효 배치로 gradient 분산 감소
+    # - 메모리 효율성: 실제 메모리는 작은 배치만큼만 사용하면서 큰 배치 효과
+    gradient_accumulation_steps = getattr(config, 'gradient_accumulation_steps', 1)
+    
     # 학습 설정
     K = config.unroll_steps  # Unroll 스텝 수 (config에서 가져옴)
     training_steps = config.training_steps  # K-Step Unrolling 하면서 Weight 업데이트하는 횟수
@@ -129,6 +146,8 @@ def train_network(network, replay_buffer, config, device):
     print(f"  - 배치 크기: {batch_size}")
     print(f"  - 학습 스텝: {training_steps}")
     print(f"  - Unroll 스텝: {K}")
+    print(f"  - Mixed Precision: {'활성화' if use_amp else '비활성화'}")
+    print(f"  - Gradient Accumulation: {gradient_accumulation_steps}")
     
     # TensorBoard 설정
     writer = SummaryWriter(log_dir=config.results_path / "logs")
@@ -148,31 +167,54 @@ def train_network(network, replay_buffer, config, device):
         reward_loss = 0
         policy_loss = 0
         
-        # 배치의 각 에피소드에 대해
+        # 1단계: 유효한 에피소드 및 시작점 수집 (배치 준비)
+        valid_episodes = []
+        start_indices = []
         for episode in batch:
-            # 에피소드가 너무 짧으면 스킵
-            if len(episode) < 2:
-                continue
-                
-            # 랜덤 시작 위치 선택 (마지막 K 스텝 전까지)
-            max_start = max(0, len(episode) - K)
-            start_idx = np.random.randint(0, max_start + 1)
-            
-            # 초기 관측값 ... PyTorch 모델 배치형태 맞추려고 unsqueeze 함 ([B, C, H, W] -> [1, C, H, W])
+            if len(episode) >= 2:  # 유효한 에피소드만
+                max_start = max(0, len(episode) - K)
+                start_idx = np.random.randint(0, max_start + 1)
+                valid_episodes.append(episode)
+                start_indices.append(start_idx)
+        
+        if not valid_episodes:
+            continue
+        
+        # 2단계: 초기 관측값들을 배치로 처리
+        initial_states = []
+        for episode, start_idx in zip(valid_episodes, start_indices):
             state = episode.states[start_idx]
-            
-            # state가 dict인 경우 5채널 observation 생성
             if isinstance(state, dict):
-                # 5채널 observation 생성 (공용 함수 사용)
-                observation = build_observation_tensor(state, config.observation_shape, device, config.use_obstacle_channels).unsqueeze(0)  # 배치 차원 추가
+                initial_states.append(state)
             else:
-                observation = state.unsqueeze(0).to(device)
-                print(f"경고: 상태가 dict가 아니므로 5채널 observation 생성에 실패했습니다. {state.shape} 형태의 상태를 사용합니다.")
-            
-            # 초기 추론 (representation + prediction)
-            # latent_0 = representation(observation)
-            # policy_0, value_0 = prediction(latent_0)
-            value, _, policy_logits, hidden_state = network.initial_inference(observation)
+                print(f"경고: state가 dict가 아님: {type(state)}")
+                continue
+        
+        if not initial_states:
+            continue
+        
+        # 배치 단위 observation 생성 (최적화 핵심!)
+        from .utils import build_observation_batch
+        batch_observations = build_observation_batch(
+            initial_states, config.observation_shape, device, config.use_obstacle_channels
+        )
+        
+        # 3단계: 배치 단위 초기 추론 (Mixed Precision + 배치 최적화!)
+        # 이론적 배경: 
+        # - autocast Context Manager: 순전파에서 자동으로 FP16/FP32 정밀도 선택
+        # - Tensor Cores 활용: 행렬 곱셈, 합성곱 등이 하드웨어 가속으로 2-4배 빨라짐
+        # - 배치 처리: 개별 처리 대신 전체 배치를 한번에 GPU로 전송하여 처리량 최대화
+        with autocast(enabled=use_amp):
+            batch_values, _, batch_policy_logits, batch_hidden_states = network.initial_inference(batch_observations)
+        
+        # 4단계: 배치의 각 항목에 대해 손실 계산
+        actual_batch_size = len(valid_episodes)
+        for i in range(actual_batch_size):
+            episode = valid_episodes[i]
+            start_idx = start_indices[i]
+            value = batch_values[i:i+1]  # 개별 항목 추출 (배치 차원 유지)
+            policy_logits = batch_policy_logits[i:i+1]
+            hidden_state = batch_hidden_states[i:i+1] if batch_hidden_states is not None else None
             
             # 첫 스텝의 손실 계산 (k=0)
             # Value loss
@@ -210,12 +252,13 @@ def train_network(network, replay_buffer, config, device):
                 # 액션 (k번째 액션으로 dynamics 수행)
                 action = torch.tensor([episode.actions[start_idx + k]], device=device)
                 
-                # Recurrent inference (dynamics + prediction)
+                # Recurrent inference (dynamics + prediction) - Mixed Precision 적용
                 # reward_k, latent_{k+1} = dynamics(latent_k, action_k)
                 # policy_{k+1}, value_{k+1} = prediction(latent_{k+1})
-                value, reward, policy_logits, hidden_state = network.recurrent_inference(
-                    hidden_state, action
-                )
+                with autocast(enabled=use_amp):
+                    value, reward, policy_logits, hidden_state = network.recurrent_inference(
+                        hidden_state, action
+                    )
                 
                 # Reward loss (k번째 액션의 reward)
                 target_reward_scalar = episode.rewards[start_idx + k]
@@ -260,21 +303,49 @@ def train_network(network, replay_buffer, config, device):
         reward_loss = reward_loss / (num_samples * K)
         policy_loss = policy_loss / (num_samples * (K + 1))
         
-        # 총 손실
-        # value, reward, policy 손실을 합하지만, 내부적으로는 계산 히스토리가 남아있어서 문제없음
-        #   즉, value, policy 의 손실은 prediction(latent) 을 업데이트하고, reward 의 손실은 dynamics(latent, action) 를 업데이트함
-        #   또한, representation() 도 간접적으로 업데이트가 됨
-        total_loss = value_loss + reward_loss + policy_loss
+        # 총 손실 (Gradient Accumulation 정규화 적용)
+        # MuZero 이론적 배경:
+        # - Value Loss: 상태 가치 함수 V(s) 학습 → representation과 prediction 네트워크 동시 업데이트
+        # - Reward Loss: 즉시 보상 R(s,a) 학습 → dynamics 네트워크 업데이트  
+        # - Policy Loss: 정책 π(s) 학습 → prediction 네트워크의 정책 헤드 업데이트
+        # - 백프로파게이션으로 모든 네트워크 컴포넌트가 end-to-end로 학습됨
+        # 
+        # Gradient Accumulation 이론:
+        # - 작은 배치들의 gradient를 누적하여 큰 배치의 효과 시뮬레이션
+        # - gradient_accumulation_steps로 나누어 평균 gradient 계산 (bias 없는 추정)
+        total_loss = (value_loss + reward_loss + policy_loss) / gradient_accumulation_steps
         
-        # 역전파
-        optimizer.zero_grad()
-        total_loss.backward()
+        # Mixed Precision 역전파 처리
+        # 이론적 배경:
+        # - FP16 연산에서 gradient underflow 방지를 위해 loss scaling 적용
+        # - scaler.scale(): 손실값을 큰 수로 곱해서 작은 gradient도 FP16 범위에서 표현 가능
+        # - 역전파 후 gradient를 다시 원래 스케일로 복원
+        if use_amp:
+            scaler.scale(total_loss).backward()  # 스케일된 손실로 역전파
+        else:
+            total_loss.backward()  # 표준 FP32 역전파
         
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(network.parameters(), max_norm=5.0)
-        
-        # 가중치 업데이트
-        optimizer.step()
+        # Gradient Accumulation: 설정된 스텝마다만 가중치 업데이트
+        # 이론: 여러 forward pass의 gradient를 누적한 후 한번에 optimizer step
+        # 효과적 배치 크기 = batch_size × gradient_accumulation_steps
+        if (step + 1) % gradient_accumulation_steps == 0:
+            if use_amp:
+                # Mixed Precision Gradient Processing
+                # 1. unscale_(): gradient를 원래 스케일로 복원 (clipping 전 필수)
+                # 2. clip_grad_norm_(): gradient exploding 방지 (norm > 5.0이면 clipping)
+                # 3. step(): 스케일링된 gradient가 유효하면 가중치 업데이트
+                # 4. update(): 다음 iteration을 위한 scaler 상태 업데이트
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(network.parameters(), max_norm=5.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+            else:
+                # Standard Precision Gradient Processing  
+                # gradient clipping으로 훈련 안정성 확보 후 가중치 업데이트
+                torch.nn.utils.clip_grad_norm_(network.parameters(), max_norm=5.0)
+                optimizer.step()
+                optimizer.zero_grad()
         
         # 로깅
         if step % 10 == 0:

@@ -951,11 +951,20 @@ class EpisodeInteractiveVisualizer:
                 step_text += f"Simulated Ego Pos: ({sim_pos[0]}, {sim_pos[1]})\n"
             
             
-            # 방향 정보
+            # 방향 정보 (수치값 포함)
             if 'near_destination_direction' in state and state['near_destination_direction']:
-                step_text += f"Near Direction: {state['near_destination_direction']}\n"
+                near_dir = state['near_destination_direction']
+                if isinstance(near_dir, dict) and 'x' in near_dir and 'y' in near_dir:
+                    step_text += f"Near Direction: x={near_dir['x']:.3f}, y={near_dir['y']:.3f}\n"
+                else:
+                    step_text += f"Near Direction: {near_dir}\n"
+            
             if 'final_destination_direction' in state and state['final_destination_direction']:
-                step_text += f"Dest Direction: {state['final_destination_direction']}\n"
+                dest_dir = state['final_destination_direction']
+                if isinstance(dest_dir, dict) and 'x' in dest_dir and 'y' in dest_dir:
+                    step_text += f"Final Direction: x={dest_dir['x']:.3f}, y={dest_dir['y']:.3f}\n"
+                else:
+                    step_text += f"Final Direction: {dest_dir}\n"
             
             # Static Environment 정보
             if 'static_environment' in state and state['static_environment'] is not None:

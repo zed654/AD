@@ -9,7 +9,7 @@ from typing import List, Optional
 class Episode:
     """하나의 에피소드(게임) 데이터를 저장"""
     
-    def __init__(self):
+    def __init__(self, source_file=None, start_frame=None, end_frame=None):
         self.states = []      # 상태 목록
         self.actions = []     # 액션 목록 (self-play로 선택된 action)
         self.expert_ego_pos = []  # 전문가 ego 위치 목록 (GT 그리드 좌표 (row, col) 튜플) 
@@ -17,6 +17,11 @@ class Episode:
         self.policies = []    # MCTS 정책 목록
         self.values = []      # MCTS 가치 목록
         self.dones = []       # 종료 여부 목록
+        
+        # Episode 출처 정보
+        self.source_file = source_file      # JSONL 파일명
+        self.start_frame = start_frame      # 시작 프레임 번호
+        self.end_frame = end_frame          # 종료 프레임 번호
         
     def add_step(self, state, action, reward, policy=None, value=None, done=False, expert_ego_pos=None):
         """한 스텝의 데이터 추가"""
@@ -59,6 +64,10 @@ class ReplayBuffer:
         self.buffer.append(episode)
         self.episode_count += 1
         
+        # Episode 출처 정보 표시
+        if hasattr(episode, 'source_file') and episode.source_file:
+            print(f"Episode 추가: {episode.source_file} (프레임 {episode.start_frame}-{episode.end_frame}, 길이: {len(episode)})")
+        
     def save_game(self, game_history):
         """GameHistory를 Episode로 변환하여 저장
         
@@ -96,6 +105,40 @@ class ReplayBuffer:
     def total_episodes(self) -> int:
         """지금까지 저장된 총 에피소드 수"""
         return self.episode_count
+    
+    def print_buffer_summary(self):
+        """Replay Buffer 내용 요약 출력"""
+        if not self.buffer:
+            print("Replay Buffer가 비어있습니다.")
+            return
+            
+        print(f"\n=== Replay Buffer 상태 (총 {len(self.buffer)}개 Episode) ===")
+        
+        # 파일별 Episode 수 집계
+        file_counts = {}
+        frame_ranges = {}
+        
+        for i, episode in enumerate(self.buffer):
+            if hasattr(episode, 'source_file') and episode.source_file:
+                source_file = episode.source_file
+                if source_file not in file_counts:
+                    file_counts[source_file] = 0
+                    frame_ranges[source_file] = []
+                    
+                file_counts[source_file] += 1
+                if hasattr(episode, 'start_frame') and hasattr(episode, 'end_frame'):
+                    frame_ranges[source_file].append((episode.start_frame, episode.end_frame))
+        
+        # 파일별 정보 출력
+        for source_file, count in file_counts.items():
+            print(f"  📁 {source_file}: {count}개 Episode")
+            if source_file in frame_ranges and frame_ranges[source_file]:
+                ranges = frame_ranges[source_file]
+                min_frame = min(r[0] for r in ranges)
+                max_frame = max(r[1] for r in ranges)
+                print(f"     프레임 범위: {min_frame} ~ {max_frame}")
+        
+        print(f"=== Buffer 활용도: {len(self.buffer)}/{self.capacity} ({len(self.buffer)/self.capacity*100:.1f}%) ===")
     
     def clear(self):
         """버퍼 초기화"""
