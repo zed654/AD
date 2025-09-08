@@ -129,7 +129,10 @@ class GTDataParser:
         with open(filepath, 'r') as f:
             for line in f:
                 if line.strip():
-                    data.append(json.loads(line))
+                    frame_data = json.loads(line)
+                    # 각 프레임에 출처 파일 정보 추가
+                    frame_data['_source_file'] = filepath.name
+                    data.append(frame_data)
         return data
     
     def get_frame_count(self) -> int:

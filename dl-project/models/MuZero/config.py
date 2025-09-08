@@ -42,18 +42,18 @@ class MuZeroConfig:
         self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
         
         # GT Episode 생성 설정
-        self.gt_num_episodes = 400 #400  # GT 데이터에서 생성할 에피소드 수 (20 → 50)
+        self.gt_num_episodes = 50 #400  # GT 데이터에서 생성할 에피소드 수 (20 → 50)
         self.gt_episode_overlap = 25 #10 #25  # 에피소드 간 겹침 스텝 수
         
         # Observation Provider 설정
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
         # GT 데이터 경로: 파일(.jsonl) 또는 폴더 경로 모두 지원
         # self.gt_data_path = Path("data/db3_parser/results/")  # 폴더 경로로 변경하면 모든 JSONL 파일 로드
-        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일 ... 정상 주행 데이터 (코너 상황 대표 샘플)
+        self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일 ... 정상 주행 데이터 (코너 상황 대표 샘플)
         # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171226_91.jsonl")  # 단일 파일 ... Episode 5 에서 Near Destination 조금 이상함
         # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170026_79.jsonl")  # 단일 파일 ... 주행 전 대기상태 데이터임
         # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170226_81.jsonl")  # 단일 파일 ... 주행 전 대기상태 데이터임
-        self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170326_82.jsonl")  # 단일 파일 ... 정상 주행 데이터
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170326_82.jsonl")  # 단일 파일 ... 정상 주행 데이터
         # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170426_83.jsonl")  # 단일 파일 ... 정상 주행 데이터
         self.use_obstacle_channels = True  # False: 방향 벡터만 사용, True: 장애물 채널도 사용
 
@@ -86,7 +86,7 @@ class MuZeroConfig:
         # 학습 설정
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
-        self.training_steps = 10  # 1000 (밤새 충분한 학습) Epoch 하나에 Step 횟수 (=Epoch 당 가중치 업데이트 횟수)
+        self.training_steps = 1000  # 1000 (밤새 충분한 학습) Epoch 하나에 Step 횟수 (=Epoch 당 가중치 업데이트 횟수)
         self.batch_size = 128  # 32 -> 128 (GPU 메모리 활용도 최대화)
         self.unroll_steps = 49  # 49, K-step unrolling 길이 (전체 Episode 커버 - Monte Carlo에 가까운 학습)
         self.value_loss_weight = 1
@@ -102,7 +102,7 @@ class MuZeroConfig:
 
         # 체크포인트 재개 설정
         # self.resume_checkpoint_path = None  # 재개할 체크포인트 경로 (None이면 새로 시작)
-        self.resume_checkpoint_path = "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-03--00-37-40/checkpoints/muzero_epoch_45.pth"
+        self.resume_checkpoint_path = "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-05--16-44-25/checkpoints/muzero_final.pth"
         # "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-02--10-03-53/checkpoints/muzero_epoch_15.pth"
         # 예: "models/MuZero/results/2025-09-02--00-11-57/checkpoints/muzero_epoch_5.pth"
         

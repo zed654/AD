@@ -76,9 +76,12 @@ class ExpertDataLoader:
     
     def _create_single_episode(self, start_idx: int, length: int, ep_idx: int = 0) -> Optional[Episode]:
         """단일 Episode 생성"""
-        # 출처 정보 설정
+        # 출처 정보 설정 - 시작 프레임의 실제 파일명 사용
         source_file = None
-        if hasattr(self.parser, 'filepath'):
+        start_frame_data = self.parser.get_frame_data(start_idx)
+        if start_frame_data and '_source_file' in start_frame_data:
+            source_file = start_frame_data['_source_file']
+        elif hasattr(self.parser, 'filepath'):
             if self.parser.filepath.is_file():
                 source_file = self.parser.filepath.name
             else:
