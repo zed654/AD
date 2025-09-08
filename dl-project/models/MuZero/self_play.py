@@ -286,11 +286,9 @@ class SelfPlayManager:
                     # Action에 따라 simulated_ego_pos 업데이트 (최종 value 계산용)
                     action = Action.from_index(selected_action)
                     dx, dy = action.get_movement_vector()
-                    # 180도 회전 좌표계에서 그리드 좌표 업데이트:
-                    # dy > 0 (상단) → row 증가 (전방으로 이동 = 아래로)
-                    # dx > 0 (우측) → col 감소 (180도 회전으로 오른쪽이 왼쪽)
-                    simulated_ego_row += dy  # 전방/후방
-                    simulated_ego_col -= dx  # 좌/우 (environment.py와 일치)
+                    # 좌표계: x -> 상단으로 + / y -> 우측으로 +
+                    simulated_ego_row += dx  # 전방/후방
+                    simulated_ego_col += dy  # 좌/우 (environment.py와 일치)
                     
                     # Episode state에도 업데이트 (최종 거리 계산을 위해)
                     episode.states[step_idx]['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)

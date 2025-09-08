@@ -292,13 +292,11 @@ class DrivingEnvironment(BaseEnvironment):
         dx, dy = action.get_movement_vector()
         
         # Self-play용 ego 위치 업데이트 (x, y 좌표)
-        # dx는 x축(좌우), dy는 y축(상하)
-        # 180도 회전 좌표계에서:
-        # - x축: 전방이 양수 (row 증가 방향)
-        # - y축: 오른쪽이 양수 (col 감소 방향)
+        # dx는 x축(상하), dy는 y축(좌우)
+        # 로봇좌표계임 (x 축 전방 양수; row / y 축 우측 양수; col)
         current_x, current_y = self.simulated_ego_pos
-        new_x = current_x + dy  # y 이동 → x 변화 (전방/후방)
-        new_y = current_y - dx  # x 이동 → y 변화 (좌/우, 부호 반전)
+        new_x = current_x + dx  # x 변화 (전방/후방)
+        new_y = current_y + dy  # y 변화 (좌/우)
         
         # 그리드 범위 체크 (중심 기준 ±49)
         grid_half = self.config.observation_shape[1] // 2  # 49

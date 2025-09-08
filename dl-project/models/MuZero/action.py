@@ -75,17 +75,17 @@ class Action:
     def __repr__(self) -> str:
         return f"Action(index={self.index}, {self.to_string()})"
     
-    # 위치별 이동 벡터 (0.2m 그리드 기준)
+    # 위치별 이동 벡터 (0.2m 그리드 기준) (x, y) 이며, x 가 전방이며 상단이 +, y 가 우측으로 +
     POSITION_VECTORS = {
         Position.POS0: (0, 0),   # 현재 위치
-        Position.POS1: (-1, 1),  # 좌측상단
-        Position.POS2: (0, 1),   # 상단
+        Position.POS1: (1, -1),  # 좌측상단
+        Position.POS2: (1, 0),   # 상단
         Position.POS3: (1, 1),   # 우측상단
-        Position.POS4: (1, 0),   # 우측
-        Position.POS5: (1, -1),  # 우측하단
-        Position.POS6: (0, -1),  # 하단
+        Position.POS4: (0, 1),   # 우측
+        Position.POS5: (-1, 1),  # 우측하단
+        Position.POS6: (-1, 0),  # 하단
         Position.POS7: (-1, -1), # 좌측하단
-        Position.POS8: (-1, 0),  # 좌측
+        Position.POS8: (0, -1),  # 좌측
     }
     
     def get_movement_vector(self):
