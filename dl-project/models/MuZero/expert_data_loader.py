@@ -68,7 +68,8 @@ class ExpertDataLoader:
             print(f"Episode {ep_idx + 1}/{num_episodes} 생성 중...")
             
             episode = self._create_single_episode(start_idx, episode_step_length, ep_idx)
-            if episode and len(episode) > 10:  # 최소 길이 체크
+            # 의도된 길이를 채우지 못한 Episode는 제거 (학습 품질 보장)
+            if episode and len(episode) >= episode_step_length - 1:
                 episodes.append(episode)
         
         print(f"\n생성된 Episode: {len(episodes)}개")

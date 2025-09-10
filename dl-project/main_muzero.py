@@ -27,6 +27,63 @@ import matplotlib
 matplotlib.use('Agg')  # non-interactive 백엔드 사용 (Figure 창이 뜨지 않음)
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import matplotlib.colors as mcolors
+
+# rosetta.py에서 color/grid 함수 import
+import sys
+sys.path.append('data/db3_parser')
+from rosetta import (get_grid_value_info, get_ldm_segmentation_name, get_ldm_segmentation_color, 
+                     GRID_VALUE_EMPTY, GRID_VALUE_PEDESTRIAN, GRID_VALUE_VEHICLE, GRID_VALUE_OTHER_OBJECT, 
+                     GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, GRID_VALUE_MISSING_POINTS)
+
+
+def get_grid_color(value: float, channel: int = None) -> str:
+    """Grid 값과 채널에 따른 색상을 반환합니다.
+    
+    Args:
+        value: Grid 값
+        channel: 채널 번호 (0: obstacles, 1: static_environment, 2: ground_class_id)
+    """
+    # 부동소수점 비교를 위한 작은 오차 허용
+    epsilon = 0.01
+    
+    # 빈 공간
+    if abs(value - GRID_VALUE_EMPTY) < epsilon:  # 0.0
+        return 'white'
+    
+    # Channel 0: 동적 객체
+    if channel == 0:
+        if abs(value - GRID_VALUE_VEHICLE) < epsilon:  # 0.6: 차량
+            return 'red'
+        elif abs(value - GRID_VALUE_OTHER_OBJECT) < epsilon:  # 0.4: 기타 객체
+            return 'orange'
+        elif abs(value - GRID_VALUE_PEDESTRIAN) < epsilon:  # 0.3: 보행자
+            return 'magenta'
+    
+    # Channel 1: 정적 환경
+    elif channel == 1:
+        if abs(value - GRID_VALUE_MISSING_POINTS) < epsilon:  # 0.9: Missing points
+            return 'purple'
+        elif abs(value - GRID_VALUE_STATIC_OBSTACLE) < epsilon:  # 0.6: Static obstacles
+            return 'yellow'
+        elif abs(value - GRID_VALUE_CLIFF) < epsilon:  # 0.3: Cliff
+            return 'cyan'
+    
+    # Channel 2: 지면 semantic class ID
+    elif channel == 2:
+        class_id = int(value)
+        if class_id == 0:  # Empty/Background
+            return 'lightgray'
+        else:
+            # LDM segmentation 색상 가져오기
+            color_hex = get_ldm_segmentation_color(class_id)
+            if color_hex:
+                return color_hex
+            else:
+                return 'gray'
+    
+    # 기본값
+    return 'gray'
 
 
 def visualize_training_progress(network, replay_buffer, epoch, config, device, loss_history=None):
@@ -117,13 +174,46 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
                 ax.scatter(obstacle_points[1], obstacle_points[0], 
                           c='red', s=20, alpha=0.3, marker='s', label='Dynamic Objects')
             
-            # Channel 1: Static environment (노란색 계열)
+            # Channel 1: Static environment (노란색 계열) - 더 진한 색상
             if 'static_environment' in last_state and last_state['static_environment'] is not None:
                 static_env = last_state['static_environment']
                 static_mask = static_env > 0
                 static_points = np.where(static_mask)
                 ax.scatter(static_points[1], static_points[0], 
-                          c='yellow', s=20, alpha=0.3, marker='^', label='Static Environment')
+                          c='gold', s=20, alpha=0.7, marker='^', label='Static Environment')
+            
+            # Channel 2: Ground class_id (LDM segmentation 색상) - 모든 클래스 그리기
+            if 'ground_class_id' in last_state and last_state['ground_class_id'] is not None:
+                class_id_grid = last_state['ground_class_id']
+                
+                # 각 클래스별 픽셀 수 계산
+                unique_class_ids, counts = np.unique(class_id_grid, return_counts=True)
+                sorted_indices = np.argsort(counts)[::-1]  # 카운트 순 정렬
+                
+                # 모든 클래스 그리기 (범례 제한 없이)
+                legend_count = 0
+                for idx in sorted_indices:
+                    class_id = unique_class_ids[idx]
+                    count = counts[idx]
+                    
+                    # Background(0)이거나 너무 적은 픽셀은 제외
+                    if class_id == 0 or count < 10:
+                        continue
+                    
+                    class_mask = class_id_grid == class_id
+                    class_points = np.where(class_mask)
+                    color = get_grid_color(class_id, channel=2)
+                    class_name = get_ldm_segmentation_name(int(class_id))
+                    
+                    # 범례는 상위 5개만, 나머지는 범례 없이 그리기
+                    if legend_count < 5:
+                        label = f'{class_name}' if class_name else f'Class {int(class_id)}'
+                        legend_count += 1
+                    else:
+                        label = None  # 범례에 표시하지 않음
+                    
+                    ax.scatter(class_points[1], class_points[0], 
+                              c=color, s=15, alpha=0.4, marker='o', label=label)
             
             # Direction vectors (화살표로 표시)
             center_row, center_col = 49, 49  # 그리드 중앙
@@ -150,49 +240,77 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
                             head_width=2, head_length=1, fc='darkblue', ec='darkblue',
                             alpha=0.7, label='Final Direction')
         
-        # Expert 경로 (파란색)
+        # Expert 경로 (파란색 그라데이션: 연한색 -> 진한색)
         expert_rows = [pos[0] for pos in enriched_episode.expert_ego_pos]
         expert_cols = [pos[1] for pos in enriched_episode.expert_ego_pos]
-        ax.plot(expert_cols, expert_rows, 'b-', linewidth=2, label='Expert Path', alpha=0.7)
-        ax.scatter(expert_cols, expert_rows, c='blue', s=50, zorder=5)
+        
+        # Expert Path 그라데이션 그리기
+        if len(expert_rows) > 1:
+            for i in range(len(expert_rows) - 1):
+                # 진행도에 따른 알파값 (0.3 -> 1.0)
+                alpha = 0.3 + 0.7 * (i / (len(expert_rows) - 1))
+                # 진행도에 따른 색상 강도 (연한 파란색 -> 진한 파란색)
+                color_intensity = 0.4 + 0.6 * (i / (len(expert_rows) - 1))
+                color = (0, 0, color_intensity)
+                
+                # 첫 번째 선분에만 label 추가 (범례용)
+                label = 'Expert Path' if i == 0 else None
+                ax.plot([expert_cols[i], expert_cols[i+1]], 
+                       [expert_rows[i], expert_rows[i+1]], 
+                       color=color, linewidth=2, alpha=alpha, label=label)
+                ax.scatter(expert_cols[i], expert_rows[i], 
+                          c=[color], s=30 + 20 * (i / max(1, len(expert_rows) - 1)), 
+                          alpha=alpha, zorder=5)
+            # 마지막 점
+            ax.scatter(expert_cols[-1], expert_rows[-1], 
+                      c='darkblue', s=50, alpha=1.0, zorder=5)
+        else:
+            ax.scatter(expert_cols, expert_rows, c='blue', s=50, zorder=5, label='Expert Path')
         
         # MCTS로 계산된 simulated 경로 (빨간색)
-        # enrich_episodes_with_mcts에서 이미 simulated_ego_pos가 계산됨
+        # enrich_episodes_with_mcts에서 이미 simulated_ego_pos가 계산되어 states에 저장됨
         sim_rows = []
         sim_cols = []
-        current_pos = (49, 49)  # 시작 위치
         
         # 디버그: action 정보 출력
         unique_actions = set(enriched_episode.actions)
         print(f"🔍 Episode {ep_idx+1} - Unique actions: {unique_actions}, Total steps: {len(enriched_episode.actions)}")
         
-        for i in range(len(enriched_episode)):
-            # enriched_episode의 action을 사용하여 위치 업데이트
-            if i > 0:  # 첫 스텝은 항상 (49, 49)
-                from models.MuZero.action import Action
-                action = enriched_episode.actions[i-1]  # 이전 action으로 현재 위치 결정
-                action_obj = Action.from_index(action)
-                dx, dy = action_obj.get_movement_vector()
-                
-                # 180도 회전 좌표계에서 그리드 좌표 업데이트 (self_play.py와 동일):
-                # dy > 0 (상단) → row 증가 (전방)
-                # dx > 0 (우측) → col 감소 (좌측)
-                next_row = current_pos[0] + dy  # 전방/후방
-                next_col = current_pos[1] - dx  # 좌/우
-                
-                # 경계 체크
-                if 0 <= next_row < 99 and 0 <= next_col < 99:
-                    current_pos = (next_row, next_col)
-            
-            sim_rows.append(current_pos[0])
-            sim_cols.append(current_pos[1])
+        # Episode states에서 직접 simulated_ego_pos 추출
+        for i in range(len(enriched_episode.states)):
+            state = enriched_episode.states[i]
+            if isinstance(state, dict) and 'simulated_ego_pos' in state:
+                sim_pos = state['simulated_ego_pos']
+                sim_rows.append(sim_pos[0])
+                sim_cols.append(sim_pos[1])
+            else:
+                # fallback: 중앙 위치
+                sim_rows.append(49)
+                sim_cols.append(49)
         
         print(f"🔍 Simulated path: start({sim_rows[0]}, {sim_cols[0]}) -> end({sim_rows[-1]}, {sim_cols[-1]})")
         
-        # 예측 경로 그리기 (경로가 있을 때만)
+        # 예측 경로 (빨간색 그라데이션: 연한색 -> 진한색)
         if len(set(zip(sim_rows, sim_cols))) > 1:  # 서로 다른 위치가 2개 이상 있을 때만
-            ax.plot(sim_cols, sim_rows, 'r--', linewidth=2, label='Predicted Path (Current Network)', alpha=0.7)
-            ax.scatter(sim_cols, sim_rows, c='red', s=50, zorder=5)
+            # Predicted Path 그라데이션 그리기
+            for i in range(len(sim_rows) - 1):
+                # 진행도에 따른 알파값 (0.3 -> 1.0)
+                alpha = 0.3 + 0.7 * (i / (len(sim_rows) - 1))
+                # 진행도에 따른 색상 강도 (연한 빨간색 -> 진한 빨간색)
+                color_intensity = 0.4 + 0.6 * (i / (len(sim_rows) - 1))
+                color = (color_intensity, 0, 0)
+                
+                # 첫 번째 선분에만 label 추가 (범례용)
+                label = 'Predicted Path' if i == 0 else None
+                ax.plot([sim_cols[i], sim_cols[i+1]], 
+                       [sim_rows[i], sim_rows[i+1]], 
+                       color=color, linewidth=2, alpha=alpha, linestyle='--', label=label)
+                ax.scatter(sim_cols[i], sim_rows[i], 
+                          c=[color], s=30 + 20 * (i / max(1, len(sim_rows) - 1)), 
+                          alpha=alpha, zorder=5)
+            # 마지막 점
+            ax.scatter(sim_cols[-1], sim_rows[-1], 
+                      c='darkred', s=50, alpha=1.0, zorder=5)
         else:
             # 모든 점이 같은 위치인 경우 점으로만 표시
             ax.scatter(sim_cols[0], sim_rows[0], c='red', s=100, marker='x', label='Predicted Path (No Movement)', zorder=5)
@@ -202,8 +320,19 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         if len(expert_cols) > 1:
             ax.scatter(expert_cols[-1], expert_rows[-1], c='orange', s=100, marker='s', label='End', zorder=6)
         
-        # 범례 (항목이 많아서 크기와 위치 조정)
-        ax.legend(loc='upper right', fontsize=8, ncol=2)
+        # Target Goal 위치 표시 (reward 계산에 사용되는 Episode 끝 위치)
+        if hasattr(enriched_episode, 'expert_ego_pos') and len(enriched_episode.expert_ego_pos) > 0:
+            goal_pos = enriched_episode.expert_ego_pos[-1]  # Episode의 마지막 expert 위치
+            ax.scatter(goal_pos[1], goal_pos[0], c='purple', s=120, marker='*', 
+                      label='Target Goal', zorder=7, edgecolors='black', linewidth=1)
+            
+            # Target Goal 주변에 원뿔 형태의 포텐셜 필드 표시 (참고용)
+            circle = plt.Circle((goal_pos[1], goal_pos[0]), radius=5, 
+                              fill=False, color='purple', linestyle=':', alpha=0.5, zorder=3)
+            ax.add_patch(circle)
+        
+        # 범례 (Channel 2 추가로 항목 증가, 더 많은 컬럼으로 조정)
+        ax.legend(loc='upper right', fontsize=7, ncol=3, bbox_to_anchor=(1.0, 1.0))
         
         # Loss 정보 텍스트 박스 추가 (최신 Loss)
         if loss_history and 'latest_loss' in loss_history:
@@ -221,12 +350,6 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         stats_text = f"Episode {ep_idx+1} Stats:\n"
         stats_text += f"Steps: {len(enriched_episode.states)}\n"
         
-        # Target Rewards 정보
-        stats_text += f"\n[Target Rewards]\n"
-        stats_text += f"Total: {sum(enriched_episode.rewards):.2f}\n"
-        stats_text += f"Avg: {np.mean(enriched_episode.rewards):.3f}\n"
-        stats_text += f"Min/Max: {np.min(enriched_episode.rewards):.3f}/{np.max(enriched_episode.rewards):.3f}\n"
-        stats_text += f"Non-zero: {np.count_nonzero(enriched_episode.rewards)}/{len(enriched_episode.rewards)}\n"
         
         # Target Values 정보
         if hasattr(enriched_episode, 'target_values') and enriched_episode.target_values:
@@ -273,9 +396,66 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
                 if dest_dir and isinstance(dest_dir, dict) and 'x' in dest_dir and 'y' in dest_dir:
                     stats_text += f"Final: x={dest_dir['x']:.3f}, y={dest_dir['y']:.3f}"
         
+        # Target Goal 위치 정보 추가
+        if hasattr(enriched_episode, 'expert_ego_pos') and len(enriched_episode.expert_ego_pos) > 0:
+            goal_pos = enriched_episode.expert_ego_pos[-1]
+            stats_text += f"\n[Target Goal]\n"
+            stats_text += f"Position: ({goal_pos[0]}, {goal_pos[1]})\n"
+            
+            # 현재 simulated 위치에서 목표까지의 거리
+            if sim_rows and sim_cols:
+                current_pos = (sim_rows[-1], sim_cols[-1])
+                distance_to_goal = np.sqrt((current_pos[0] - goal_pos[0])**2 + (current_pos[1] - goal_pos[1])**2)
+                stats_text += f"Distance: {distance_to_goal:.2f} cells"
+        
         ax.text(0.02, 0.02, stats_text, transform=ax.transAxes, fontsize=8,
                verticalalignment='bottom',
                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
+        
+        # Action별 Target Reward 통계 (우측 하단에 표시)
+        if enriched_episode.actions and enriched_episode.rewards:
+            from models.MuZero.action import Action
+            from collections import defaultdict
+            
+            # Action별 reward 수집
+            action_rewards = defaultdict(list)
+            for action_idx, reward in zip(enriched_episode.actions, enriched_episode.rewards):
+                action_rewards[action_idx].append(reward)
+            
+            # 텍스트 생성 시작
+            action_stats_text = "[Action-Reward Details]\n"
+            
+            # 1. Step별 Action-Reward (처음 30스텝까지)
+            action_stats_text += "First 30 Steps:\n"
+            max_display_steps = min(30, len(enriched_episode.actions))
+            for step in range(max_display_steps):
+                if step < len(enriched_episode.actions) and step < len(enriched_episode.rewards):
+                    action_obj = Action.from_index(enriched_episode.actions[step])
+                    reward = enriched_episode.rewards[step]
+                    action_stats_text += f"  {step+1}: {action_obj.position.value} → {reward:.3f}\n"
+            if len(enriched_episode.actions) > max_display_steps:
+                action_stats_text += f"  ... (+{len(enriched_episode.actions) - max_display_steps} more)\n"
+            
+            # 2. Action별 평균 reward
+            action_stats_text += "\nAction Averages:\n"
+            for action_idx in sorted(action_rewards.keys()):
+                action_obj = Action.from_index(action_idx)
+                rewards = action_rewards[action_idx]
+                avg_reward = np.mean(rewards)
+                count = len(rewards)
+                action_stats_text += f"{action_obj.position.value}: {avg_reward:.3f} (×{count})\n"
+            
+            # 3. 전체 Target Rewards 통계
+            action_stats_text += f"\nTotal Rewards:\n"
+            action_stats_text += f"Sum: {sum(enriched_episode.rewards):.2f}\n"
+            action_stats_text += f"Avg: {np.mean(enriched_episode.rewards):.3f}\n"
+            action_stats_text += f"Range: {np.min(enriched_episode.rewards):.3f}~{np.max(enriched_episode.rewards):.3f}\n"
+            action_stats_text += f"Non-zero: {np.count_nonzero(enriched_episode.rewards)}/{len(enriched_episode.rewards)}"
+            
+            # 우측 하단에 표시
+            ax.text(0.98, 0.02, action_stats_text, transform=ax.transAxes, fontsize=6,
+                   verticalalignment='bottom', horizontalalignment='right',
+                   bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7))
         
         # Loss 그래프 그리기 (있는 경우)
         if loss_history and len(loss_history['epochs']) > 0 and 'ax_loss' in locals():

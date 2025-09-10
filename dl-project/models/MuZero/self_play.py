@@ -427,6 +427,151 @@ class SelfPlayManager:
                                     pass  # 인덱싱 실패 시 무시
         
         return 0.0  # 충돌 없음
+    
+    def _calculate_smoothness_reward(self, episode: Episode, step_idx: int) -> float:
+        """직진성 강화: 방향 일관성(코사인) + EMA 평활 + 반전 페널티
+           반환: [-0.03, 0.03]"""
+        if step_idx < 2:
+            return 0.0
+
+        st = episode.states
+        for i in (step_idx-2, step_idx-1, step_idx):
+            if i >= len(st) or not isinstance(st[i], dict):
+                return 0.0
+            if st[i].get('simulated_ego_pos') is None:
+                return 0.0
+
+        p0 = np.array(st[step_idx-2]['simulated_ego_pos'], dtype=float)
+        p1 = np.array(st[step_idx-1]['simulated_ego_pos'], dtype=float)
+        p2 = np.array(st[step_idx  ]['simulated_ego_pos'], dtype=float)
+
+        v_prev = p1 - p0
+        v_curr = p2 - p1
+        prev_magnitude = np.linalg.norm(v_prev)
+        curr_magnitude = np.linalg.norm(v_curr)
+
+        # 정체/미세 이동 페널티(단위-불변으로 너무 크게 주지 않음)
+        if prev_magnitude < 1e-3 or curr_magnitude < 1e-3:
+            return -0.005
+
+        cos = float(np.dot(v_prev, v_curr) / (prev_magnitude * curr_magnitude + 1e-8))
+
+        # EMA로 변동성 완화 (상태에 캐시) ... Exponential Moving Average
+        beta = getattr(self, "smooth_ema_beta", 0.7)  # 0(강평활)~1(무평활)
+        ema_key = "_smooth_cos_ema"
+        cos_ema = getattr(self, ema_key, cos)
+        cos_ema = beta * cos_ema + (1 - beta) * cos
+        setattr(self, ema_key, cos_ema)
+
+        # 방향 반전(부호 전환) 가벼운 추가 패널티
+        sign_flip_pen = -0.01 if np.sign(cos) != np.sign(cos_ema) else 0.0
+
+        # 스케일: ±0.1 내
+        base = 0.02 * cos_ema  # +0.05(동일) ~ -0.05(반대)
+        r = base + sign_flip_pen
+        return float(np.clip(r, -0.03, 0.03))
+    
+    def _calculate_goal_following_reward(self, episode: Episode, step_idx: int) -> float:
+        """목표 접근 shaping (Potential-based)
+           r = α * clip( (w_cone * (γΦ(s') - Φ(s)) / step_norm), [-c_inner, c_inner] )
+           최종 반환: [-0.1, 0.1]"""
+
+        st = episode.states
+        if step_idx >= len(st) or not isinstance(st[step_idx], dict):
+            return 0.0
+        if not hasattr(episode, 'expert_ego_pos') or len(episode.expert_ego_pos) < 1:
+            return 0.0
+
+        # --- 단위: grid(칸) → meter 변환 준비
+        meters_per_cell = getattr(self, "meters_per_cell", 0.2)  # 1 grid = 0.2 m
+
+        def to_meters(pos):
+            p = np.array(pos, dtype=float)
+            return p * meters_per_cell  # pos가 이미 미터라면 1.0로
+
+        goal = to_meters(episode.expert_ego_pos[-1])
+
+        p_t_g = st[step_idx].get('simulated_ego_pos')
+        if p_t_g is None:
+            return 0.0
+        p_t = to_meters(p_t_g)
+
+        # --- 다음 상태 (env.step() 후 위치를 우선 사용)
+        p_tp1 = None
+        if step_idx + 1 < len(st) and isinstance(st[step_idx + 1], dict):
+            p_tp1_g = st[step_idx + 1].get('simulated_ego_pos')
+            if p_tp1_g is not None:
+                p_tp1 = to_meters(p_tp1_g)
+
+        if p_tp1 is None:
+            # 불가피할 때만 액션 근사
+            action = st[step_idx].get('action_index')
+            if action is None:
+                return 0.0
+            act = Action.from_index(int(action))
+            move_g = np.array(act.get_movement_vector(), dtype=float)  # grid 단위
+            step_vec = move_g * meters_per_cell                         # meter 단위
+            p_tp1 = p_t + step_vec
+        else:
+            step_vec = p_tp1 - p_t
+
+        # --- 하이퍼파라미터
+        # gamma = getattr(self, "gamma", 0.99)  # 사용안함 (gamma_shaping=1.0 사용)
+        alpha_p = getattr(self, "alpha_p", 0.1)          # 최종 ±0.1 목표
+        c_inner = getattr(self, "prog_inner_clip", 0.5)
+        r_goal  = getattr(self, "r_goal_m", 0.3)         # 미터 단위 데드존 반경 (기본 0.3 m)
+
+        # --- 목표 근처 데드존 (진동/파밍 방지)
+        if np.linalg.norm(p_t - goal) <= r_goal:
+            return 0.0
+
+        # --- (선택) t+1 터미널 프레임에서는 shaping 0
+        #  episode.states[step_idx+1]['done'] 등이 있으면 확인해 0 반환
+        if step_idx + 1 < len(st):
+            done_next = st[step_idx + 1].get('done')
+            if done_next is True:
+                return 0.0
+
+        # --- 잠재함수: 유클리드 거리 음수 (추후 지오데식으로 교체 가능)
+        def Phi(pos):
+            return -np.linalg.norm(pos - goal)
+
+        # shaping 전용 gamma_shaping = 1.0 (바닥값 생기는거 막기 위함)
+        gamma_shaping = 1.0
+        delta_phi = gamma_shaping * Phi(p_tp1) - Phi(p_t)  # >0 접근, <0 이탈
+
+        # --- 원뿔 가중 (선택) ... 사용하면 다중 해에 대한 확장성이 떨어짐
+        w = 1.0
+        if getattr(self, "use_cone", False):
+            gvec = goal - p_t
+            gmag = np.linalg.norm(gvec) + 1e-8
+            u = gvec / gmag
+            cone_half_angle = np.deg2rad(getattr(self, "cone_half_angle_deg", 25.0))
+            cone_radius     = getattr(self, "cone_radius_m", 1.5)  # meter 단위
+
+            def cone_weight(pos):
+                d = pos - goal
+                s = float(np.dot(d, u))
+                e = d - s * u
+                e_perp = float(np.linalg.norm(e))
+                m = np.tan(cone_half_angle)
+                gap = e_perp - abs(s) * m
+                if gap <= 0:
+                    return 1.0
+                return 1.0 / (1.0 + gap / max(1e-6, cone_radius))
+
+            w = 0.5 * (cone_weight(p_t) + cone_weight(p_tp1))
+
+        # --- 스텝 크기 정규화(무이동 가드)
+        step_norm = float(np.linalg.norm(step_vec))
+        if step_norm < 1e-6:
+            return 0.0  # 무이동이면 shaping 0
+
+        shaped = (w * delta_phi) / step_norm
+
+        # --- 최종 보상 (내부→외부 클립)
+        r = alpha_p * np.clip(shaped, -c_inner, c_inner)
+        return float(np.clip(r, -0.1, 0.1))
 
     def _calculate_missing_rate_value(self, episode: Episode) -> float:
         """Missing Rate 기반 value 계산
@@ -468,8 +613,50 @@ class SelfPlayManager:
         else:
             return 0.0
 
-    
+
     def _calculate_target_reward(self, episode: Episode, step_idx: int, action: int, 
+                             sim_pos: Tuple[int, int]) -> float:
+        """GT 학습을 위한 환경 reward 계산
+        
+        trajectory_following_value의 스텝별 버전
+        
+        Args:
+            episode: 현재 Episode
+            step_idx: 현재 스텝
+            action: 선택된 action (미래 확장용)
+            sim_pos: 시뮬레이션 위치 (미래 확장용)
+            
+        Returns:
+            환경 reward (-1 ~ 1 범위)
+        """
+        # 예외처리 - step_idx가 episode.states 범위를 벗어나는 경우
+        if step_idx >= len(episode.states):
+            print(f"  - [Target Reward 계산 이상] 스텝 {step_idx}에서 episode.states가 부족합니다. value: 0.0")
+            return 0.0
+        
+        # 목표: GT 만을 추종하는게 아닌, 다중 해를 허용하는 Target Reward 를 설계하는 것.
+
+        # 1. 직진성 강화하는 reward (즉, Path 의 오실레이션이 최소화 되어야함)
+        trajectory_smooth_reward = self._calculate_smoothness_reward(episode, step_idx)
+        
+        # 2. 이전 경로에서 Episode 의 끝 위치로 가까워지는 행동이면 +, 아니면 -
+        # Potential-based reward shaping으로 목표 접근을 학습
+        trajectory_goal_follow_reward = self._calculate_goal_following_reward(episode, step_idx)
+
+        # 3. 장애물과 충돌 상황에 대한 패널티
+        collision_reward = self._calculate_collision_reward(episode, step_idx)
+        
+        if collision_reward == -1.0:
+            # 충돌 발생 시 큰 페널티
+            print(f"  - 충돌 발생! 스텝 {step_idx}에서 충돌 감지됨. 페널티: -1.0")
+            return -1.0
+        else:
+            # 충돌이 없으면 경로 추종 reward만 사용
+            return trajectory_goal_follow_reward + trajectory_smooth_reward
+        
+
+    
+    def _calculate_target_reward_old(self, episode: Episode, step_idx: int, action: int, 
                              sim_pos: Tuple[int, int]) -> float:
         """GT 학습을 위한 환경 reward 계산
         
@@ -525,12 +712,13 @@ class SelfPlayManager:
             - 1~3 거리 (0.2~0.6m): 0.6 ~ 0.2 (정확)  
             - 3~5 거리 (0.6~1.0m): 0.2 ~ -0.2 (보통)
             - 5~8 거리 (1.0~1.6m): -0.2 ~ -0.6 (부정확)
-            - 8+ 거리 (1.6m+): -0.6 ~ -1.0 (매우 부정확)
+            - 8+ 거리 (1.6m+): -0.6 ~ -0.99 (매우 부정확)
         """
         if distance <= 1.0:  # 0~0.2m: 매우 정확
             result = 1.0 - 0.4 * distance  # 1.0 → 0.6
         elif distance <= 3.0:  # 0.2~0.6m: 정확
-            result = 0.8 - 0.3 * (distance - 1.0)  # 0.6 → 0.2
+            # result = 0.8 - 0.3 * (distance - 1.0)  # 0.6 → 0.2
+            result = 0.6 - 0.4 * (distance - 1.0) / 2.0  # 0.6 → 0.2
         elif distance <= 5.0:  # 0.6~1.0m: 보통
             result = 0.2 - 0.4 * (distance - 3.0) / 2.0  # 0.2 → -0.2
         elif distance <= 8.0:  # 1.0~1.6m: 부정확
@@ -539,7 +727,7 @@ class SelfPlayManager:
             result = -0.6 - 0.4 * min((distance - 8.0) / 7.0, 1.0)  # -0.6 → -1.0
         
         # 범위 제한
-        result = np.clip(result, -1.0, 1.0)
+        result = np.clip(result, -0.99, 1.0)
         
         return result
     
