@@ -182,12 +182,12 @@ class ExpertDataLoader:
                 
                 if next_ego and self.episode_start_ego:
                     # 다음 프레임의 ego 위치를 Episode 시작점 기준 그리드 좌표로 변환
-                    rel_x, rel_y = self._global_to_grid_coords(
+                    grid_row, grid_col = self._global_to_grid_coords(
                         next_ego.x, next_ego.y, 
                         self.episode_start_ego.x, self.episode_start_ego.y, 
                         self.episode_start_ego.yaw
                     )
-                    expert_ego_pos = (rel_x, rel_y)  # 그리드 좌표 (row, col)
+                    expert_ego_pos = (grid_row, grid_col)  # 그리드 좌표 (row, col)
                     expert_ego_positions.append(expert_ego_pos)
         
         # Episode 구성 (마지막 프레임 제외)
@@ -245,10 +245,10 @@ class ExpertDataLoader:
         
         # 그리드 좌표로 변환 (중앙이 49, 49)
         # 주의: rel_x는 전방(forward)이고, rel_y는 좌우(left/right)
-        # Grid에서 row는 y축(아래가 큰 값), col은 x축(오른쪽이 큰 값)
+        # Grid에서 row는 x축(전방으로 큰 값), col은 y축(우측으로 큰 값)
         grid_center = self.config.observation_shape[1] // 2  # 49
-        grid_row = grid_center + int(rel_x / self.config.cell_size)  # 180도 회전: 전방이 아래쪽
-        grid_col = grid_center - int(rel_y / self.config.cell_size)  # 180도 회전: 오른쪽이 왼쪽
+        grid_row = grid_center + int(rel_x / self.config.cell_size)  # 상단으로 +
+        grid_col = grid_center + int(rel_y / self.config.cell_size)  # 우측으로 +
         
         return grid_row, grid_col
     

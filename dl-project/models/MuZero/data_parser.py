@@ -396,8 +396,8 @@ class ObservationBuilder:
             rel_x, rel_y = CoordinateTransformer.global_to_ego(
                 obj.global_x, obj.global_y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
             )
-            grid_row = self.ego_grid_row + int(rel_x / self.cell_size)  # 180도 회전: 전방이 아래쪽
-            grid_col = self.ego_grid_col - int(rel_y / self.cell_size)  # 180도 회전: 오른쪽이 왼쪽
+            grid_row = self.ego_grid_row + int(rel_x / self.cell_size) # 상단으로 +
+            grid_col = self.ego_grid_col + int(rel_y / self.cell_size) # 우측으로 +
             
             if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
                 grid[0, grid_row, grid_col] = grid_value  # Channel 0: Dynamic objects
@@ -408,8 +408,8 @@ class ObservationBuilder:
                 rel_x, rel_y = CoordinateTransformer.global_to_ego(
                     point_x, point_y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
                 )
-                grid_row = self.ego_grid_row + int(rel_x / self.cell_size)  # 180도 회전
-                grid_col = self.ego_grid_col - int(rel_y / self.cell_size)  # 180도 회전
+                grid_row = self.ego_grid_row + int(rel_x / self.cell_size)  # 상단으로 +
+                grid_col = self.ego_grid_col + int(rel_y / self.cell_size)  # 우측으로 +
                 
                 if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
                     grid[0, grid_row, grid_col] = grid_value  # Channel 0: Dynamic objects
@@ -422,8 +422,8 @@ class ObservationBuilder:
                 ldm.x, ldm.y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
             )
             
-            grid_row = self.ego_grid_row + int(rel_x / self.cell_size)  # 180도 회전: 전방이 아래쪽
-            grid_col = self.ego_grid_col - int(rel_y / self.cell_size)  # 180도 회전: 오른쪽이 왼쪽
+            grid_row = self.ego_grid_row + int(rel_x / self.cell_size)  # 상단으로 +
+            grid_col = self.ego_grid_col + int(rel_y / self.cell_size)  # 우측으로 +
             
             if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
                 # rosetta.py의 함수 사용하여 그리드 값 변환

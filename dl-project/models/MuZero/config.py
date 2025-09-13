@@ -37,6 +37,7 @@ class MuZeroConfig:
         self.original_resolution = 0.1  # 원본 데이터 해상도 (10cm)
         self.downsample_factor = 2  # 다운샘플링 비율 (2x2 셀을 1개로)
         self.collision_threshold = 0.5  # 충돌 판정 거리
+        self.collision_penalty = -5.0  # 충돌 시 패널티 (reward 값)
         self.goal_threshold = 1.0  # 목표 도달 판정 거리
         self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
         
@@ -87,7 +88,7 @@ class MuZeroConfig:
         # 학습 설정
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
-        self.training_steps = 1000  # 1000 Epoch 하나에 Step 횟수 (=Epoch 당 가중치 업데이트 횟수)
+        self.training_steps = 100  # 1000 Epoch 하나에 Step 횟수 (=Epoch 당 가중치 업데이트 횟수)
         self.unroll_steps = 5  # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
         self.batch_size = 128  # 32 -> 128 (GPU 메모리 활용도 최대화)
         self.value_loss_weight = 1
@@ -103,7 +104,7 @@ class MuZeroConfig:
 
         # 체크포인트 재개 설정
         self.resume_checkpoint_path = None  # 재개할 체크포인트 경로 (None이면 새로 시작)
-        # self.resume_checkpoint_path = "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-09--00-27-54/checkpoints/muzero_epoch_5.pth"
+        # self.resume_checkpoint_path = "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-10--20-17-02/checkpoints/muzero_epoch_25.pth"
         # "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-02--10-03-53/checkpoints/muzero_epoch_15.pth"
         # 예: "models/MuZero/results/2025-09-02--00-11-57/checkpoints/muzero_epoch_5.pth"
         

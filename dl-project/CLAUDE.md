@@ -76,14 +76,16 @@ tensorboard --logdir models/MuZero/results
 JSON GT 는 /home/chp/ai_ws/AD/dl-project/data/db3_parser/db3 의 db3 로부터 파싱되며, /home/chp/ai_ws/AD/dl-project/data/db3_parser/db3_extractor.py 를 통해 파싱된다.
 모든 데이터 정의(class_id, 색상, grid values)는 /home/chp/ai_ws/AD/dl-project/data/db3_parser/rosetta.py 에 중앙 집중식으로 관리된다.
 
-### Training Data Flow (GT + MCTS)
-1. **GT Episode 생성**: `ExpertDataLoader`가 JSON에서 observation과 expert_ego_pos 추출
+### Training Data Flow (GT + MCTS) - Updated 2025-09-10
+1. **GT Episode 생성**: `ExpertDataLoader`가 JSON에서 observation과 expert_ego_pos 추출 (330개 Episode)
 2. **MCTS Enrichment**: `SelfPlayManager.enrich_episodes_with_mcts()`로 각 observation에 대해 MCTS 실행
-   - policy: MCTS가 계산한 action 확률 분포
-   - value: MCTS가 예측한 상태 가치
-   - reward: expert 이동 거리 기반 계산
-3. **통합 Episode**: GT 정보(observation, expert_ego_pos) + MCTS 결과(policy, value, reward) 모두 포함
-4. **학습**: Replay buffer에서 샘플링하여 네트워크 학습
+   - **policy**: MCTS가 계산한 action 확률 분포 (30회 시뮬레이션 기반)
+   - **value**: MCTS가 예측한 상태 가치 (root node value)
+   - **action**: 결정적 선택 (가장 많이 방문한 action, 확률적 선택 사용 안함)
+   - **reward**: 이론적으로 정확한 potential-based shaping + EMA smoothness + collision penalty
+3. **Target Value 계산**: n-step bootstrap으로 학습용 target_values 별도 계산
+4. **통합 Episode**: GT + MCTS + Target Values 모두 포함된 완전한 학습 데이터
+5. **학습**: Replay buffer에서 배치 샘플링하여 네트워크 학습 (1000 steps/epoch)
 
 ### Data Processing Pipeline
 The `data/db3_parser/` module extracts data from ROS2 bag files:
@@ -114,8 +116,13 @@ The `models/SSR/` contains template implementations for Structured State Represe
 
 1. **MuZero Network**: Uses fully connected layers by default, configured in `models/MuZero/config.py`
 2. **Training Data**: 
-   - Self-play: Generated through MCTS simulations
-   - Expert data: Loaded from GT JSON when using observation_provider_type="gt"
+   - **Primary**: GT Episode + MCTS Enrichment (99.9% of training data)
+     - GT observations from JSON files
+     - MCTS-computed policies and values for each observation
+     - Potential-based reward shaping for goal following
+     - EMA-based smoothness rewards for trajectory consistency
+   - **Secondary**: Pure Self-play (minimal usage, num_selfplay_games=5)
+   - **Action Selection**: All deterministic (MCTS best action), no stochastic selection used
 3. **Observation Shape**: Configured as (6, 99, 99) representing the driving environment state (channel, height, width)
    - Grid size: 99x99 cells (19.8m x 19.8m area with 0.2m per cell)
    - Ego position managed separately via Episode's expert_ego_pos field (grid coordinates), not displayed in grid
@@ -138,6 +145,113 @@ The `models/SSR/` contains template implementations for Structured State Represe
 6. **Value vs Reward**: 
    - Reward: Immediate reward for single step
    - Value: Expected sum of future rewards (used for training targets)
+
+## Recent Updates (2025-09-12)
+
+### Predicted Path 우측상단 수렴 문제 분석 (2025-09-12)
+
+#### 1. **문제 현상**
+학습 중 시각화 결과에서 predicted path가 지속적으로 우측상단으로 수렴하는 현상 발생:
+- **Top Action**: pos2 (상단) 66.67% 선택
+- **Action Averages**: pos3 (우측상단) -0.020으로 가장 높은 reward
+- **좌표계**: Action 정의와 시각화 간 일치성 확인됨
+
+#### 2. **원인 분석**
+**주요 원인**: 이전 편향된 체크포인트에서 학습 재개
+```python
+# config.py:106
+self.resume_checkpoint_path = "/home/chp/.../2025-09-10--20-17-02/checkpoints/muzero_epoch_25.pth"
+```
+- 2025-09-10 학습에서 이미 우측상단 편향 발생
+- 해당 체크포인트로부터 추가 학습하여 편향성 강화
+- pos3(우측상단) action이 높은 reward를 받도록 네트워크 가중치 편향
+
+#### 3. **좌표계 검증**
+- **Action 정의**: pos2="상단" = (dx=+1, dy=0), pos3="우측상단" = (dx=+1, dy=+1)
+- **좌표 변환**: `simulated_ego_row += dx`, `simulated_ego_col += dy`
+- **시각화**: matplotlib 수학 좌표계 (y값 증가 = 위쪽)
+- **결론**: 좌표계는 정상적으로 일치함
+
+#### 4. **해결 방안**
+1. **새 학습 시작**: `resume_checkpoint_path = None` 설정
+2. **편향 이전 체크포인트 사용**: 더 이른 epoch의 체크포인트 활용
+3. **Reward 함수 검증**: pos3 방향 편향 요소 확인
+4. **학습 모니터링**: Action 분포의 균등성 지속 관찰
+
+#### 5. **교훈**
+- 체크포인트 재개 시 이전 편향성이 누적될 수 있음
+- Action Average는 각 action의 평균 reward를 의미
+- 시각화에서 정책 편향성 조기 감지 중요
+
+## Previous Updates (2025-09-10)
+
+### Reward 함수 이론적 개선 및 최적화 (2025-09-10)
+
+#### 1. **Potential-based Reward Shaping 구현**
+기존의 단순한 거리 기반 reward를 이론적으로 정확한 **potential-based reward shaping**으로 완전 재구성:
+
+**핵심 개선사항:**
+- **이론적 정확성**: γ * Φ(s') - Φ(s) 공식으로 optimal policy 보존
+- **미터 단위 변환**: `meters_per_cell = 0.2`로 물리적 의미 명확화
+- **데드존 구현**: 목표 근처 0.3m 내에서 진동/파밍 방지
+- **터미널 상태 처리**: Episode 종료 시 shaping 중단으로 MDP 준수
+- **gamma_shaping = 1.0**: 할인으로 인한 바닥값 문제 해결 (탁월한 아이디어!)
+
+**새로운 Goal Following Reward:**
+```python
+def _calculate_goal_following_reward(self, episode: Episode, step_idx: int) -> float:
+    # 미터 단위 변환
+    goal = to_meters(episode.expert_ego_pos[-1])
+    p_t = to_meters(st[step_idx].get('simulated_ego_pos'))
+    
+    # 데드존 처리 (진동 방지)
+    if np.linalg.norm(p_t - goal) <= r_goal:
+        return 0.0
+    
+    # Potential-based shaping (gamma=1.0으로 바닥값 방지)
+    gamma_shaping = 1.0
+    delta_phi = gamma_shaping * Phi(p_tp1) - Phi(p_t)
+    
+    # 이중 클리핑으로 세밀한 제어
+    r = alpha_p * np.clip(shaped, -c_inner, c_inner)
+    return float(np.clip(r, -0.1, 0.1))
+```
+
+#### 2. **Smoothness Reward 정밀화**
+직진성 강화를 위한 **EMA 기반 smoothness reward** 구현:
+- **방향 일관성**: 코사인 유사도로 연속된 이동 벡터 간 일관성 측정
+- **EMA 평활화**: β=0.7로 변동성 완화 및 노이즈 제거
+- **방향 반전 페널티**: 급격한 방향 전환 시 추가 페널티
+- **반환 범위**: [-0.03, 0.03]로 적절한 강도 유지
+
+#### 3. **충돌 감지 시스템 강화**
+3x3 그리드 영역에서 정밀한 충돌 검사:
+- **Dynamic objects** (Channel 0): 차량, 보행자 등
+- **Static environment** (Channel 1): 절벽, 정적 장애물 등
+- **즉시 종료**: 충돌 발생 시 Episode 즉시 terminate (-1.0 페널티)
+- **Tensor 호환성**: PyTorch Tensor와 NumPy Array 모두 처리
+
+#### 4. **학습 데이터 품질 향상**
+- **Target Goal 시각화**: 학습 진행 상황 PNG에 보라색 별표로 목표점 표시
+- **Action 다양성 확보**: MCTS 시뮬레이션 30회로 증가하여 탐색 강화
+- **Replay Buffer 안정성**: 더 이상 빈 buffer 문제 없음
+- **Loss 감소 추세**: 1.77 → 0.31로 안정적인 학습 진행
+
+#### 5. **파라미터 설정 최적화**
+현재 학습에서 **Self-play를 거의 사용하지 않음**이 확인됨:
+- **주요 학습 방식**: `enrich_episodes_with_mcts()` (GT + MCTS)
+- **Self-play 비중**: `num_selfplay_games = 5` (매우 적음)
+- **Action 선택**: 모두 결정적 선택 (MCTS 최선 action)
+- **`num_stochastic_steps`**: 현재 사용하지 않음 (주석으로 표시)
+
+**설정 정리:**
+```python
+# config.py 주요 설정
+self.gt_num_episodes = 330           # GT Episode 수 (폴더 전체 활용)
+self.training_steps = 1000           # Epoch당 학습 스텝 증가
+self.num_simulations = 30            # MCTS 시뮬레이션 횟수 증가
+self.num_stochastic_steps = 30       # [지금 얘 안씀] 확률적 선택
+```
 
 ## Recent Updates (2025-09-02)
 
@@ -277,14 +391,14 @@ self.dynamics_reward_network = mlp(reward_input_size, fc_reward_layers, support_
    - 충돌 정보 및 경로 추종 정확도 표시
 
 ### 좌표계 일관성 확보
-1. **180도 회전 좌표계 통일**:
+1. **좌표계 통일**:
    - 전방(상단) → row 증가 (아래 방향)
-   - 우측 → col 감소 (180도 회전으로 왼쪽)
+   - 우측 → col 증가
    - environment.py, data_parser.py, self_play.py 모두 일치
 
 2. **Action 좌표 변환**:
-   - `simulated_ego_row += dy` (전방/후방)
-   - `simulated_ego_col -= dx` (좌/우)
+   - `simulated_ego_row += dx` (전방/후방) ... 상방이 +
+   - `simulated_ego_col += dy` (좌/우) ... 우측이 +
    - 모든 모듈에서 동일한 변환 규칙 적용
 
 ## Recent Updates (2025-08-12)
@@ -419,25 +533,20 @@ self.dynamics_reward_network = mlp(reward_input_size, fc_reward_layers, support_
    - visualize_muzero_episode.py에서 ego 위치는 expert_ego_pos 사용
    - Step Information에 그리드 좌표로 표시
 
-### 좌표계 180도 회전 및 방향 벡터 처리 개선
-1. **좌표 변환 방식 변경**:
-   - 기존: 전방이 위쪽(row 감소), 오른쪽이 오른쪽(col 증가)
-   - 변경: 전방이 아래쪽(row 증가), 오른쪽이 왼쪽(col 감소)
-   - 차량 뒤에서 바라보는 관점으로 180도 회전
-
-2. **방향 벡터 처리 통합**:
+### 방향 벡터 처리 개선
+1. **방향 벡터 처리 통합**:
    - `db3_extractor.py`: 전역 좌표계 방향 벡터를 차량 좌표계로 변환하여 JSON 저장
    - `extract_waypoint_vectors()` 함수에 ego yaw 파라미터 추가 및 변환 로직 구현
    - `data_parser.py`, `visualize_muzero_episode.py`: 추가 변환 없이 원본 데이터 사용
    - `expert_data_loader.py`: 방향 벡터를 소수점 둘째 자리까지 반올림하여 저장
 
-3. **수정된 파일**:
+2. **수정된 파일**:
    - `data_parser.py`: grid_row = center + rel_x, grid_col = center - rel_y
    - `expert_data_loader.py`: 동일한 좌표 변환 적용, 방향 벡터 round(value, 2)
    - `visualize_muzero_episode.py`: 방향 벡터 표시 수정 (dx = -y*10, dy = x*10)
    - `db3_extractor.py`: extract_waypoint_vectors에 차량 좌표계 변환 추가
 
-4. **UI/UX 개선**:
+3. **UI/UX 개선**:
    - Ego 토글(4번)과 방향 벡터 토글(5번) 독립적으로 작동
    - Step Information 위치 상향 조정 (0.5 → 0.7)
    - 마우스 좌표 표시 수정 (x=row, y=col)

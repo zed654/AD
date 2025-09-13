@@ -744,12 +744,11 @@ class EpisodeInteractiveVisualizer:
                 if near_dir and near_dir.get('x') is not None and near_dir.get('y') is not None:
                     # 방향 벡터는 이미 차량 좌표계 기준
                     # x는 전방(양수가 앞), y는 좌우(양수가 오른쪽)
-                    # 180도 회전 좌표계: row는 클수록 전방, col은 작을수록 오른쪽
-                    dx = -near_dir['y'] * 10  # y는 좌우 (col 방향, 180도 회전이므로 부호 반전)
-                    dy = near_dir['x'] * 10  # x는 전방 (row 방향, 180도 회전이므로 양수)
-                    
+                    dx = near_dir['x'] * 10  # x는 전방 (row 방향 상방 +)
+                    dy = near_dir['y'] * 10  # y는 우측방 (col 방향 우측 +)
+                    # matplotlib 좌표계는 x축 좌우(우가 +), y축 상하(상이 +) 임. 그래서 거꾸로 넣어줘야함
                     self.artists['near_arrow'] = self.ax_grid.arrow(
-                        ego_col, ego_row, dx, dy,
+                        ego_col, ego_row, dy, dx,
                         head_width=2, head_length=1, fc='blue', ec='blue',
                         alpha=0.7, zorder=90, label='Near Destination'
                     )
@@ -758,12 +757,11 @@ class EpisodeInteractiveVisualizer:
                 if dest_dir and dest_dir.get('x') is not None and dest_dir.get('y') is not None:
                     # 방향 벡터는 이미 차량 좌표계 기준
                     # x는 전방(양수가 앞), y는 좌우(양수가 오른쪽)
-                    # 180도 회전 좌표계: row는 클수록 전방, col은 작을수록 오른쪽
-                    dx = -dest_dir['y'] * 15  # y는 좌우 (col 방향, 180도 회전이므로 부호 반전), 더 길게
-                    dy = dest_dir['x'] * 15  # x는 전방 (row 방향, 180도 회전이므로 양수)
-                    
+                    dx = dest_dir['x'] * 15  # x는 전방 (row 방향 상방 +), 더 길게
+                    dy = dest_dir['y'] * 15  # y는 우측방 (col 방향 우측 +), 더 길게
+                    # matplotlib 좌표계는 x축 좌우(우가 +), y축 상하(상이 +) 임. 그래서 거꾸로 넣어줘야함
                     self.artists['dest_arrow'] = self.ax_grid.arrow(
-                        ego_col, ego_row, dx, dy,
+                        ego_col, ego_row, dy, dx,
                         head_width=2, head_length=1, fc='red', ec='red',
                         alpha=0.5, zorder=89, label='Final Destination'
                     )
@@ -1177,7 +1175,7 @@ def save_episode_frames(episodes: List[Episode], config: MuZeroConfig,
             # 통합 그리드 생성 - 각 채널을 개별적으로 전달
             visualizer = EpisodeInteractiveVisualizer([], config, 0, False)
             # 모든 채널을 표시하도록 설정 (Ego, Directions 포함)
-            visualizer.channel_visibility = {'obstacles': True, 'static_environment': True, 'ground_class_id': True, 'ego': True, 'directions': False}
+            visualizer.channel_visibility = {'obstacles': True, 'static_environment': True, 'ground_class_id': True, 'ego': True, 'directions': True}
             
             # Ego 위치 계산
             if step_idx == 0:

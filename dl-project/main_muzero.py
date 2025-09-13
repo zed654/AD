@@ -222,10 +222,11 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
             if 'near_destination_direction' in last_state and last_state['near_destination_direction']:
                 near_dir = last_state['near_destination_direction']
                 if near_dir and 'x' in near_dir and 'y' in near_dir:
-                    # 180도 회전 좌표계 적용
-                    dx = -near_dir['y'] * 10  # 오른쪽이 왼쪽
-                    dy = near_dir['x'] * 10   # 전방이 아래쪽
-                    ax.arrow(center_col, center_row, dx, dy,
+                    # x는 전방(양수가 앞), y는 좌우(양수가 오른쪽)
+                    dx = near_dir['x'] * 10  # x는 전방 (row 방향 상방 +)
+                    dy = near_dir['y'] * 10  # y는 우측방 (col 방향 우측 +)
+                    # matplotlib 좌표계는 x축 좌우(우가 +), y축 상하(상이 +) 임. 그래서 거꾸로 넣어줘야함
+                    ax.arrow(center_col, center_row, dy, dx,
                             head_width=2, head_length=1, fc='green', ec='green',
                             alpha=0.7, label='Near Direction')
             
@@ -233,10 +234,11 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
             if 'final_destination_direction' in last_state and last_state['final_destination_direction']:
                 final_dir = last_state['final_destination_direction']
                 if final_dir and 'x' in final_dir and 'y' in final_dir:
-                    # 180도 회전 좌표계 적용
-                    dx = -final_dir['y'] * 15  # 더 긴 화살표
-                    dy = final_dir['x'] * 15
-                    ax.arrow(center_col, center_row, dx, dy,
+                    # x는 전방(양수가 앞), y는 좌우(양수가 오른쪽)
+                    dx = final_dir['x'] * 15  # x는 전방 (row 방향 상방 +), 더 길게
+                    dy = final_dir['y'] * 15  # y는 우측방 (col 방향 우측 +), 더 길게
+                    # matplotlib 좌표계는 x축 좌우(우가 +), y축 상하(상이 +) 임. 그래서 거꾸로 넣어줘야함
+                    ax.arrow(center_col, center_row, dy, dx,
                             head_width=2, head_length=1, fc='darkblue', ec='darkblue',
                             alpha=0.7, label='Final Direction')
         
@@ -432,7 +434,16 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
                 if step < len(enriched_episode.actions) and step < len(enriched_episode.rewards):
                     action_obj = Action.from_index(enriched_episode.actions[step])
                     reward = enriched_episode.rewards[step]
-                    action_stats_text += f"  {step+1}: {action_obj.position.value} → {reward:.3f}\n"
+                    
+                    # 해당 스텝의 simulated_ego_pos 가져오기
+                    pos_info = ""
+                    if (step < len(enriched_episode.states) and 
+                        isinstance(enriched_episode.states[step], dict) and
+                        'simulated_ego_pos' in enriched_episode.states[step]):
+                        pos = enriched_episode.states[step]['simulated_ego_pos']
+                        pos_info = f" @{pos}"
+                    
+                    action_stats_text += f"  {step+1}: {action_obj.position.value}{pos_info} → {reward:.3f}\n"
             if len(enriched_episode.actions) > max_display_steps:
                 action_stats_text += f"  ... (+{len(enriched_episode.actions) - max_display_steps} more)\n"
             
@@ -443,7 +454,12 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
                 rewards = action_rewards[action_idx]
                 avg_reward = np.mean(rewards)
                 count = len(rewards)
-                action_stats_text += f"{action_obj.position.value}: {avg_reward:.3f} (×{count})\n"
+                
+                # Action의 이동 벡터 정보 추가
+                dx, dy = action_obj.get_movement_vector()
+                vec_info = f"({dx:+d},{dy:+d})"
+                
+                action_stats_text += f"{action_obj.position.value} {vec_info}: {avg_reward:.3f} (×{count})\n"
             
             # 3. 전체 Target Rewards 통계
             action_stats_text += f"\nTotal Rewards:\n"

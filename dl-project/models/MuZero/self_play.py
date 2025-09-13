@@ -298,7 +298,7 @@ class SelfPlayManager:
                         obs_type = type(episode.states[step_idx].get('obstacles', None))
                         print(f"    - 스텝 {step_idx} 후 obstacles 타입: {obs_type}")
                     
-                    # GT 학습을 위한 환경 reward 계산
+                    # GT 학습을 위한 환경 reward 계산 (Step마다)
                     reward = self._calculate_target_reward(
                         episode, step_idx, selected_action, 
                         (simulated_ego_row, simulated_ego_col)
@@ -306,7 +306,7 @@ class SelfPlayManager:
                     episode.rewards[step_idx] = reward
                     
                     # 충돌 발생 시 Episode 종료
-                    if reward == -1.0:
+                    if reward == self.config.collision_penalty:
                         print(f"    - 충돌로 인해 Episode 종료 (스텝 {step_idx + 1}/{len(episode.states)})")
                         # 현재 스텝을 터미널로 표시 (잘라내기 전에 먼저 설정)
                         if step_idx < len(episode.dones):
@@ -406,7 +406,7 @@ class SelfPlayManager:
                                         val = obs[check_row, check_col]
                                     if val > 0:
                                         # 충돌 감지됨
-                                        return -1.0  # 충돌 시 최대 페널티
+                                        return self.config.collision_penalty  # 충돌 시 최대 페널티
                                 except (IndexError, TypeError):
                                     pass  # 인덱싱 실패 시 무시
                         
@@ -422,7 +422,7 @@ class SelfPlayManager:
                                         val = static[check_row, check_col]
                                     if val > 0:
                                         # 충돌 감지됨
-                                        return -1.0  # 충돌 시 최대 페널티
+                                        return self.config.collision_penalty  # 충돌 시 최대 페널티
                                 except (IndexError, TypeError):
                                     pass  # 인덱싱 실패 시 무시
         
@@ -430,7 +430,7 @@ class SelfPlayManager:
     
     def _calculate_smoothness_reward(self, episode: Episode, step_idx: int) -> float:
         """직진성 강화: 방향 일관성(코사인) + EMA 평활 + 반전 페널티
-           반환: [-0.03, 0.03]"""
+           반환: [-0.02, 0.02]"""
         if step_idx < 2:
             return 0.0
 
@@ -469,7 +469,7 @@ class SelfPlayManager:
         # 스케일: ±0.1 내
         base = 0.02 * cos_ema  # +0.05(동일) ~ -0.05(반대)
         r = base + sign_flip_pen
-        return float(np.clip(r, -0.03, 0.03))
+        return float(np.clip(r, -0.02, 0.02))
     
     def _calculate_goal_following_reward(self, episode: Episode, step_idx: int) -> float:
         """목표 접근 shaping (Potential-based)
@@ -477,7 +477,8 @@ class SelfPlayManager:
            최종 반환: [-0.1, 0.1]"""
 
         st = episode.states
-        if step_idx >= len(st) or not isinstance(st[step_idx], dict):
+        # if step_idx >= len(st) or not isinstance(st[step_idx], dict):
+        if step_idx >= len(st):
             return 0.0
         if not hasattr(episode, 'expert_ego_pos') or len(episode.expert_ego_pos) < 1:
             return 0.0
@@ -490,34 +491,27 @@ class SelfPlayManager:
             return p * meters_per_cell  # pos가 이미 미터라면 1.0로
 
         goal = to_meters(episode.expert_ego_pos[-1])
-
-        p_t_g = st[step_idx].get('simulated_ego_pos')
+        
+        # --- 현재 위치 (step 이전 위치)
+        # Episode 첫 스텝에 있는 값들은 시작기준으로 예측한 값 들임. 따라서, step_idx 가 0이면 시작위치(49, 49) 를 고정해서 넣어줌
+        if step_idx == 0:
+            p_t_g = (49, 49)  # Episode 시작 위치
+        else:
+            p_t_g = st[step_idx - 1].get('simulated_ego_pos')  # 이전 스텝 위치
         if p_t_g is None:
             return 0.0
         p_t = to_meters(p_t_g)
 
-        # --- 다음 상태 (env.step() 후 위치를 우선 사용)
-        p_tp1 = None
-        if step_idx + 1 < len(st) and isinstance(st[step_idx + 1], dict):
-            p_tp1_g = st[step_idx + 1].get('simulated_ego_pos')
-            if p_tp1_g is not None:
-                p_tp1 = to_meters(p_tp1_g)
-
-        if p_tp1 is None:
-            # 불가피할 때만 액션 근사
-            action = st[step_idx].get('action_index')
-            if action is None:
-                return 0.0
-            act = Action.from_index(int(action))
-            move_g = np.array(act.get_movement_vector(), dtype=float)  # grid 단위
-            step_vec = move_g * meters_per_cell                         # meter 단위
-            p_tp1 = p_t + step_vec
-        else:
-            step_vec = p_tp1 - p_t
+        # --- 다음 상태 (env.step() 후 위치 = 현재 스텝의 simulated_ego_pos)
+        p_tp1_g = st[step_idx].get('simulated_ego_pos')
+        if p_tp1_g is None:
+            return 0.0
+        p_tp1 = to_meters(p_tp1_g)
+        step_vec = p_tp1 - p_t
 
         # --- 하이퍼파라미터
         # gamma = getattr(self, "gamma", 0.99)  # 사용안함 (gamma_shaping=1.0 사용)
-        alpha_p = getattr(self, "alpha_p", 0.1)          # 최종 ±0.1 목표
+        alpha_p = getattr(self, "alpha_p", 0.2)          # 최종 ±0.1 목표
         c_inner = getattr(self, "prog_inner_clip", 0.5)
         r_goal  = getattr(self, "r_goal_m", 0.3)         # 미터 단위 데드존 반경 (기본 0.3 m)
 
@@ -526,9 +520,9 @@ class SelfPlayManager:
             return 0.0
 
         # --- (선택) t+1 터미널 프레임에서는 shaping 0
-        #  episode.states[step_idx+1]['done'] 등이 있으면 확인해 0 반환
+        #  episode.states[step_idx]['done'] 등이 있으면 확인해 0 반환
         if step_idx + 1 < len(st):
-            done_next = st[step_idx + 1].get('done')
+            done_next = st[step_idx].get('done')
             if done_next is True:
                 return 0.0
 
@@ -638,7 +632,8 @@ class SelfPlayManager:
 
         # 1. 직진성 강화하는 reward (즉, Path 의 오실레이션이 최소화 되어야함)
         trajectory_smooth_reward = self._calculate_smoothness_reward(episode, step_idx)
-        
+        # trajectory_smooth_reward = 0 # FIXME: 제거. 테스트용
+
         # 2. 이전 경로에서 Episode 의 끝 위치로 가까워지는 행동이면 +, 아니면 -
         # Potential-based reward shaping으로 목표 접근을 학습
         trajectory_goal_follow_reward = self._calculate_goal_following_reward(episode, step_idx)
@@ -646,10 +641,10 @@ class SelfPlayManager:
         # 3. 장애물과 충돌 상황에 대한 패널티
         collision_reward = self._calculate_collision_reward(episode, step_idx)
         
-        if collision_reward == -1.0:
+        if collision_reward == self.config.collision_penalty:
             # 충돌 발생 시 큰 페널티
-            print(f"  - 충돌 발생! 스텝 {step_idx}에서 충돌 감지됨. 페널티: -1.0")
-            return -1.0
+            print(f"  - 충돌 발생! 스텝 {step_idx}에서 충돌 감지됨. 페널티: {self.config.collision_penalty}")
+            return self.config.collision_penalty
         else:
             # 충돌이 없으면 경로 추종 reward만 사용
             return trajectory_goal_follow_reward + trajectory_smooth_reward
