@@ -91,3 +91,14 @@ class Action:
     def get_movement_vector(self):
         """이 액션의 이동 벡터를 반환 (그리드 단위)"""
         return self.POSITION_VECTORS[self.position]
+    
+
+    """
+        장기적으로 Action 은 Continous 범위로 확장되어야함
+        예시로)
+            action = [
+                longitudinal_velocity, # 0.0 ~ 2.0 m/s 
+                lateral_velocity # -60 ~ 60 deg/s
+                ]
+    
+    """

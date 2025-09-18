@@ -68,9 +68,13 @@ class ExpertDataLoader:
             print(f"Episode {ep_idx + 1}/{num_episodes} 생성 중...")
             
             episode = self._create_single_episode(start_idx, episode_step_length, ep_idx)
-            # 의도된 길이를 채우지 못한 Episode는 제거 (학습 품질 보장)
-            if episode and len(episode) >= episode_step_length - 1:
+
+            # Episode 품질 검증
+            if episode and self._validate_episode_quality(episode, episode_step_length):
                 episodes.append(episode)
+                print(f"    ✓ Episode {len(episodes)} 추가: {len(episode.states)}개 스텝")
+            else:
+                print(f"    ✗ Episode {ep_idx + 1} 제외: 품질 기준 미달")
         
         print(f"\n생성된 Episode: {len(episodes)}개")
         return episodes
@@ -101,40 +105,57 @@ class ExpertDataLoader:
         observations = []
         expert_ego_positions = []  # GT에서 추출한 전문가 ego 위치 (그리드 좌표)
         
-        for i in range(length):
-            frame_idx = start_idx + i
-            if frame_idx >= self.parser.get_frame_count() - 1:
-                break
-            
+        # 이동 기반 Episode 생성: 실제 이동하는 50개 스텝 수집
+        collected_steps = 0
+        frame_idx = start_idx
+        prev_grid_pos = None
+        skip_count = 0  # 스킵한 프레임 수
+
+        while collected_steps < length and frame_idx < self.parser.get_frame_count() - 1:
             # 현재 프레임 데이터
             frame_data = self.parser.get_frame_data(frame_idx)
             if not frame_data:
-                break
-            
+                frame_idx += 1
+                continue
+
             # Observation 생성
             ego_info = self.parser.parse_ego_info(frame_data)
             objects = self.parser.parse_objects(frame_data)
             ldm_points = self.parser.parse_ldm_points(frame_data)  # LDM 데이터 파싱
             near_destination_direction, final_destination_direction = self.parser.get_direction_vectors(frame_data)
-            
+
             if not ego_info:
-                break
-            
+                frame_idx += 1
+                continue
+
             # Episode 시작 위치 설정 (첫 프레임에서만)
-            if i == 0:
+            if collected_steps == 0:
                 self.episode_start_ego = ego_info
+                prev_grid_pos = None  # 첫 스텝은 무조건 포함
             
             observation = self.obs_builder.build_observation(
                 ego_info, objects, ldm_points, near_destination_direction, final_destination_direction,
                 episode_start_ego=self.episode_start_ego
             )
-            
+
             # observation에서 필요한 정보 추출
             grid = observation['grid']  # 3채널 그리드 (3, 99, 99)
             vectors = observation['vectors']  # 방향 벡터 [near_x, near_y, dest_x, dest_y]
-            
+
+            # 현재 그리드 위치 계산 (ego 중심 좌표계를 그리드 좌표로 변환)
+            current_grid_pos = self._global_to_grid_coords(
+                ego_info.x, ego_info.y,
+                self.episode_start_ego.x, self.episode_start_ego.y, self.episode_start_ego.yaw
+            )
+
+            # 제자리 이동 체크: 이전 위치와 동일하면 스킵
+            if prev_grid_pos is not None and current_grid_pos == prev_grid_pos:
+                skip_count += 1
+                frame_idx += 1
+                continue  # 제자리 이동은 스킵하고 다음 프레임으로
+
             # 첫 스텝에서만 방향 벡터를 저장하고, 이후 스텝에서는 재사용
-            if i == 0 and vectors is not None and len(vectors) == 4:
+            if collected_steps == 0 and vectors is not None and len(vectors) == 4:
                 # 첫 스텝에서 Episode 전체에서 사용할 방향 저장
                 if not (vectors[0] == 0 and vectors[1] == 0):  # near direction이 유효한 경우
                     episode_near_direction = {
@@ -174,28 +195,29 @@ class ExpertDataLoader:
             #     print(f"Decoded observation: {decoded}")
             
             observations.append(state_dict)  # 전체 state dict 저장
-            
-            # GT ego 위치를 그리드 좌표로 변환하여 저장 (다음 프레임) - 마지막 프레임은 제외
-            if i < length - 1 and frame_idx < self.parser.get_frame_count() - 1:
-                next_frame = self.parser.get_frame_data(frame_idx + 1)
-                next_ego = self.parser.parse_ego_info(next_frame) if next_frame else None
-                
-                if next_ego and self.episode_start_ego:
-                    # 다음 프레임의 ego 위치를 Episode 시작점 기준 그리드 좌표로 변환
-                    grid_row, grid_col = self._global_to_grid_coords(
-                        next_ego.x, next_ego.y, 
-                        self.episode_start_ego.x, self.episode_start_ego.y, 
-                        self.episode_start_ego.yaw
-                    )
-                    expert_ego_pos = (grid_row, grid_col)  # 그리드 좌표 (row, col)
-                    expert_ego_positions.append(expert_ego_pos)
+
+            # 현재 그리드 위치를 expert_ego_positions에 추가
+            expert_ego_positions.append(current_grid_pos)
+
+            # 이전 위치 업데이트 (다음 스텝 비교용)
+            prev_grid_pos = current_grid_pos
+
+            # 수집된 스텝 수 증가
+            collected_steps += 1
+
+            # 다음 프레임으로 진행
+            frame_idx += 1
+
+        # 수집 완료 로그
+        print(f"    - 수집 완료: {collected_steps}개 스텝 (스킵: {skip_count}개 프레임)")
         
-        # Episode 구성 (마지막 프레임 제외)
-        if len(expert_ego_positions) == 0:
+        # Episode 구성 검증
+        if len(expert_ego_positions) == 0 or len(observations) == 0:
+            print(f"    - Episode 생성 실패: 유효한 데이터 없음")
             return None
-        
-        # Episode 생성
-        for i in range(len(expert_ego_positions)):
+
+        # Episode 생성 (states와 expert_ego_pos 길이를 맞춤)
+        for i in range(len(observations)):
             # 디버깅 포인트 2: Episode step 추가 (필요시 주석 해제)
             # if i < 3:  # 처음 3개 step만
             #     print(f"\n--- Step {i} ---")
@@ -299,7 +321,50 @@ class ExpertDataLoader:
                 # obstacles_type이 0 또는 기타 값인 경우는 무시
         
         return static_env
-    
-    
-    
-    
+
+    def _validate_episode_quality(self, episode: 'Episode', target_length: int) -> bool:
+        """Episode 품질 검증
+
+        Args:
+            episode: 생성된 Episode
+            target_length: 목표 스텝 길이
+
+        Returns:
+            bool: 품질 기준 통과 여부
+        """
+        if not episode or not hasattr(episode, 'states') or not hasattr(episode, 'expert_ego_pos'):
+            return False
+
+        states_count = len(episode.states)
+        positions_count = len(episode.expert_ego_pos)
+
+        # 1. 최소 길이 검증 (목표의 80% 이상)
+        min_length = max(target_length * 0.8, target_length - 10)  # 최소 40개 또는 target-10
+        if states_count < min_length:
+            print(f"      길이 부족: {states_count} < {min_length}")
+            return False
+
+        # 2. 데이터 일관성 검증
+        if states_count != positions_count:
+            print(f"      데이터 불일치: states={states_count}, positions={positions_count}")
+            return False
+
+        # 3. 실제 이동 거리 검증
+        if positions_count >= 2:
+            total_distance = 0.0
+            for i in range(1, positions_count):
+                prev_pos = episode.expert_ego_pos[i-1]
+                curr_pos = episode.expert_ego_pos[i]
+                if isinstance(prev_pos, tuple) and isinstance(curr_pos, tuple):
+                    distance = ((curr_pos[0] - prev_pos[0])**2 + (curr_pos[1] - prev_pos[1])**2)**0.5
+                    total_distance += distance
+
+            # 최소 이동 거리 (5 cells = 1m)
+            min_distance = 5.0
+            if total_distance < min_distance:
+                print(f"      이동 거리 부족: {total_distance:.1f} < {min_distance}")
+                return False
+
+            print(f"      품질 통과: {states_count}스텝, 이동거리={total_distance:.1f}cells")
+
+        return True

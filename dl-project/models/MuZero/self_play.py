@@ -58,147 +58,6 @@ class SelfPlayManager:
             device=device
         )
         
-    def play_game(self, temperature: float = 1.0, render: bool = False) -> GameHistory:
-        """하나의 완전한 게임을 플레이"""
-        game_history = GameHistory()
-        
-        # 환경 초기화
-        observation = self.environment.reset()
-        
-        # observation이 dict인 경우, 6채널 observation tensor 생성
-        if isinstance(observation, dict):
-            # obstacles는 이미 tensor이므로 numpy로 변환
-            if hasattr(observation['obstacles'], 'numpy'):
-                obstacles_np = observation['obstacles'].squeeze(0).numpy()  # 배치 차원 제거
-            else:
-                obstacles_np = observation['obstacles'].squeeze(0)
-            
-            # state_dict 구성
-            state_dict = {
-                'obstacles': obstacles_np,
-                'static_environment': observation.get('static_environment'),
-                'ground_class_id': observation.get('ground_class_id'),
-                'near_destination_direction': observation.get('near_destination_direction'),
-                'final_destination_direction': observation.get('final_destination_direction'),
-                'simulated_ego_pos': observation.get('simulated_ego_pos', (49, 49))
-            }
-            
-            # 6채널 observation tensor 생성
-            observation_tensor = build_observation_tensor(state_dict, self.config.observation_shape, self.device, self.config.use_obstacle_channels)
-        else:
-            observation_tensor = observation
-        
-        # 게임이 끝날 때까지 플레이
-        step = 0
-        while not self.environment.is_terminal():
-            if render:
-                print(f"\n=== Step {step} ===")
-            
-            # MCTS 실행 - 시뮬레이션 통해 액션 선택
-            mcts_result = self.mcts.run(
-                observation_tensor,
-                add_exploration_noise=(temperature > 0)
-            )
-            
-            # 액션 선택
-            if step < self.config.num_stochastic_steps:
-                # 초기 스텝에서는 확률적 선택
-                action = self._select_action_stochastic(
-                    mcts_result['policy_targets'],
-                    temperature
-                )
-            else:
-                # 이후에는 결정적 선택
-                action = mcts_result['action']
-            
-            # 액션 수행
-            next_observation, reward, done, info = self.environment.step(action)
-            
-            # 충돌 발생 시 value 조정
-            if done and info.get('done_reason') == 'collision':
-                # 충돌 발생 시 해당 상태의 value를 -1로 설정
-                adjusted_value = -1.0
-            else:
-                # 정상적인 경우 MCTS가 예측한 value 사용
-                adjusted_value = mcts_result['root_value']
-            
-            # 히스토리 저장
-            game_history.store(
-                observation=observation,  # dict 형태로 저장
-                action=action,
-                reward=reward,
-                policy=mcts_result['policy_targets'],
-                value=adjusted_value
-            )
-            
-            if render:
-                action_obj = Action.from_index(action)
-                print(f"Action: {action_obj}")
-                print(f"Reward: {reward:.2f}")
-                print(f"Value: {adjusted_value:.2f} (MCTS: {mcts_result['root_value']:.2f})")
-                print(f"Done: {done}")
-                if done:
-                    print(f"Done reason: {info['done_reason']}")
-            
-            # 다음 상태로 전환
-            observation = next_observation
-            
-            # observation이 dict인 경우, 6채널 observation tensor 생성
-            if isinstance(observation, dict):
-                # obstacles는 이미 tensor이므로 numpy로 변환
-                if hasattr(observation['obstacles'], 'numpy'):
-                    obstacles_np = observation['obstacles'].squeeze(0).numpy()  # 배치 차원 제거
-                else:
-                    obstacles_np = observation['obstacles'].squeeze(0)
-                
-                # state_dict 구성
-                state_dict = {
-                    'obstacles': obstacles_np,
-                    'static_environment': observation.get('static_environment'),
-                    'ground_class_id': observation.get('ground_class_id'),
-                    'near_destination_direction': observation.get('near_destination_direction'),
-                    'final_destination_direction': observation.get('final_destination_direction'),
-                    'simulated_ego_pos': observation.get('simulated_ego_pos', (49, 49))
-                }
-                
-                # 6채널 observation tensor 생성
-                observation_tensor = build_observation_tensor(state_dict, self.config.observation_shape, self.device, self.config.use_obstacle_channels)
-            else:
-                observation_tensor = observation
-                
-            step += 1
-            
-            # 최대 스텝 제한 (안전장치)
-            if step >= self.config.max_game_length:
-                break
-        
-        # 충돌로 종료된 경우 마지막 value를 -1로 설정
-        if info.get('done_reason') == 'collision' and len(game_history.values) > 0:
-            game_history.values[-1] = -1.0
-        
-        if render:
-            print(f"\n게임 종료! 총 {step} 스텝")
-            print(f"종료 이유: {info.get('done_reason', 'unknown')}")
-            print(f"총 보상: {sum(game_history.rewards):.2f}")
-        
-        return game_history
-    
-    def play_games(self, num_games: int, temperature: float = 1.0) -> List[GameHistory]:
-        """여러 게임을 플레이"""
-        games = []
-        for i in range(num_games):
-            print(f"게임 {i+1}/{num_games} 플레이 중...")
-            game = self.play_game(temperature=temperature, render=False)
-            games.append(game)
-            
-            # 종료 이유 확인
-            done_reason = self.environment.done_reason
-            print(f"  - 길이: {game.get_length()} 스텝")
-            print(f"  - 총 보상: {sum(game.rewards):.2f}")
-            print(f"  - 종료 이유: {done_reason}")
-        
-        return games
-    
     def _select_action_stochastic(self, policy: np.ndarray, temperature: float) -> int:
         """정책에 따라 확률적으로 액션 선택"""
         if temperature == 0:
@@ -227,6 +86,7 @@ class SelfPlayManager:
         return replay_buffer
     
     def enrich_episodes_with_mcts(self, episodes: List['Episode']) -> List['Episode']:
+        # MCTS Simulation 게임 수행되는 곳
         """GT Episode에 MCTS 결과(policy, value) 추가
         
         Args:
@@ -270,7 +130,7 @@ class SelfPlayManager:
                     with torch.no_grad():
                         mcts_result = self.mcts.run(
                             observation_tensor,
-                            add_exploration_noise=False  # GT 데이터는 노이즈 없이
+                            add_exploration_noise=True  # GT 데이터는 노이즈 없이
                         )
                     
                     # Episode에 MCTS 결과 업데이트
@@ -338,42 +198,6 @@ class SelfPlayManager:
         return enriched_episodes
     
     
-    def _calculate_trajectory_following_reward(self, episode: Episode, step_idx: int) -> float:
-        """경로 추종 정확도 기반 value 계산
-        
-        특정 step_idx에서 simulated_ego_pos와 expert_ego_pos 간의 거리 오차를 기반으로 계산
-        """
-        # step_idx에 해당하는 스텝에서만 계산
-        if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
-            state = episode.states[step_idx]
-            sim_pos = state.get('simulated_ego_pos')
-            
-            # expert_ego_pos 추출
-            if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
-                expert_pos = episode.expert_ego_pos[step_idx]
-                
-                if sim_pos is not None and expert_pos is not None:
-                    # 둘 다 (row, col) 그리드 좌표
-                    if isinstance(expert_pos, tuple) and len(expert_pos) == 2 and \
-                       isinstance(sim_pos, tuple) and len(sim_pos) == 2:
-                        expert_row, expert_col = expert_pos
-                        sim_row, sim_col = sim_pos
-                        
-                        # 유클리드 거리 계산 (그리드 좌표 기준)
-                        distance = np.sqrt((sim_row - expert_row)**2 + (sim_col - expert_col)**2)
-                        
-                        # 디버깅: 거리 계산 과정 로그 출력
-                        reward_value = self._distance_to_value(distance)
-                        if step_idx < 3:  # 처음 3스텝만 로그 출력
-                            print(f"    - [Debug Reward] 스텝 {step_idx}: sim_pos=({sim_row}, {sim_col}), expert_pos=({expert_row}, {expert_col}), distance={distance:.3f}, reward={reward_value:.3f}")
-                        
-                        # 거리를 value로 변환하여 반환
-                        return reward_value
-        
-        # 정보가 없으면 0.0 반환
-        print(f"  - [Target Reward 계산 이상] 스텝 {step_idx}에서 simulated_ego_pos 또는 expert_ego_pos 정보가 없음. value: 0.0")
-        return 0.0
-    
     def _calculate_collision_reward(self, episode: Episode, step_idx: int) -> float:
         """충돌 기반 reward 계산
         
@@ -429,7 +253,7 @@ class SelfPlayManager:
         return 0.0  # 충돌 없음
     
     def _calculate_smoothness_reward(self, episode: Episode, step_idx: int) -> float:
-        """직진성 강화: 방향 일관성(코사인) + EMA 평활 + 반전 페널티
+        """직진성 강화: 방향 일관성(코사인)
            반환: [-0.02, 0.02]"""
         if step_idx < 2:
             return 0.0
@@ -450,122 +274,80 @@ class SelfPlayManager:
         prev_magnitude = np.linalg.norm(v_prev)
         curr_magnitude = np.linalg.norm(v_curr)
 
-        # 정체/미세 이동 페널티(단위-불변으로 너무 크게 주지 않음)
-        if prev_magnitude < 1e-3 or curr_magnitude < 1e-3:
-            return -0.005
+        # # 정체/미세 이동 페널티(단위-불변으로 너무 크게 주지 않음)
+        # if prev_magnitude < 1e-3 or curr_magnitude < 1e-3:
+        #     return -0.005
 
         cos = float(np.dot(v_prev, v_curr) / (prev_magnitude * curr_magnitude + 1e-8))
 
-        # EMA로 변동성 완화 (상태에 캐시) ... Exponential Moving Average
-        beta = getattr(self, "smooth_ema_beta", 0.7)  # 0(강평활)~1(무평활)
-        ema_key = "_smooth_cos_ema"
-        cos_ema = getattr(self, ema_key, cos)
-        cos_ema = beta * cos_ema + (1 - beta) * cos
-        setattr(self, ema_key, cos_ema)
-
-        # 방향 반전(부호 전환) 가벼운 추가 패널티
-        sign_flip_pen = -0.01 if np.sign(cos) != np.sign(cos_ema) else 0.0
-
-        # 스케일: ±0.1 내
-        base = 0.02 * cos_ema  # +0.05(동일) ~ -0.05(반대)
-        r = base + sign_flip_pen
-        return float(np.clip(r, -0.02, 0.02))
+        # 직진이면 +, 방향 전환이면 - (EMA 제거)
+        base = 0.02 * cos  # +0.02(동일방향) ~ -0.02(반대방향)
+        return float(np.clip(base, -0.02, 0.02))
     
     def _calculate_goal_following_reward(self, episode: Episode, step_idx: int) -> float:
-        """목표 접근 shaping (Potential-based)
-           r = α * clip( (w_cone * (γΦ(s') - Φ(s)) / step_norm), [-c_inner, c_inner] )
-           최종 반환: [-0.1, 0.1]"""
+        """간단한 목표 추종 reward: 가까워지면 +0.1, 멀어지면 -0.1"""
 
         st = episode.states
-        # if step_idx >= len(st) or not isinstance(st[step_idx], dict):
-        if step_idx >= len(st):
-            return 0.0
-        if not hasattr(episode, 'expert_ego_pos') or len(episode.expert_ego_pos) < 1:
+        if step_idx >= len(st) or not hasattr(episode, 'expert_ego_pos'):
             return 0.0
 
-        # --- 단위: grid(칸) → meter 변환 준비
-        meters_per_cell = getattr(self, "meters_per_cell", 0.2)  # 1 grid = 0.2 m
+        # 목표 위치
+        goal = episode.expert_ego_pos[-1]
 
-        def to_meters(pos):
-            p = np.array(pos, dtype=float)
-            return p * meters_per_cell  # pos가 이미 미터라면 1.0로
-
-        goal = to_meters(episode.expert_ego_pos[-1])
-        
-        # --- 현재 위치 (step 이전 위치)
-        # Episode 첫 스텝에 있는 값들은 시작기준으로 예측한 값 들임. 따라서, step_idx 가 0이면 시작위치(49, 49) 를 고정해서 넣어줌
+        # 이전 위치 (첫 스텝이면 시작점 49,49)
         if step_idx == 0:
-            p_t_g = (49, 49)  # Episode 시작 위치
+            prev_pos = (49, 49)
         else:
-            p_t_g = st[step_idx - 1].get('simulated_ego_pos')  # 이전 스텝 위치
-        if p_t_g is None:
-            return 0.0
-        p_t = to_meters(p_t_g)
-
-        # --- 다음 상태 (env.step() 후 위치 = 현재 스텝의 simulated_ego_pos)
-        p_tp1_g = st[step_idx].get('simulated_ego_pos')
-        if p_tp1_g is None:
-            return 0.0
-        p_tp1 = to_meters(p_tp1_g)
-        step_vec = p_tp1 - p_t
-
-        # --- 하이퍼파라미터
-        # gamma = getattr(self, "gamma", 0.99)  # 사용안함 (gamma_shaping=1.0 사용)
-        alpha_p = getattr(self, "alpha_p", 0.2)          # 최종 ±0.1 목표
-        c_inner = getattr(self, "prog_inner_clip", 0.5)
-        r_goal  = getattr(self, "r_goal_m", 0.3)         # 미터 단위 데드존 반경 (기본 0.3 m)
-
-        # --- 목표 근처 데드존 (진동/파밍 방지)
-        if np.linalg.norm(p_t - goal) <= r_goal:
-            return 0.0
-
-        # --- (선택) t+1 터미널 프레임에서는 shaping 0
-        #  episode.states[step_idx]['done'] 등이 있으면 확인해 0 반환
-        if step_idx + 1 < len(st):
-            done_next = st[step_idx].get('done')
-            if done_next is True:
+            prev_pos = st[step_idx - 1].get('simulated_ego_pos')
+            if prev_pos is None:
                 return 0.0
 
-        # --- 잠재함수: 유클리드 거리 음수 (추후 지오데식으로 교체 가능)
-        def Phi(pos):
-            return -np.linalg.norm(pos - goal)
+        # 현재 위치
+        curr_pos = st[step_idx].get('simulated_ego_pos')
+        if curr_pos is None:
+            return 0.0
 
-        # shaping 전용 gamma_shaping = 1.0 (바닥값 생기는거 막기 위함)
-        gamma_shaping = 1.0
-        delta_phi = gamma_shaping * Phi(p_tp1) - Phi(p_t)  # >0 접근, <0 이탈
+        # 거리 계산 (유클리드)
+        prev_dist = np.sqrt((prev_pos[0] - goal[0])**2 + (prev_pos[1] - goal[1])**2)
+        curr_dist = np.sqrt((curr_pos[0] - goal[0])**2 + (curr_pos[1] - goal[1])**2)
 
-        # --- 원뿔 가중 (선택) ... 사용하면 다중 해에 대한 확장성이 떨어짐
-        w = 1.0
-        if getattr(self, "use_cone", False):
-            gvec = goal - p_t
-            gmag = np.linalg.norm(gvec) + 1e-8
-            u = gvec / gmag
-            cone_half_angle = np.deg2rad(getattr(self, "cone_half_angle_deg", 25.0))
-            cone_radius     = getattr(self, "cone_radius_m", 1.5)  # meter 단위
+        # 가까워지면 +0.1, 멀어지면 -0.1, 동일하면 0
+        if curr_dist < prev_dist:
+            return 0.1
+        elif curr_dist > prev_dist:
+            return -0.1
+        else:
+            return 0.0
 
-            def cone_weight(pos):
-                d = pos - goal
-                s = float(np.dot(d, u))
-                e = d - s * u
-                e_perp = float(np.linalg.norm(e))
-                m = np.tan(cone_half_angle)
-                gap = e_perp - abs(s) * m
-                if gap <= 0:
-                    return 1.0
-                return 1.0 / (1.0 + gap / max(1e-6, cone_radius))
+    def _calculate_goal_direction_reward(self, episode: Episode, step_idx: int) -> float:
+        """목표 방향과 이동 방향의 내적 기반 유사도 활용하는 reward"""
 
-            w = 0.5 * (cone_weight(p_t) + cone_weight(p_tp1))
+        st = episode.states
+        # 현재 위치와 목표 위치
+        curr_pos = st[step_idx].get('simulated_ego_pos')
+        goal_pos = episode.expert_ego_pos[-1]
 
-        # --- 스텝 크기 정규화(무이동 가드)
-        step_norm = float(np.linalg.norm(step_vec))
-        if step_norm < 1e-6:
-            return 0.0  # 무이동이면 shaping 0
+        # 이전 위치 (이동 벡터 계산용)
+        if step_idx == 0:
+            prev_pos = (49, 49)
+        else:
+            prev_pos = st[step_idx - 1].get('simulated_ego_pos')
 
-        shaped = (w * delta_phi) / step_norm
+        # 벡터 계산
+        move_vector = np.array(curr_pos) - np.array(prev_pos)  # 실제 이동 방향
+        goal_vector = np.array(goal_pos) - np.array(prev_pos)  # 목표 방향
 
-        # --- 최종 보상 (내부→외부 클립)
-        r = alpha_p * np.clip(shaped, -c_inner, c_inner)
-        return float(np.clip(r, -0.1, 0.1))
+        # 내적으로 유사도 계산 (코사인 유사도)
+        move_mag = np.linalg.norm(move_vector)
+        goal_mag = np.linalg.norm(goal_vector)
+
+        if move_mag < 1e-6 or goal_mag < 1e-6:
+            return 0.0
+
+        cos_similarity = np.dot(move_vector, goal_vector) / (move_mag * goal_mag)
+
+        # 목표 방향이면 +0.1, 반대면 -0.1
+        return 0.1 * cos_similarity  # [-0.1, +0.1] 범위
 
     def _calculate_missing_rate_value(self, episode: Episode) -> float:
         """Missing Rate 기반 value 계산
@@ -636,7 +418,8 @@ class SelfPlayManager:
 
         # 2. 이전 경로에서 Episode 의 끝 위치로 가까워지는 행동이면 +, 아니면 -
         # Potential-based reward shaping으로 목표 접근을 학습
-        trajectory_goal_follow_reward = self._calculate_goal_following_reward(episode, step_idx)
+        # trajectory_goal_follow_reward = self._calculate_goal_following_reward(episode, step_idx)
+        trajectory_goal_follow_reward = self._calculate_goal_direction_reward(episode, step_idx)
 
         # 3. 장애물과 충돌 상황에 대한 패널티
         collision_reward = self._calculate_collision_reward(episode, step_idx)
@@ -688,11 +471,41 @@ class SelfPlayManager:
         
         # return np.clip(reward, -1.0, 1.0)
     
-    def _calculate_grid_distance(self, pos1: Tuple[int, int], pos2: Tuple[int, int]) -> float:
-        """두 그리드 좌표 간 유클리드 거리 계산"""
-        if pos1 is None or pos2 is None:
-            return float('inf')
-        return np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
+    def _calculate_trajectory_following_reward(self, episode: Episode, step_idx: int) -> float:
+        """경로 추종 정확도 기반 value 계산
+        
+        특정 step_idx에서 simulated_ego_pos와 expert_ego_pos 간의 거리 오차를 기반으로 계산
+        """
+        # step_idx에 해당하는 스텝에서만 계산
+        if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
+            state = episode.states[step_idx]
+            sim_pos = state.get('simulated_ego_pos')
+            
+            # expert_ego_pos 추출
+            if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
+                expert_pos = episode.expert_ego_pos[step_idx]
+                
+                if sim_pos is not None and expert_pos is not None:
+                    # 둘 다 (row, col) 그리드 좌표
+                    if isinstance(expert_pos, tuple) and len(expert_pos) == 2 and \
+                       isinstance(sim_pos, tuple) and len(sim_pos) == 2:
+                        expert_row, expert_col = expert_pos
+                        sim_row, sim_col = sim_pos
+                        
+                        # 유클리드 거리 계산 (그리드 좌표 기준)
+                        distance = np.sqrt((sim_row - expert_row)**2 + (sim_col - expert_col)**2)
+                        
+                        # 디버깅: 거리 계산 과정 로그 출력
+                        reward_value = self._distance_to_value(distance)
+                        if step_idx < 3:  # 처음 3스텝만 로그 출력
+                            print(f"    - [Debug Reward] 스텝 {step_idx}: sim_pos=({sim_row}, {sim_col}), expert_pos=({expert_row}, {expert_col}), distance={distance:.3f}, reward={reward_value:.3f}")
+                        
+                        # 거리를 value로 변환하여 반환
+                        return reward_value
+        
+        # 정보가 없으면 0.0 반환
+        print(f"  - [Target Reward 계산 이상] 스텝 {step_idx}에서 simulated_ego_pos 또는 expert_ego_pos 정보가 없음. value: 0.0")
+        return 0.0
     
     def _distance_to_value(self, distance: float) -> float:
         """거리 오차를 value로 변환 (더 엄격한 매핑)
@@ -784,8 +597,8 @@ class SelfPlayManager:
             j_boot = t + steps
             if j_boot < T:
                 v_boot = root_values[j_boot]
-                if v_boot is None:
-                    v_boot = self._infer_value_from_state(episode, j_boot)
+                if v_boot is None: # 사실상 동작하지 않는 코드
+                    v_boot = 0.0
                 G += discount * float(v_boot)
 
             targets[t] = G
@@ -794,20 +607,20 @@ class SelfPlayManager:
         # episode.target_values = targets
         return targets
     
-    def _infer_value_from_state(self, episode: Episode, idx: int) -> float:
-        """주어진 상태에서 네트워크로 value 추론"""
-        state_dict = episode.states[idx]
-        obs = build_observation_tensor(state_dict, self.config.observation_shape, 
-                                     self.device, self.config.use_obstacle_channels).unsqueeze(0)
+    # def _infer_value_from_state(self, episode: Episode, idx: int) -> float:
+    #     """주어진 상태에서 네트워크로 value 추론"""
+    #     state_dict = episode.states[idx]
+    #     obs = build_observation_tensor(state_dict, self.config.observation_shape, 
+    #                                  self.device, self.config.use_obstacle_channels).unsqueeze(0)
         
-        with torch.no_grad():
-            value_logits, _, _, _ = self.network.initial_inference(obs)
+    #     with torch.no_grad():
+    #         value_logits, _, _, _ = self.network.initial_inference(obs)
             
-            # Support distribution을 스칼라 값으로 변환
-            support = torch.arange(-self.config.support_size, 
-                                  self.config.support_size + 1, 
-                                  device=self.device, dtype=torch.float32)
-            prob = torch.softmax(value_logits, dim=1)
-            value = torch.sum(prob * support, dim=1).item()
+    #         # Support distribution을 스칼라 값으로 변환
+    #         support = torch.arange(-self.config.support_size, 
+    #                               self.config.support_size + 1, 
+    #                               device=self.device, dtype=torch.float32)
+    #         prob = torch.softmax(value_logits, dim=1)
+    #         value = torch.sum(prob * support, dim=1).item()
             
-        return value 
+    #     return value 

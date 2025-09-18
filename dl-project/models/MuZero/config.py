@@ -44,8 +44,8 @@ class MuZeroConfig:
         # GT Episode 생성 설정
         # josnl 의 줄 개수 < num_episodes * (max_episode_step_length - gt_episode_overlap) 이어야 함
         self.gt_num_episodes = 330 # 330  # GT 데이터에서 생성할 에피소드 수 (jsonl 파일 여러개면 더 많아도 됨. jsonl 이 현재 7700개 정도의 Steps 임. Episode * (Steps - Overlap Steps) 개수만큼 커버 가능)
-        self.max_episode_step_length = 50  # 에피소드 별 최대 스텝 수 (약 10초, 5Hz 기준). 너무 클 필요 없음. 1 스텝 최대이동이 0.2m 임. 50스텝=10m 이동
-        self.gt_episode_overlap = 25 #10 #25  # 에피소드 간 겹침 스텝 수
+        self.max_episode_step_length = 25  # 에피소드 별 최대 스텝 수 (약 10초, 5Hz 기준). 너무 클 필요 없음. 1 스텝 최대이동이 0.2m 임. 50스텝=10m 이동
+        self.gt_episode_overlap = 10 #10 #25  # 에피소드 간 겹침 스텝 수
         
         # Observation Provider 설정
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
@@ -57,12 +57,13 @@ class MuZeroConfig:
         # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170226_81.jsonl")  # 단일 파일 ... 주행 전 대기상태 데이터임
         # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170326_82.jsonl")  # 단일 파일 ... 정상 주행 데이터. 보행자에 가려 멈추는 씬 많음
         # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170426_83.jsonl")  # 단일 파일 ... 정상 주행 데이터
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170626_85.jsonl")  # 단일 파일 ... 정상 주행 데이터
         self.use_obstacle_channels = True  # False: 방향 벡터만 사용, True: 장애물 채널도 사용
 
         # Self-Play 설정
         self.num_workers = 1
         self.selfplay_on_gpu = False
-        self.num_simulations = 30  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
+        self.num_simulations = 50  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
         self.discount = 0.997
         self.temperature_threshold = None
         self.num_stochastic_steps = 30  # [지금 얘 안씀] 초기 30스텝 동안 확률적 행동 선택
@@ -88,12 +89,12 @@ class MuZeroConfig:
         # 학습 설정
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
-        self.training_steps = 100  # 1000 Epoch 하나에 Step 횟수 (=Epoch 당 가중치 업데이트 횟수)
+        self.training_steps = 500  # 1000 Epoch 하나에 Step 횟수 (=Epoch 당 가중치 업데이트 횟수)
         self.unroll_steps = 5  # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
         self.batch_size = 128  # 32 -> 128 (GPU 메모리 활용도 최대화)
         self.value_loss_weight = 1
         self.train_on_gpu = torch.cuda.is_available()
-        self.num_training_epochs = 200  # 몇 번의 Epoch 를 돌릴건지
+        self.num_training_epochs = 1000  # 200 몇 번의 Epoch 를 돌릴건지
         self.replay_buffer_size = 400  # 더 많은 데이터 보관용
 
         # 체크포인트 저장 설정
@@ -104,7 +105,7 @@ class MuZeroConfig:
 
         # 체크포인트 재개 설정
         self.resume_checkpoint_path = None  # 재개할 체크포인트 경로 (None이면 새로 시작)
-        # self.resume_checkpoint_path = "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-10--20-17-02/checkpoints/muzero_epoch_25.pth"
+        # self.resume_checkpoint_path = "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-13--02-35-11/checkpoints/muzero_epoch_200.pth"
         # "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-02--10-03-53/checkpoints/muzero_epoch_15.pth"
         # 예: "models/MuZero/results/2025-09-02--00-11-57/checkpoints/muzero_epoch_5.pth"
         
