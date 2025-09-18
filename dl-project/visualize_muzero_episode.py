@@ -1276,8 +1276,8 @@ def main():
                        help='로드할 Episode 수 (기본값: 5)')
     parser.add_argument('--episode-step-length', type=int, default=config.max_episode_step_length,
                        help=f'Episode 스텝 길이 (기본값: {config.max_episode_step_length})')
-    parser.add_argument('--overlap', type=int, default=25,
-                       help='Episode 간 겹침 (기본값: 25)')
+    parser.add_argument('--overlap', type=int, default=config.gt_episode_overlap,
+                       help=f'Episode 간 겹침 (기본값: {config.gt_episode_overlap})')
     parser.add_argument('--interval', type=int, default=200,
                        help='애니메이션 프레임 간격 (ms, 기본값: 200)')
     parser.add_argument('--data-path', type=str, default=None,

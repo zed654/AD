@@ -33,9 +33,13 @@ cd dl-project
 #### 2. 가상환경 설정 및 패키지 설치
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+conda create -n chp_env
+conda activate chp_env
+conda install pytorch=2.2 torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia -y
+
+# python -m venv venv
+# source venv/bin/activate
+# pip install -r requirements.txt
 ```
 
 ## 사용 방법
