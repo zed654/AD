@@ -33,9 +33,24 @@ cd dl-project
 #### 2. 가상환경 설정 및 패키지 설치
 
 ```bash
-conda create -n chp_env
+conda create -n chp_env python=3.10 -y
 conda activate chp_env
-conda install pytorch=2.2 torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia -y
+conda install pytorch=2.1.0 torchvision=0.16.0 torchaudio=2.1.0 pytorch-cuda=12.1 -c pytorch -c nvidia -y
+
+pip install matplotlib pillow scipy tensorboard
+pip install "numpy<2.0"
+
+Test
+ - GPU 사용 가능 여부 확인
+      python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}'); print(f'GPU count: {torch.cuda.device_count()}')"
+
+Issue
+- Intel VTune 애러 발생 시
+    conda install intel::intel-vtune-profiler -y
+    export PYTORCH_JIT=0
+    export INTEL_JIT_PROFILING=0
+- 선택사항
+    export CUDA_VISIBLE_DEVICES=1
 
 # python -m venv venv
 # source venv/bin/activate
