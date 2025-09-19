@@ -33,9 +33,24 @@ cd dl-project
 #### 2. 가상환경 설정 및 패키지 설치
 
 ```bash
-conda create -n chp_env python=3.10 -y
-conda activate chp_env
-conda install pytorch=2.1.0 torchvision=0.16.0 torchaudio=2.1.0 pytorch-cuda=12.1 -c pytorch -c nvidia -y
+# ROS2
+conda install -c conda-forge mamba
+mamba create -n chp_env python=3.10
+mamba activate chp_env
+mamba install -c conda-forge colcon-common-extensions
+
+conda config --env --add channels conda-forge
+conda config --env --add channels robostack-staging
+conda config --env --remove channels defaults
+mamba install ros-humble-desktop
+
+# ETC
+mamba install -c conda-forge tqdm
+
+# Pytorch
+# conda create -n chp_env python=3.10 -y
+mamba activate chp_env
+mamba install pytorch=2.1.0 torchvision=0.16.0 torchaudio=2.1.0 pytorch-cuda=12.1 -c pytorch -c nvidia -y
 
 pip install matplotlib pillow scipy tensorboard
 pip install "numpy<2.0"
@@ -51,6 +66,21 @@ Issue
     export INTEL_JIT_PROFILING=0
 - 선택사항
     export CUDA_VISIBLE_DEVICES=1
+```
+
+# tmux 설치
+# 목적: 터미널 분리 (SSH 접속 후, 연결 끊겨도 살아있음)
+```bash
+  ㅁ tmux 사용법
+   - 새로운 새션 열기: tmux new -s train
+   - 새션 목록 확인: tmux ls
+   - 새선 재접속: tmux attach -t train
+   - 새션 분리법: tmux detach
+   - 접속 여부 확인: echo $TMUX
+   - 세션 종료: tmux kill-session -t train 혹은 exit
+
+mamba activate chp_env
+conda install -c conda-forge tmux
 
 # python -m venv venv
 # source venv/bin/activate

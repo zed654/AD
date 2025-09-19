@@ -41,35 +41,6 @@ class MuZeroConfig:
         self.goal_threshold = 1.0  # 목표 도달 판정 거리
         self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
         
-        # GT Episode 생성 설정
-        # josnl 의 줄 개수 < num_episodes * (max_episode_step_length - gt_episode_overlap) 이어야 함
-        self.gt_num_episodes = 330 # 330  # GT 데이터에서 생성할 에피소드 수 (jsonl 파일 여러개면 더 많아도 됨. jsonl 이 현재 7700개 정도의 Steps 임. Episode * (Steps - Overlap Steps) 개수만큼 커버 가능)
-        self.max_episode_step_length = 25  # 에피소드 별 최대 스텝 수 (약 10초, 5Hz 기준). 너무 클 필요 없음. 1 스텝 최대이동이 0.2m 임. 50스텝=10m 이동
-        self.gt_episode_overlap = 10 #10 #25  # 에피소드 간 겹침 스텝 수
-        
-        # Observation Provider 설정
-        self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
-        # GT 데이터 경로: 파일(.jsonl) 또는 폴더 경로 모두 지원
-        self.gt_data_path = Path("data/db3_parser/results/")  # 폴더 경로로 변경하면 모든 JSONL 파일 로드
-        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일 ... 정상 주행 데이터 (코너 상황 대표 샘플)
-        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171226_91.jsonl")  # 단일 파일 ... Episode 5 에서 Near Destination 조금 이상함
-        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170026_79.jsonl")  # 단일 파일 ... 주행 전 대기상태 데이터임
-        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170226_81.jsonl")  # 단일 파일 ... 주행 전 대기상태 데이터임
-        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170326_82.jsonl")  # 단일 파일 ... 정상 주행 데이터. 보행자에 가려 멈추는 씬 많음
-        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170426_83.jsonl")  # 단일 파일 ... 정상 주행 데이터
-        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170626_85.jsonl")  # 단일 파일 ... 정상 주행 데이터
-        self.use_obstacle_channels = True  # False: 방향 벡터만 사용, True: 장애물 채널도 사용
-
-        # Self-Play 설정
-        self.num_workers = 1
-        self.selfplay_on_gpu = False
-        self.num_simulations = 50  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
-        self.discount = 0.997
-        self.temperature_threshold = None
-        self.num_stochastic_steps = 30  # [지금 얘 안씀] 초기 30스텝 동안 확률적 행동 선택
-        self.max_game_length = 500  # Self-play 안전장치 (무한루프 방지)
-        self.num_selfplay_games = 5  # Self-play로 실행할 게임 수
-
         # PUCB 하이퍼 파라미터 설정
         self.pb_c_base = 19652
         self.pb_c_init = 1.25
@@ -86,19 +57,56 @@ class MuZeroConfig:
         self.fc_value_layers = [32, 16]
         self.fc_policy_layers = [32, 16]
 
+        # Observation Provider 설정
+        self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
+        # GT 데이터 경로: 파일(.jsonl) 또는 폴더 경로 모두 지원
+        self.gt_data_path = Path("data/db3_parser/results/")  # 폴더 경로로 변경하면 모든 JSONL 파일 로드
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일 ... 정상 주행 데이터 (코너 상황 대표 샘플)
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171226_91.jsonl")  # 단일 파일 ... Episode 5 에서 Near Destination 조금 이상함
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170026_79.jsonl")  # 단일 파일 ... 주행 전 대기상태 데이터임
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170226_81.jsonl")  # 단일 파일 ... 주행 전 대기상태 데이터임
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170326_82.jsonl")  # 단일 파일 ... 정상 주행 데이터. 보행자에 가려 멈추는 씬 많음
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170426_83.jsonl")  # 단일 파일 ... 정상 주행 데이터
+        # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170626_85.jsonl")  # 단일 파일 ... 정상 주행 데이터
+        self.use_obstacle_channels = True  # False: 방향 벡터만 사용, True: 장애물 채널도 사용
+
+        # GT Episode 생성 설정
+        # josnl 의 줄 개수 < num_episodes * (max_episode_step_length - gt_episode_overlap) 이어야 함
+        self.gt_num_episodes = 999999 # 모든데이터 사용하려면 999999 로 설정  # GT 데이터에서 생성할 에피소드 수 (jsonl 파일 여러개면 더 많아도 됨. jsonl 이 현재 7700개 정도의 Steps 임. Episode * (Steps - Overlap Steps) 개수만큼 커버 가능)
+        self.max_episode_step_length = 25  # 에피소드 별 최대 스텝 수 (약 10초, 5Hz 기준). 너무 클 필요 없음. 1 스텝 최대이동이 0.2m 임. 50스텝=10m 이동
+        self.gt_episode_overlap = 10 # 10 . 25  # 에피소드 간 겹침 스텝 수
+        self.replay_buffer_size = 330000  # 더 많은 데이터 보관용
+        
+        # Self-Play 설정
+        self.num_workers = 1
+        self.selfplay_on_gpu = False
+        self.num_simulations = 50  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
+        self.discount = 0.997
+        self.temperature_threshold = None
+        self.num_stochastic_steps = 30  # [지금 얘 안씀] 초기 30스텝 동안 확률적 행동 선택
+        self.max_game_length = 500  # Self-play 안전장치 (무한루프 방지)
+        self.num_selfplay_games = 5  # Self-play로 실행할 게임 수
+
         # 학습 설정
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
-        self.training_steps = 500  # 1000 Epoch 하나에 Step 횟수 (=Epoch 당 가중치 업데이트 횟수)
+        self.num_iterations = 100 # {Self-Play - 학습} 사이클 반복 횟수
+        self.training_steps = 1000  # 1000. K-Step Unrolling 반복 횟수
         self.unroll_steps = 5  # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
         self.batch_size = 128  # 32 -> 128 (GPU 메모리 활용도 최대화)
         self.value_loss_weight = 1
         self.train_on_gpu = torch.cuda.is_available()
-        self.num_training_epochs = 1000  # 200 몇 번의 Epoch 를 돌릴건지
-        self.replay_buffer_size = 400  # 더 많은 데이터 보관용
+        
+        # 학습 중 시각화 설정
+        self.enable_training_visualization = True  # 학습 중 시각화 생성 여부
+        self.visualization_interval_step = 50  # training_steps 몇 스텝마다 PNG 시각화 할지
+        self.visualization_num_episodes = 3  # PNG 에 시각화할 Episode 수 (최대)
+        # self.visualization_min_episode_length = 10  # 시각화할 Episode 의 Step 최소 길이
+        self.visualization_dpi = 150  # 이미지 저장 DPI
+        self.visualization_figsize = (10, 10)  # 그림 크기 (width, height)
 
-        # 체크포인트 저장 설정
-        self.checkpoint_interval = 5  # 10 → 5로 변경 (5 에폭마다 시각화)
+        # pth 체크포인트 저장 설정
+        self.pth_checkpoint_interval_step = 50  # training_steps 몇 스텝마다 체크포인트 저장할지
         self.checkpoint_save_dir = "checkpoints"  # 체크포인트 저장 디렉토리 이름
         self.checkpoint_final_name = "muzero_final.pth"  # 최종 모델 파일명
         self.checkpoint_epoch_prefix = "muzero_epoch_"  # 에폭별 체크포인트 파일명 접두사
@@ -124,15 +132,6 @@ class MuZeroConfig:
         self.lr_decay_rate = 0.8  # 원래값 복원
         self.lr_decay_steps = 1000  # 원래값 복원
         
-        
-        
-        # 학습 중 시각화 설정
-        self.enable_training_visualization = True  # 학습 중 시각화 생성 여부
-        self.visualization_interval = 1  # 몇 에폭마다 시각화 생성할지 (기본: checkpoint_interval과 동일)
-        self.visualization_num_episodes = 3  # 시각화할 Episode 수 (최대)
-        self.visualization_min_episode_length = 10  # 시각화할 Episode 최소 길이
-        self.visualization_dpi = 150  # 이미지 저장 DPI
-        self.visualization_figsize = (10, 10)  # 그림 크기 (width, height)
         
         # 평가 설정
         self.eval_num_episodes = 100  # 평가할 에피소드 수

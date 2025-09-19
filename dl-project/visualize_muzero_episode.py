@@ -9,21 +9,29 @@ os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = ''
 
 import matplotlib
 
-# GUI 가용성 확인
+# 안전한 백엔드 설정
 GUI_AVAILABLE = False
 if 'DISPLAY' in os.environ and os.environ['DISPLAY']:
+    # GUI 환경에서는 안전한 백엔드 시도
     try:
-        import tkinter
-        root = tkinter.Tk()
-        root.withdraw()
-        root.destroy()
-        matplotlib.use('TkAgg')
+        # Qt 백엔드 시도 (가장 안정적)
+        matplotlib.use('Qt5Agg')
         GUI_AVAILABLE = True
+        print("Using Qt5Agg backend")
     except:
-        pass
-
-if not GUI_AVAILABLE:
+        try:
+            # TkAgg 백엔드 시도
+            matplotlib.use('TkAgg')
+            GUI_AVAILABLE = True
+            print("Using TkAgg backend")
+        except:
+            # 모든 GUI 백엔드 실패시 Agg 사용
+            matplotlib.use('Agg')
+            print("GUI backends failed, using Agg (save-only mode)")
+else:
+    # DISPLAY 없으면 Agg 사용
     matplotlib.use('Agg')
+    print("No DISPLAY detected, using Agg backend")
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -438,15 +446,23 @@ class EpisodeInteractiveVisualizer:
         
         self.check_buttons = CheckButtons(self.ax_toggle, labels, visibility)
         
-        # 버튼 크기 조정 (더 작게)
-        for rect in self.check_buttons.rectangles:
-            rect.set_width(0.08)
-            rect.set_height(0.08)
-        
+        # 버튼 크기 조정 (더 작게) - matplotlib 버전 호환성 처리
+        try:
+            if hasattr(self.check_buttons, 'rectangles'):
+                for rect in self.check_buttons.rectangles:
+                    rect.set_width(0.08)
+                    rect.set_height(0.08)
+        except AttributeError:
+            pass  # matplotlib 버전에 따라 rectangles 속성이 없을 수 있음
+
         # X 표시 크기 조정
-        for line in self.check_buttons.lines:
-            for l in line:
-                l.set_markersize(4)  # X 표시 크기 축소
+        try:
+            if hasattr(self.check_buttons, 'lines'):
+                for line in self.check_buttons.lines:
+                    for l in line:
+                        l.set_markersize(4)  # X 표시 크기 축소
+        except AttributeError:
+            pass  # matplotlib 버전에 따라 lines 속성이 없을 수 있음
         
         # 버튼 클릭 이벤트 연결
         def on_toggle(label):
@@ -884,13 +900,13 @@ class EpisodeInteractiveVisualizer:
             step_text += f"Done: {done}\n"
         
         # Policy (Top 5)
-        if self.current_step < len(episode.policies) and episode.policies[self.current_step] is not None:
-            policy = episode.policies[self.current_step]
+        if self.current_step < len(episode.pi) and episode.pi[self.current_step] is not None:
+            pi = episode.pi[self.current_step]
             step_text += f"\nPolicy (Top 5):\n"
-            top_actions = np.argsort(policy)[-5:][::-1]
+            top_actions = np.argsort(pi)[-5:][::-1]
             for i, action_idx in enumerate(top_actions):
                 action = Action.from_index(action_idx)
-                prob = policy[action_idx]
+                prob = pi[action_idx]
                 step_text += f"  {i+1}. Action {action_idx} ({action.position.value}): {prob:.3f}\n"
         else:
             step_text += f"\nPolicy: None (GT data)\n"
@@ -990,11 +1006,11 @@ class EpisodeInteractiveVisualizer:
         if self.artists['policy_bars'] is not None:
             self.artists['policy_bars'].remove()
         
-        if self.current_step < len(episode.policies) and episode.policies[self.current_step] is not None:
-            policy = episode.policies[self.current_step]
+        if self.current_step < len(episode.pi) and episode.pi[self.current_step] is not None:
+            pi = episode.pi[self.current_step]
             # 상위 9개 액션만 표시
-            top_actions = np.argsort(policy)[-9:]
-            top_probs = policy[top_actions]
+            top_actions = np.argsort(pi)[-9:]
+            top_probs = pi[top_actions]
             
             # 막대 그래프
             y_pos = np.linspace(0.3, 0.05, len(top_actions))
@@ -1247,12 +1263,12 @@ def save_episode_frames(episodes: List[Episode], config: MuZeroConfig,
                 info_text += f"Reward: {episode.rewards[step_idx]:.3f}\n"
                 
                 # Policy top 3
-                if step_idx < len(episode.policies) and episode.policies[step_idx] is not None:
-                    policy = episode.policies[step_idx]
-                    top_actions = np.argsort(policy)[-3:][::-1]
+                if step_idx < len(episode.pi) and episode.pi[step_idx] is not None:
+                    pi = episode.pi[step_idx]
+                    top_actions = np.argsort(pi)[-3:][::-1]
                     info_text += f"\nTop Actions:\n"
                     for j, a in enumerate(top_actions):
-                        info_text += f"{j+1}. {a}: {policy[a]:.3f}\n"
+                        info_text += f"{j+1}. {a}: {pi[a]:.3f}\n"
             
             ax_info.text(0.1, 0.9, info_text, transform=ax_info.transAxes,
                         verticalalignment='top', fontsize=10, family='monospace')

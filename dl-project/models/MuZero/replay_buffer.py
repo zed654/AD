@@ -14,7 +14,7 @@ class Episode:
         self.actions = []     # 액션 목록 (self-play로 선택된 action)
         self.expert_ego_pos = []  # 전문가 ego 위치 목록 (GT 그리드 좌표 (row, col) 튜플) 
         self.rewards = []     # 보상 목록
-        self.policies = []    # MCTS 정책 목록
+        self.pi = []    # MCTS 방문분포 목록 (π)
         self.values = []      # MCTS 가치 목록
         self.dones = []       # 종료 여부 목록
         
@@ -23,13 +23,13 @@ class Episode:
         self.start_frame = start_frame      # 시작 프레임 번호
         self.end_frame = end_frame          # 종료 프레임 번호
         
-    def add_step(self, state, action, reward, policy=None, value=None, done=False, expert_ego_pos=None):
+    def add_step(self, state, action, reward, pi=None, value=None, done=False, expert_ego_pos=None):
         """한 스텝의 데이터 추가"""
         self.states.append(state)
         self.actions.append(action)
         self.expert_ego_pos.append(expert_ego_pos)
         self.rewards.append(reward)
-        self.policies.append(policy)
+        self.pi.append(pi)
         self.values.append(value)
         self.dones.append(done)
         
@@ -68,28 +68,28 @@ class ReplayBuffer:
         if hasattr(episode, 'source_file') and episode.source_file:
             print(f"Episode 추가: {episode.source_file} (프레임 {episode.start_frame}-{episode.end_frame}, 길이: {len(episode)})")
         
-    def save_game(self, game_history):
-        """GameHistory를 Episode로 변환하여 저장
+    # def save_game(self, game_history):
+    #     """GameHistory를 Episode로 변환하여 저장
         
-        Args:
-            game_history: SelfPlayManager의 GameHistory 객체
-        """
-        episode = Episode()
+    #     Args:
+    #         game_history: SelfPlayManager의 GameHistory 객체
+    #     """
+    #     episode = Episode()
         
-        # GameHistory 데이터를 Episode 형식으로 변환
-        for i in range(len(game_history.observations)):
-            done = (i == len(game_history.observations) - 1)  # 마지막 스텝인지 확인
+    #     # GameHistory 데이터를 Episode 형식으로 변환
+    #     for i in range(len(game_history.observations)):
+    #         done = (i == len(game_history.observations) - 1)  # 마지막 스텝인지 확인
             
-            episode.add_step(
-                state=game_history.observations[i],
-                action=game_history.actions[i],
-                reward=game_history.rewards[i],
-                policy=game_history.policies[i],
-                value=game_history.values[i],
-                done=done
-            )
+    #         episode.add_step(
+    #             state=game_history.observations[i],
+    #             action=game_history.actions[i],
+    #             reward=game_history.rewards[i],
+    #             pi=game_history.pi[i],
+    #             value=game_history.values[i],
+    #             done=done
+    #         )
         
-        self.save_episode(episode)
+    #     self.save_episode(episode)
         
     def get_batch(self, batch_size: int) -> Optional[List[Episode]]:
         """학습용 배치 샘플링 (sample_episodes 사용)"""

@@ -11,7 +11,7 @@ This is a deep learning project for autonomous driving that processes ROS2 bag f
 The Ego Agent is Mobile Robot (Simply, think of it like Humanoid Robots)
 
 ## Common Commands
-프로그램을 실행하기 전에 Conda 환경을 사용해야해. 환경 활성화 방법은 커맨드라인에 conda_init 입력(alias 등록되어있어)하여 conda 환경 불러온 후, conda activate pytorch_2_2 입력하여 설정 가능해
+프로그램을 실행하기 전에 Conda 환경을 사용해야해. 환경 활성화 방법은 커맨드라인에 conda_init 입력(alias 등록되어있어)하여 conda 환경 불러온 후, conda activate chp_env 입력하여 설정 가능해
 
 작업 이후에는 항상 검증을해서 정상적인 동작이 가능한 상태인지 직접 변경된 코드를 실행시켜서 확인해야해
 동작 가능 상태태이고 아키텍처가 변경된 경우라면, CLAUDE.md 에 변경된 아키텍처들을 업데이트해줘. 업데이트 할 때 오늘의 날짜(yyyy-mm-dd)를 서버시간을 기준으로 기입해줘야해. 서버시간으로 묶어 기록 이후에, 전체 내용을 요약하는 설명 부분에도 변경점을 잘 정리해서 반영해야해.
@@ -146,7 +146,70 @@ The `models/SSR/` contains template implementations for Structured State Represe
    - Reward: Immediate reward for single step
    - Value: Expected sum of future rewards (used for training targets)
 
-## Recent Updates (2025-09-12)
+## Recent Updates (2025-09-19)
+
+### MuZero 학습 구조 개선 및 최적화 (2025-09-19)
+
+#### 1. **GT 데이터 폴더 전체 활용**
+모든 JSONL 파일을 학습에 활용하도록 설정 변경:
+- **폴더 경로 사용**: `gt_data_path = Path("data/db3_parser/results/")`
+- **모든 데이터 활용**: `gt_num_episodes = 999999` (안전장치로 가능한 만큼만 생성)
+- **다중 파일 지원**: ExpertDataLoader가 폴더 내 모든 JSONL 파일 자동 로드
+- **데이터 품질 향상**: 단일 파일 대신 전체 데이터셋으로 더 robust한 학습
+
+#### 2. **학습 아키텍처 단순화**
+불필요한 중첩 루프 제거 및 책임 분리:
+- **Epoch 개념 정리**: MuZero에서 training_steps가 실질적인 epoch 역할
+- **구조 단순화**: `iteration → training_steps` (기존 `iteration → epoch → training_steps` 제거)
+- **책임 분리**:
+  - `main_muzero.py`: 전체 워크플로우 관리
+  - `train.py`: 순수 학습 로직 및 시각화
+- **Deep Copy 적용**: Episode 객체 수정 방지로 replay buffer 안정성 확보
+
+#### 3. **Replay Buffer 최적화**
+버퍼 관리 및 데이터 품질 개선:
+- **FIFO 방식**: 오래된 Episode 자동 제거로 메모리 효율성
+- **용량 증가**: `replay_buffer_size = 330000` (더 많은 데이터 보관)
+- **Episode 추적**: 출처 정보 (source_file, start_frame, end_frame) 관리
+- **깊은 복사**: 원본 expert_episodes 보호로 데이터 무결성 보장
+
+#### 4. **시각화 및 모니터링 강화**
+학습 진행 상황 실시간 확인:
+- **학습 시각화**: `enable_training_visualization = True`
+- **저장 간격**: `visualization_interval_step = 10`
+- **체크포인트**: `pth_checkpoint_interval_step = 10`
+- **손실 추적**: value_loss, policy_loss, reward_loss 개별 모니터링
+
+#### 5. **성능 설정 최적화**
+현재 학습 파라미터:
+```python
+# 핵심 학습 설정
+self.num_iterations = 10          # Iteration 수
+self.training_steps = 10          # Step당 학습 (일시적 축소, 원래 1000)
+self.num_simulations = 50         # MCTS 시뮬레이션 횟수
+self.batch_size = 128             # 배치 크기
+self.unroll_steps = 5             # K-step unrolling
+
+# Episode 생성 설정
+self.gt_num_episodes = 999999     # 모든 데이터 활용
+self.max_episode_step_length = 25 # Episode 길이
+self.gt_episode_overlap = 10      # 중첩 스텝
+```
+
+#### 6. **학습 데이터 플로우**
+1. **GT 데이터 로드**: 폴더 내 모든 JSONL 파일에서 Episode 생성
+2. **MCTS Enrichment**: `enrich_episodes_with_mcts()`로 정책/가치 계산
+3. **Replay Buffer**: 풍부해진 Episode들을 FIFO 방식으로 저장
+4. **배치 학습**: K-step unrolling으로 네트워크 업데이트
+5. **체크포인트**: 주기적으로 모델 상태 저장
+
+#### 7. **예상 학습 효과**
+- **데이터 다양성**: 전체 데이터셋 활용으로 일반화 성능 향상
+- **학습 안정성**: Deep copy와 버퍼 관리로 데이터 무결성 보장
+- **모니터링**: 실시간 시각화로 학습 진행 상황 명확히 파악
+- **확장성**: 새로운 JSONL 파일 추가 시 자동으로 학습 데이터에 포함
+
+## Previous Updates (2025-09-12)
 
 ### Predicted Path 우측상단 수렴 문제 분석 (2025-09-12)
 
@@ -429,7 +492,7 @@ self.dynamics_reward_network = mlp(reward_input_size, fc_reward_layers, support_
 1. **MCTS 버그 수정**:
    - `_recurrent_inference`에서 `hidden_state`를 올바른 device로 이동
    - 루트 노드 `visit_count=0`일 때 PUCT 탐색항이 0이 되는 문제 수정 (`max(parent.visit_count, 1)` 사용)
-   - `_get_policy_targets`에서 분모가 0인 경우 처리 (균등 분포 반환)
+   - `_get_pi_targets`에서 분모가 0인 경우 처리 (균등 분포 반환)
    - softmax 계산 시 `dim=-1` 사용으로 일관성 개선
    - config의 `pb_c_init`, `pb_c_base` 값을 MCTS에 전달하도록 수정
 
@@ -630,7 +693,7 @@ self.dynamics_reward_network = mlp(reward_input_size, fc_reward_layers, support_
    - states: observation dictionary (obstacles, objects, ldm 등)
    - expert_ego_pos: GT에서 추출한 전문가 위치 (그리드 좌표)
    - actions: self-play action (초기값 0)
-   - policies: MCTS가 계산한 action 확률 분포
+   - pi: MCTS가 계산한 방문횟수분포
    - values: MCTS가 예측한 상태 가치
    - rewards: 이동 거리 기반 계산
 

@@ -179,7 +179,7 @@ class MCTS:
         # 액션 선택 및 정책 타겟 계산
         action = self._select_action(root, temperature=1.0) # 시뮬레이션 종료 후 방문 횟수에 따른 액션 선택
         # action = 6  # Test 용 - 최종 선택도 2로 강제 FIXME: remove this line
-        policy_targets = self._get_policy_targets(root)
+        policy_targets = self._get_pi_targets(root)
         
         # 트리의 전체 노드 개수 (디버깅용)
         total_nodes = root.count_nodes()
@@ -285,21 +285,21 @@ class MCTS:
             
         return action
         
-    def _get_policy_targets(self, root: Node) -> np.ndarray:
-        """정책 타겟 계산 (방문 횟수 분포)"""
-        policy = np.zeros(self.action_space_size)
-        
+    def _get_pi_targets(self, root: Node) -> np.ndarray:
+        """π(pi) 타겟 계산 (방문 횟수 분포)"""
+        pi = np.zeros(self.action_space_size)
+
         for action, child in root.children.items():
-            policy[action] = child.visit_count
-            
+            pi[action] = child.visit_count
+
         # 정규화 (분모가 0인 경우 균등 분포 반환)
-        total_visits = np.sum(policy)
+        total_visits = np.sum(pi)
         if total_visits > 0:
-            policy = policy / total_visits
+            pi = pi / total_visits
         else:
             # 방문이 없는 경우 균등 분포
-            policy = np.ones(self.action_space_size) / self.action_space_size
-        return policy
+            pi = np.ones(self.action_space_size) / self.action_space_size
+        return pi
         
     def _initial_inference(self, observation: torch.Tensor) -> Dict:
         """초기 추론"""

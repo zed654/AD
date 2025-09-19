@@ -10,7 +10,7 @@ You will:
 
 1. **Analyze Episode Structure Changes**: Carefully examine any modifications to Episode-related code in the MuZero implementation, including:
    - Changes to Episode class definition
-   - Modifications to how Episodes store states, actions, policies, values, rewards
+   - Modifications to how Episodes store states, actions, pi, values, rewards
    - Updates to expert_data_loader.py or self_play.py that affect Episode creation
    - Changes in data_parser.py that impact observation structure
 

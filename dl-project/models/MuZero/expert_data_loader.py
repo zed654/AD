@@ -236,7 +236,7 @@ class ExpertDataLoader:
                 action=0,           # self-play action은 0으로 초기화 (POS0: 현재 위치)
                 expert_ego_pos=expert_ego_positions[i],  # GT에서 추출한 전문가 ego 위치 (그리드 좌표)
                 reward=0.0,         # GT에서는 항상 0
-                policy=None,        # MCTS/self-play에서 계산됨 (Action 개수만큼 있어야함)
+                pi=None,        # MCTS/self-play에서 계산됨 (Action 개수만큼 있어야함)
                 value=0.0,          # 0으로 초기화
                 done=(i == len(expert_ego_positions) - 1)
             )

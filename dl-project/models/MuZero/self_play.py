@@ -19,14 +19,14 @@ class GameHistory:
         self.observations = []
         self.actions = []
         self.rewards = []
-        self.policies = []
+        self.pi = []
         self.values = []
         
-    def store(self, observation, action, reward, policy, value):
+    def store(self, observation, action, reward, pi, value):
         self.observations.append(observation)
         self.actions.append(action)
         self.rewards.append(reward)
-        self.policies.append(policy)
+        self.pi.append(pi)
         self.values.append(value)
         
     def get_length(self):
@@ -58,36 +58,9 @@ class SelfPlayManager:
             device=device
         )
         
-    def _select_action_stochastic(self, policy: np.ndarray, temperature: float) -> int:
-        """정책에 따라 확률적으로 액션 선택"""
-        if temperature == 0:
-            return np.argmax(policy)
-        
-        # 온도 적용
-        policy_temp = policy ** (1 / temperature)
-        policy_temp = policy_temp / policy_temp.sum()
-        
-        # 확률적 선택
-        return np.random.choice(len(policy), p=policy_temp)
-    
-    def collect_self_play_data(self, num_games: int, buffer_capacity: int = 1000) -> ReplayBuffer:
-        """Self-play 데이터 수집"""
-        replay_buffer = ReplayBuffer(capacity=buffer_capacity)
-        
-        games = self.play_games(num_games)
-        
-        for game in games:
-            replay_buffer.save_game(game)
-        
-        print(f"\nReplay Buffer 상태:")
-        print(f"  - 저장된 에피소드: {replay_buffer.size()}")
-        print(f"  - 총 누적 에피소드: {replay_buffer.total_episodes()}")
-        
-        return replay_buffer
-    
     def enrich_episodes_with_mcts(self, episodes: List['Episode']) -> List['Episode']:
         # MCTS Simulation 게임 수행되는 곳
-        """GT Episode에 MCTS 결과(policy, value) 추가
+        """GT Episode에 MCTS 결과(π, value) 추가
         
         Args:
             episodes: GT 데이터로부터 생성된 Episode 리스트
@@ -126,7 +99,7 @@ class SelfPlayManager:
                     # MCTS 실행
                     # - representation(): observation → latent
                     # - 시뮬레이션: dynamics()로 미래 예측, prediction()으로 policy/value 계산
-                    # - 최적 action 선택 및 root node의 value/policy 반환
+                    # - 최적 action 선택 및 root node의 value/π 반환
                     with torch.no_grad():
                         mcts_result = self.mcts.run(
                             observation_tensor,
@@ -134,7 +107,7 @@ class SelfPlayManager:
                         )
                     
                     # Episode에 MCTS 결과 업데이트
-                    episode.policies[step_idx] = mcts_result['policy_targets']
+                    episode.pi[step_idx] = mcts_result['policy_targets']
                     # MCTS가 계산한 value 저장 (bootstrap에 사용됨)
                     episode.values[step_idx] = mcts_result['root_value']
                     
@@ -174,7 +147,7 @@ class SelfPlayManager:
                         # Episode 길이를 충돌 지점까지로 잘라냄
                         episode.states = episode.states[:step_idx + 1]
                         episode.rewards = episode.rewards[:step_idx + 1]
-                        episode.policies = episode.policies[:step_idx + 1]
+                        episode.pi = episode.pi[:step_idx + 1]
                         episode.values = episode.values[:step_idx + 1]
                         episode.actions = episode.actions[:step_idx + 1]
                         episode.dones = episode.dones[:step_idx + 1]
