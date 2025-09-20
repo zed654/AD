@@ -139,7 +139,7 @@ def scalar_to_support(scalars, support_size):
 #     return target_value
 
 
-def train_network(network, replay_buffer, config, device, logger, iteration_num=1, base_step=0):
+def train_network(network, replay_buffer, config, device, logger, iteration_num=1, base_step=0, loss_history=None, writer=None):
     """MuZero 네트워크 학습
     
     Args:
@@ -156,15 +156,16 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
     """
     
 
-    # Loss history 저장용
-    loss_history = {
-        'steps': [],
-        'total_loss': [],
-        'value_loss': [],
-        'policy_loss': [],
-        'reward_loss': [],
-        'latest_loss': None
-    }
+    # Loss history 초기화 (전달되지 않은 경우만)
+    if loss_history is None:
+        loss_history = {
+            'steps': [],
+            'total_loss': [],
+            'value_loss': [],
+            'policy_loss': [],
+            'reward_loss': [],
+            'latest_loss': None
+        }
 
     # Optimizer 설정
     if config.optimizer == "Adam":
@@ -224,8 +225,12 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
     print(f"  - Mixed Precision: {'활성화' if use_amp else '비활성화'}")
     print(f"  - Gradient Accumulation: {gradient_accumulation_steps}")
     
-    # TensorBoard 설정
-    writer = SummaryWriter(log_dir=config.results_path / "logs")
+    # TensorBoard 설정 (전달되지 않은 경우만 생성)
+    if writer is None:
+        writer = SummaryWriter(log_dir=config.results_path / "logs")
+        close_writer = True  # 이 함수에서 생성한 경우 닫아야 함
+    else:
+        close_writer = False  # 외부에서 전달된 경우 닫지 않음
     
     # 학습 루프
     print("\n=== MuZero 네트워크 학습 시작 ===")
@@ -450,7 +455,9 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             'policy_loss': policy_loss.item()
         }
         if loss_dict:
-            loss_history['steps'].append(step + 1)
+            # 전역 스텝으로 loss_history 업데이트
+            global_step = base_step + step + 1
+            loss_history['steps'].append(global_step)
             loss_history['total_loss'].append(loss_dict['total_loss'])
             loss_history['value_loss'].append(loss_dict['value_loss'])
             loss_history['policy_loss'].append(loss_dict['policy_loss'])
@@ -483,7 +490,9 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             print(f"  💾 체크포인트 저장: {save_path}")
             logger.checkpoint_saved(save_path)
     
-    writer.close()
+    # Writer 종료 (이 함수에서 생성한 경우만)
+    if close_writer:
+        writer.close()
     print("\n학습 완료!")
     
     # 마지막 loss 값들 반환

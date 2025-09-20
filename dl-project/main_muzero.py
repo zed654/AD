@@ -146,6 +146,20 @@ def train_mode(config, checkpoint_path=None):
 
 
 
+    # Loss history 전역 관리 (연속된 그래프를 위해)
+    loss_history = {
+        'steps': [],
+        'total_loss': [],
+        'value_loss': [],
+        'policy_loss': [],
+        'reward_loss': [],
+        'latest_loss': None
+    }
+
+    # TensorBoard Writer 전역 관리 (연속된 로그를 위해)
+    from torch.utils.tensorboard import SummaryWriter
+    writer = SummaryWriter(log_dir=config.results_path / "logs")
+
     for iteration in range(config.num_iterations):
         print(f"\n🔄 Iteration {iteration + 1}/{config.num_iterations}")
         enriched_episodes = [] # Replay Buffer에 추가할 에피소드 리스트 초기화
@@ -170,7 +184,7 @@ def train_mode(config, checkpoint_path=None):
         # 네트워크 학습
         print("  📖 네트워크 학습...")
         base_step = iteration * config.training_steps
-        loss_dict = train_network(network, replay_buffer, config, device, logger, iteration_num=iteration+1, base_step=base_step)
+        loss_dict = train_network(network, replay_buffer, config, device, logger, iteration_num=iteration+1, base_step=base_step, loss_history=loss_history, writer=writer)
         
 
 
@@ -185,10 +199,13 @@ def train_mode(config, checkpoint_path=None):
     }, final_path)
     print(f"💾 최종 모델 저장: {final_path}")
     
+    # TensorBoard Writer 종료
+    writer.close()
+
     # 설정 파일 저장
     config_path = config.results_path / "config.json"
     save_config(config, config_path)
-    
+
     print(f"\n📊 TensorBoard 확인: tensorboard --logdir {config.results_path / 'logs'}")
 
 
