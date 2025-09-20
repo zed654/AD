@@ -75,7 +75,7 @@ class MuZeroConfig:
         self.gt_num_episodes = 999999 # 모든데이터 사용하려면 999999 로 설정  # GT 데이터에서 생성할 에피소드 수 (jsonl 파일 여러개면 더 많아도 됨. jsonl 이 현재 7700개 정도의 Steps 임. Episode * (Steps - Overlap Steps) 개수만큼 커버 가능)
         self.max_episode_step_length = 25  # 에피소드 별 최대 스텝 수 (약 10초, 5Hz 기준). 너무 클 필요 없음. 1 스텝 최대이동이 0.2m 임. 50스텝=10m 이동
         self.gt_episode_overlap = 10 # 10 . 25  # 에피소드 간 겹침 스텝 수
-        self.replay_buffer_size = 330000  # 더 많은 데이터 보관용
+        self.replay_buffer_size = 330000 # 330000  # 더 많은 데이터 보관용
         
         # Self-Play 설정
         self.num_workers = 1
@@ -90,7 +90,7 @@ class MuZeroConfig:
         # 학습 설정
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
-        self.num_iterations = 100 # {Self-Play - 학습} 사이클 반복 횟수
+        self.num_iterations = 100 # 100 {Self-Play - 학습} 사이클 반복 횟수
         self.training_steps = 1000  # 1000. K-Step Unrolling 반복 횟수
         self.unroll_steps = 5  # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
         self.batch_size = 128  # 32 -> 128 (GPU 메모리 활용도 최대화)
@@ -109,7 +109,7 @@ class MuZeroConfig:
         self.pth_checkpoint_interval_step = 50  # training_steps 몇 스텝마다 체크포인트 저장할지
         self.checkpoint_save_dir = "checkpoints"  # 체크포인트 저장 디렉토리 이름
         self.checkpoint_final_name = "muzero_final.pth"  # 최종 모델 파일명
-        self.checkpoint_epoch_prefix = "muzero_epoch_"  # 에폭별 체크포인트 파일명 접두사
+        self.checkpoint_training_steps_prefix = "muzero_training_steps_"  # 에폭별 체크포인트 파일명 접두사
 
         # 체크포인트 재개 설정
         self.resume_checkpoint_path = None  # 재개할 체크포인트 경로 (None이면 새로 시작)
