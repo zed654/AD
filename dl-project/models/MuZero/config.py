@@ -113,7 +113,7 @@ class MuZeroConfig:
 
         # 체크포인트 재개 설정
         self.resume_checkpoint_path = None  # 재개할 체크포인트 경로 (None이면 새로 시작)
-        # self.resume_checkpoint_path = "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-13--02-35-11/checkpoints/muzero_epoch_200.pth"
+        # self.resume_checkpoint_path = "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-19--18-34-07/checkpoints/muzero_epoch_1000.pth"
         # "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-02--10-03-53/checkpoints/muzero_epoch_15.pth"
         # 예: "models/MuZero/results/2025-09-02--00-11-57/checkpoints/muzero_epoch_5.pth"
         

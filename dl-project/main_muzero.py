@@ -169,7 +169,8 @@ def train_mode(config, checkpoint_path=None):
 
         # 네트워크 학습
         print("  📖 네트워크 학습...")
-        loss_dict = train_network(network, replay_buffer, config, device, logger, iteration_num=iteration+1)
+        base_step = iteration * config.training_steps
+        loss_dict = train_network(network, replay_buffer, config, device, logger, iteration_num=iteration+1, base_step=base_step)
         
 
 

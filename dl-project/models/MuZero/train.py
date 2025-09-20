@@ -139,7 +139,7 @@ def scalar_to_support(scalars, support_size):
 #     return target_value
 
 
-def train_network(network, replay_buffer, config, device, logger, iteration_num=1):
+def train_network(network, replay_buffer, config, device, logger, iteration_num=1, base_step=0):
     """MuZero 네트워크 학습
     
     Args:
@@ -428,12 +428,14 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             print(f"Step {step}: Loss={total_loss:.4f} "
                   f"(V={value_loss:.4f}, R={reward_loss:.4f}, P={policy_loss:.4f})")
             
-            # TensorBoard 로깅
-            writer.add_scalar('Loss/Total', total_loss.item(), step)
-            writer.add_scalar('Loss/Value', value_loss.item(), step)
-            writer.add_scalar('Loss/Reward', reward_loss.item(), step)
-            writer.add_scalar('Loss/Policy', policy_loss.item(), step)
-            writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], step)
+            # TensorBoard 로깅 (전역 스텝 사용)
+            global_step = base_step + step
+            writer.add_scalar('Loss/Total', total_loss.item(), global_step)
+            writer.add_scalar('Loss/Value', value_loss.item(), global_step)
+            writer.add_scalar('Loss/Reward', reward_loss.item(), global_step)
+            writer.add_scalar('Loss/Policy', policy_loss.item(), global_step)
+            writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], global_step)
+            writer.add_scalar('Training/Iteration', iteration_num, global_step)
         
         # 학습률 업데이트
         if (step + 1) % config.lr_decay_steps == 0:
