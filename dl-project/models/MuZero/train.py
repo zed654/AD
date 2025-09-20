@@ -139,7 +139,7 @@ def scalar_to_support(scalars, support_size):
 #     return target_value
 
 
-def train_network(network, replay_buffer, config, device, logger):
+def train_network(network, replay_buffer, config, device, logger, iteration_num=1):
     """MuZero 네트워크 학습
     
     Args:
@@ -158,7 +158,7 @@ def train_network(network, replay_buffer, config, device, logger):
 
     # Loss history 저장용
     loss_history = {
-        'epochs': [],
+        'steps': [],
         'total_loss': [],
         'value_loss': [],
         'policy_loss': [],
@@ -448,7 +448,7 @@ def train_network(network, replay_buffer, config, device, logger):
             'policy_loss': policy_loss.item()
         }
         if loss_dict:
-            loss_history['epochs'].append(step + 1)
+            loss_history['steps'].append(step + 1)
             loss_history['total_loss'].append(loss_dict['total_loss'])
             loss_history['value_loss'].append(loss_dict['value_loss'])
             loss_history['policy_loss'].append(loss_dict['policy_loss'])
@@ -463,7 +463,7 @@ def train_network(network, replay_buffer, config, device, logger):
         # 2.5 학습 진행 상황 시각화 (선택적)
         if (step + 1) % config.visualization_interval_step == 0 and config.enable_training_visualization:
             try:
-                visualize_training_progress(network, replay_buffer, step + 1, config, device, loss_history)
+                visualize_training_progress(network, replay_buffer, step + 1, config, device, loss_history, iteration_num)
             except Exception as e:
                 print(f"    ⚠️ 시각화 중 오류 발생: {e}")
                 logger.info(f"Visualization error at step {step+1}: {e}")
@@ -472,7 +472,7 @@ def train_network(network, replay_buffer, config, device, logger):
         if (step + 1) % config.pth_checkpoint_interval_step == 0:
             checkpoint_dir = config.results_path / config.checkpoint_save_dir
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            save_path = checkpoint_dir / f"{config.checkpoint_epoch_prefix}{step+1}.pth"
+            save_path = checkpoint_dir / f"iter{iteration_num}_{config.checkpoint_training_steps_prefix}{step+1}.pth"
             torch.save({
                 'step': step + 1,
                 'network_state_dict': network.state_dict(),
@@ -494,13 +494,13 @@ def train_network(network, replay_buffer, config, device, logger):
 
 
 
-def visualize_training_progress(network, replay_buffer, epoch, config, device, loss_history=None):
+def visualize_training_progress(network, replay_buffer, step, config, device, loss_history=None, iteration_num=1):
     """학습 중 모델의 예측 성능과 Loss를 시각화
     
     replay_buffer에서 Episode를 샘플링하여 현재 네트워크로 다시 추론
     loss_history가 있으면 Loss 그래프도 함께 표시
     """
-    print(f"\n  📊 Epoch {epoch} 학습 진행 상황 시각화...")
+    print(f"\n  📊 step {step} 학습 진행 상황 시각화...")
     
     # 시각화할 Episode 샘플링 (config에서 설정)
     episodes = replay_buffer.sample_episodes(min(config.visualization_num_episodes, len(replay_buffer)))
@@ -551,7 +551,7 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         enriched_episode = enriched_episodes[0]
         
         # 시각화 - Loss 정보가 있으면 2개 subplot, 없으면 1개
-        if loss_history and len(loss_history['epochs']) > 0:
+        if loss_history and len(loss_history['steps']) > 0:
             fig, (ax, ax_loss) = plt.subplots(1, 2, figsize=(config.visualization_figsize[0]*2, config.visualization_figsize[1]))
         else:
             fig, ax = plt.subplots(1, 1, figsize=config.visualization_figsize)
@@ -563,7 +563,7 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         # invert_yaxis() 제거 - 자연스러운 수학 좌표계 (아래가 0, 위로 갈수록 증가)
         ax.grid(True, alpha=0.3)
         # 제목에 출처 정보 포함
-        title = f'Epoch {epoch} - Episode {ep_idx+1} (All {visualization_steps} steps)'
+        title = f'step {step} - Episode {ep_idx+1} (All {visualization_steps} steps)'
         if hasattr(episode, 'source_file') and episode.source_file:
             title += f'\nSource: {episode.source_file}'
             if hasattr(episode, 'start_frame') and hasattr(episode, 'end_frame'):
@@ -747,7 +747,7 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         # Loss 정보 텍스트 박스 추가 (최신 Loss)
         if loss_history and 'latest_loss' in loss_history:
             latest = loss_history['latest_loss']
-            loss_text = f"Latest Loss (Epoch {epoch}):\n"
+            loss_text = f"Latest Loss (step {step}):\n"
             loss_text += f"Total: {latest['total_loss']:.4f}\n"
             loss_text += f"Value: {latest['value_loss']:.4f}\n"
             loss_text += f"Policy: {latest['policy_loss']:.4f}\n"
@@ -882,26 +882,26 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
                    bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7))
         
         # Loss 그래프 그리기 (있는 경우)
-        if loss_history and len(loss_history['epochs']) > 0 and 'ax_loss' in locals():
-            epochs = loss_history['epochs']
-            ax_loss.plot(epochs, loss_history['total_loss'], 'b-', label='Total Loss', linewidth=2)
-            ax_loss.plot(epochs, loss_history['value_loss'], 'g--', label='Value Loss', alpha=0.7)
-            ax_loss.plot(epochs, loss_history['policy_loss'], 'r--', label='Policy Loss', alpha=0.7)
-            ax_loss.plot(epochs, loss_history['reward_loss'], 'y--', label='Reward Loss', alpha=0.7)
+        if loss_history and len(loss_history['steps']) > 0 and 'ax_loss' in locals():
+            steps = loss_history['steps']
+            ax_loss.plot(steps, loss_history['total_loss'], 'b-', label='Total Loss', linewidth=2)
+            ax_loss.plot(steps, loss_history['value_loss'], 'g--', label='Value Loss', alpha=0.7)
+            ax_loss.plot(steps, loss_history['policy_loss'], 'r--', label='Policy Loss', alpha=0.7)
+            ax_loss.plot(steps, loss_history['reward_loss'], 'y--', label='Reward Loss', alpha=0.7)
             
-            ax_loss.set_xlabel('Epoch', fontsize=12)
+            ax_loss.set_xlabel('step', fontsize=12)
             ax_loss.set_ylabel('Loss', fontsize=12)
-            ax_loss.set_title(f'Training Loss History (up to Epoch {epoch})', fontsize=14)
+            ax_loss.set_title(f'Training Loss History (up to step {step})', fontsize=14)
             ax_loss.legend(loc='upper right')
             ax_loss.grid(True, alpha=0.3)
             
-            # 현재 Epoch 표시
-            if epoch in epochs:
-                idx = epochs.index(epoch)
-                ax_loss.scatter([epoch], [loss_history['total_loss'][idx]], 
+            # 현재 step 표시
+            if step in steps:
+                idx = steps.index(step)
+                ax_loss.scatter([step], [loss_history['total_loss'][idx]], 
                               c='red', s=100, zorder=5, marker='o')
                 ax_loss.annotate(f'Current\n{loss_history["total_loss"][idx]:.4f}',
-                                xy=(epoch, loss_history['total_loss'][idx]),
+                                xy=(step, loss_history['total_loss'][idx]),
                                 xytext=(10, 10), textcoords='offset points',
                                 fontsize=9, ha='left',
                                 bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7),
@@ -910,7 +910,7 @@ def visualize_training_progress(network, replay_buffer, epoch, config, device, l
         # 저장
         save_dir = config.results_path / "visualizations"
         save_dir.mkdir(exist_ok=True)
-        save_path = save_dir / f"epoch_{epoch}_episode_{ep_idx+1}.png"
+        save_path = save_dir / f"iter{iteration_num}_step_{step}_episode_{ep_idx+1}.png"
         plt.savefig(save_path, dpi=config.visualization_dpi, bbox_inches='tight')
         plt.close()
         print(f"    💾 시각화 저장: {save_path}")
