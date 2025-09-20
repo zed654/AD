@@ -10,6 +10,8 @@ from models.MuZero.action import Action
 # MuZero 설정 클래스
 class MuZeroConfig:
     def __init__(self):
+        self.test_mode = False  # 테스트 모드 플래그 (디버깅용)
+
         # 네트워크 설정
         self.seed = 0
         self.max_num_gpus = None
@@ -60,7 +62,10 @@ class MuZeroConfig:
         # Observation Provider 설정
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
         # GT 데이터 경로: 파일(.jsonl) 또는 폴더 경로 모두 지원
-        self.gt_data_path = Path("data/db3_parser/results/")  # 폴더 경로로 변경하면 모든 JSONL 파일 로드
+        if self.test_mode:
+            self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일 ... 정상 주행 데이터 (코너 상황 대표 샘플)
+        else:
+            self.gt_data_path = Path("data/db3_parser/results/")  # 폴더 경로로 변경하면 모든 JSONL 파일 로드
         # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일 ... 정상 주행 데이터 (코너 상황 대표 샘플)
         # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171226_91.jsonl")  # 단일 파일 ... Episode 5 에서 Near Destination 조금 이상함
         # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_170026_79.jsonl")  # 단일 파일 ... 주행 전 대기상태 데이터임
@@ -72,7 +77,10 @@ class MuZeroConfig:
 
         # GT Episode 생성 설정
         # josnl 의 줄 개수 < num_episodes * (max_episode_step_length - gt_episode_overlap) 이어야 함
-        self.gt_num_episodes = 999999 # 모든데이터 사용하려면 999999 로 설정  # GT 데이터에서 생성할 에피소드 수 (jsonl 파일 여러개면 더 많아도 됨. jsonl 이 현재 7700개 정도의 Steps 임. Episode * (Steps - Overlap Steps) 개수만큼 커버 가능)
+        if self.test_mode:
+            self.gt_num_episodes = 3
+        else:
+            self.gt_num_episodes = 999999 # 모든데이터 사용하려면 999999 로 설정  # GT 데이터에서 생성할 에피소드 수 (jsonl 파일 여러개면 더 많아도 됨. jsonl 이 현재 7700개 정도의 Steps 임. Episode * (Steps - Overlap Steps) 개수만큼 커버 가능)
         self.max_episode_step_length = 25  # 에피소드 별 최대 스텝 수 (약 10초, 5Hz 기준). 너무 클 필요 없음. 1 스텝 최대이동이 0.2m 임. 50스텝=10m 이동
         self.gt_episode_overlap = 10 # 10 . 25  # 에피소드 간 겹침 스텝 수
         self.replay_buffer_size = 330000 # 330000  # 더 많은 데이터 보관용
@@ -90,8 +98,12 @@ class MuZeroConfig:
         # 학습 설정
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
-        self.num_iterations = 100 # 100 {Self-Play - 학습} 사이클 반복 횟수
-        self.training_steps = 1000  # 1000. K-Step Unrolling 반복 횟수
+        if self.test_mode:
+            self.num_iterations = 10
+            self.training_steps = 10
+        else:
+            self.num_iterations = 100 # 100 {Self-Play - 학습} 사이클 반복 횟수
+            self.training_steps = 1000  # 1000. K-Step Unrolling 반복 횟수
         self.unroll_steps = 5  # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
         self.batch_size = 128  # 32 -> 128 (GPU 메모리 활용도 최대화)
         self.value_loss_weight = 1
@@ -99,14 +111,20 @@ class MuZeroConfig:
         
         # 학습 중 시각화 설정
         self.enable_training_visualization = True  # 학습 중 시각화 생성 여부
-        self.visualization_interval_step = 50  # training_steps 몇 스텝마다 PNG 시각화 할지
+        if self.test_mode:
+            self.visualization_interval_step = 5  # 테스트 모드에서는 더 자주 시각화
+        else:
+            self.visualization_interval_step = 50  # training_steps 몇 스텝마다 PNG 시각화 할지
         self.visualization_num_episodes = 3  # PNG 에 시각화할 Episode 수 (최대)
         # self.visualization_min_episode_length = 10  # 시각화할 Episode 의 Step 최소 길이
         self.visualization_dpi = 150  # 이미지 저장 DPI
         self.visualization_figsize = (10, 10)  # 그림 크기 (width, height)
 
         # pth 체크포인트 저장 설정
-        self.pth_checkpoint_interval_step = 50  # training_steps 몇 스텝마다 체크포인트 저장할지
+        if self.test_mode:
+            self.pth_checkpoint_interval_step = 5
+        else:
+            self.pth_checkpoint_interval_step = 50  # training_steps 몇 스텝마다 체크포인트 저장할지
         self.checkpoint_save_dir = "checkpoints"  # 체크포인트 저장 디렉토리 이름
         self.checkpoint_final_name = "muzero_final.pth"  # 최종 모델 파일명
         self.checkpoint_training_steps_prefix = "muzero_training_steps_"  # 에폭별 체크포인트 파일명 접두사
