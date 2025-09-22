@@ -110,35 +110,6 @@ def scalar_to_support(scalars, support_size):
     
     return floor_idx
 
-
-# def calculate_target_value(episode, start_idx, discount, n_steps=5):
-#     """n-step return 계산
-    
-#     MuZero는 n-step return + bootstrap value를 사용합니다.
-#     target_value = sum(discount^k * reward_k) + discount^n * value_n
-#     bootstrap value 는 n_steps 만큼 적용됨 (n_steps 만큼 미래의 가치를 현재에 대입하는 것)
-    
-#     * Bellman equation 원리임 - Baysian Theory 의 반대 개념으로, 미래의 가치를 현재에 대입하는 것
-#     """
-#     if start_idx >= len(episode):
-#         return 0.0
-    
-#     target_value = 0.0
-    
-#     # n-step return 계산
-#     for i in range(n_steps):
-#         if start_idx + i >= len(episode):
-#             break
-#         target_value += (discount ** i) * episode.rewards[start_idx + i]
-    
-#     # Bootstrap value 추가 (n스텝 후의 value)
-#     bootstrap_idx = start_idx + n_steps
-#     if bootstrap_idx < len(episode) and episode.values[bootstrap_idx] is not None:
-#         target_value += (discount ** n_steps) * episode.values[bootstrap_idx]
-    
-#     return target_value
-
-
 def train_network(network, replay_buffer, config, device, logger, iteration_num=1, base_step=0, loss_history=None, writer=None):
     """MuZero 네트워크 학습
     
@@ -288,6 +259,10 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
         with autocast(enabled=use_amp):
             batch_values, _, batch_policy_logits, batch_hidden_states = network.initial_inference(batch_observations)
         
+
+        reward_count = 0 
+        value_count = 0 
+        policy_count = 0
         # 4단계: 배치의 각 항목에 대해 손실 계산
         actual_batch_size = len(valid_episodes)
         for i in range(actual_batch_size):
@@ -310,7 +285,8 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 config.support_size
             )
             value_loss += torch.nn.functional.cross_entropy(value, target_value_idx)
-            
+            value_count += 1
+
             # Policy loss
             # [참고] MuZero 논문에서는 CrossEntropy 사용했음
             if episode.pi[start_idx] is not None:
@@ -318,13 +294,16 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 # KL divergence loss (target_policy는 확률 분포)
                 log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
                 policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
+                policy_count += 1
             else:
                 # GT 데이터의 경우 policy가 없으므로 uniform distribution 사용
                 num_actions = policy_logits.shape[1]
                 target_policy = torch.ones(1, num_actions, device=device) / num_actions
                 log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
                 policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
+                policy_count += 1
             
+
             # K 스텝 unroll
             for k in range(0, K):
                 if start_idx + k + 1 >= len(episode):
@@ -348,7 +327,8 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                     config.support_size
                 )
                 reward_loss += torch.nn.functional.cross_entropy(reward, target_reward_idx)
-                
+                reward_count += 1
+
                 # Value loss (k+1번째 상태의 value)
                 # target_values 사용 (n-step bootstrap으로 계산된 학습 타깃)
                 if hasattr(episode, 'target_values') and episode.target_values is not None:
@@ -363,7 +343,8 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                     config.support_size
                 )
                 value_loss += torch.nn.functional.cross_entropy(value, target_value_idx)
-                
+                value_count += 1
+
                 # Policy loss (k+1번째 상태의 policy)
                 if start_idx + k + 1 < len(episode):
                     if episode.pi[start_idx + k + 1] is not None:
@@ -371,18 +352,19 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                         # KL divergence loss (target_policy는 확률 분포)
                         log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
                         policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
+                        policy_count += 1
                     else:
                         # GT 데이터의 경우 policy가 없으므로 uniform distribution 사용
                         num_actions = policy_logits.shape[1]
                         target_policy = torch.ones(1, num_actions, device=device) / num_actions
                         log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
                         policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
+                        policy_count += 1
         
         # 평균 손실 계산
-        num_samples = len(batch)
-        value_loss = value_loss / (num_samples * (K + 1))
-        reward_loss = reward_loss / (num_samples * K)
-        policy_loss = policy_loss / (num_samples * (K + 1))
+        value_loss = value_loss / max(1, value_count)
+        reward_loss = reward_loss / max(1, reward_count)
+        policy_loss = policy_loss / max(1, policy_count)
         
         # 총 손실 (Gradient Accumulation 정규화 적용)
         # MuZero 이론적 배경:
