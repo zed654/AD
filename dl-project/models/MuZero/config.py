@@ -39,7 +39,7 @@ class MuZeroConfig:
         self.original_resolution = 0.1  # 원본 데이터 해상도 (10cm)
         self.downsample_factor = 2  # 다운샘플링 비율 (2x2 셀을 1개로)
         self.collision_threshold = 0.5  # 충돌 판정 거리
-        self.collision_penalty = -5.0  # 충돌 시 패널티 (reward 값)
+        self.collision_penalty = -2.0  # 충돌 시 패널티 (reward 값)
         self.goal_threshold = 1.0  # 목표 도달 판정 거리
         self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
         
@@ -83,7 +83,7 @@ class MuZeroConfig:
             self.gt_num_episodes = 999999 # 모든데이터 사용하려면 999999 로 설정  # GT 데이터에서 생성할 에피소드 수 (jsonl 파일 여러개면 더 많아도 됨. jsonl 이 현재 7700개 정도의 Steps 임. Episode * (Steps - Overlap Steps) 개수만큼 커버 가능)
         self.max_episode_step_length = 25  # 에피소드 별 최대 스텝 수 (약 10초, 5Hz 기준). 너무 클 필요 없음. 1 스텝 최대이동이 0.2m 임. 50스텝=10m 이동
         self.gt_episode_overlap = 10 # 10 . 25  # 에피소드 간 겹침 스텝 수
-        self.replay_buffer_size = 330000 # 330000  # 더 많은 데이터 보관용
+        self.replay_buffer_size = 3300 # 3300  # Replay Buffer 최대 사이즈. 너무 크게하면 과거 데이터의 업데이트가 늦어질 수 있음.
         
         # Self-Play 설정
         self.num_workers = 1
