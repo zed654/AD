@@ -532,11 +532,13 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
         full_episode = Episode()
         for i in range(visualization_steps):
             full_episode.states.append(episode.states[i])
-            full_episode.expert_ego_pos.append(episode.expert_ego_pos[i])
             full_episode.actions.append(0)  # 임시 action
             full_episode.rewards.append(0.0)  # 임시 reward
             full_episode.values.append(0.0)  # 임시 value
             full_episode.pi.append(None)  # 임시 π
+
+        # expert_ego_pos는 states보다 길 수 있으므로 별도로 모든 위치 복사
+        full_episode.expert_ego_pos = episode.expert_ego_pos.copy()
         
         # 현재 네트워크로 MCTS enrichment 수행
         print(f"    Episode {ep_idx+1}: {visualization_steps} 스텝 처리 중...")
