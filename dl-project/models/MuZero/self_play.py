@@ -151,8 +151,9 @@ class SelfPlayManager:
                         episode.values = episode.values[:step_idx + 1]
                         episode.actions = episode.actions[:step_idx + 1]
                         episode.dones = episode.dones[:step_idx + 1]
-                        if hasattr(episode, 'expert_ego_pos'):
-                            episode.expert_ego_pos = episode.expert_ego_pos[:step_idx + 1]
+                        # 정답 위치는 유지. Target Reward 의 목표로 활용해야함
+                        # if hasattr(episode, 'expert_ego_pos'):
+                        #     episode.expert_ego_pos = episode.expert_ego_pos[:step_idx + 1]
                         break  # MCTS 적용 루프 종료
                 
                 if step_idx % 10 == 0:
@@ -322,45 +323,45 @@ class SelfPlayManager:
         # 목표 방향이면 +0.1, 반대면 -0.1
         return 0.1 * cos_similarity  # [-0.1, +0.1] 범위
 
-    def _calculate_missing_rate_value(self, episode: Episode) -> float:
-        """Missing Rate 기반 value 계산
+    # def _calculate_missing_rate_value(self, episode: Episode) -> float:
+    #     """Missing Rate 기반 value 계산
         
-        주행로에서 많이 떨어질 경우, 큰 페널티 부여
-        """
-        threshold = 15  # 15 cells = 3m (각 셀은 20cm)
-        miss_count = 0
-        total_count = 0
+    #     주행로에서 많이 떨어질 경우, 큰 페널티 부여
+    #     """
+    #     threshold = 15  # 15 cells = 3m (각 셀은 20cm)
+    #     miss_count = 0
+    #     total_count = 0
         
-        # 모든 스텝에서 거리 체크
-        for step_idx in range(len(episode.states)):
-            if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
-                state = episode.states[step_idx]
-                sim_pos = state.get('simulated_ego_pos')
+    #     # 모든 스텝에서 거리 체크
+    #     for step_idx in range(len(episode.states)):
+    #         if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
+    #             state = episode.states[step_idx]
+    #             sim_pos = state.get('simulated_ego_pos')
                 
-                # expert_ego_pos 추출
-                if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
-                    expert_pos = episode.expert_ego_pos[step_idx]
+    #             # expert_ego_pos 추출
+    #             if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
+    #                 expert_pos = episode.expert_ego_pos[step_idx]
                     
-                    if sim_pos is not None and expert_pos is not None:
-                        # 유클리드 거리 계산 (그리드 좌표 기준)
-                        if isinstance(expert_pos, tuple) and len(expert_pos) == 2 and \
-                           isinstance(sim_pos, tuple) and len(sim_pos) == 2:
-                            distance = np.sqrt((sim_pos[0] - expert_pos[0])**2 + 
-                                             (sim_pos[1] - expert_pos[1])**2)
+    #                 if sim_pos is not None and expert_pos is not None:
+    #                     # 유클리드 거리 계산 (그리드 좌표 기준)
+    #                     if isinstance(expert_pos, tuple) and len(expert_pos) == 2 and \
+    #                        isinstance(sim_pos, tuple) and len(sim_pos) == 2:
+    #                         distance = np.sqrt((sim_pos[0] - expert_pos[0])**2 + 
+    #                                          (sim_pos[1] - expert_pos[1])**2)
                             
-                            total_count += 1
-                            if distance > threshold:
-                                miss_count += 1
+    #                         total_count += 1
+    #                         if distance > threshold:
+    #                             miss_count += 1
         
-        # Miss Rate 계산
-        if total_count > 0:
-            miss_rate = miss_count / total_count
-            print(f"    - Miss Rate: {miss_rate:.2%} ({miss_count}/{total_count} 스텝이 3m 이상 벗어남)")
+    #     # Miss Rate 계산
+    #     if total_count > 0:
+    #         miss_rate = miss_count / total_count
+    #         print(f"    - Miss Rate: {miss_rate:.2%} ({miss_count}/{total_count} 스텝이 3m 이상 벗어남)")
             
-            # Miss Rate를 value로 변환 (0% -> 0.0, 100% -> -1.0)
-            return -miss_rate  # 벗어난 비율만큼 페널티
-        else:
-            return 0.0
+    #         # Miss Rate를 value로 변환 (0% -> 0.0, 100% -> -1.0)
+    #         return -miss_rate  # 벗어난 비율만큼 페널티
+    #     else:
+    #         return 0.0
 
 
     def _calculate_target_reward(self, episode: Episode, step_idx: int, action: int, 
@@ -407,78 +408,78 @@ class SelfPlayManager:
         
 
     
-    def _calculate_target_reward_old(self, episode: Episode, step_idx: int, action: int, 
-                             sim_pos: Tuple[int, int]) -> float:
-        """GT 학습을 위한 환경 reward 계산
+    # def _calculate_target_reward_old(self, episode: Episode, step_idx: int, action: int, 
+    #                          sim_pos: Tuple[int, int]) -> float:
+    #     """GT 학습을 위한 환경 reward 계산
         
-        trajectory_following_value의 스텝별 버전
+    #     trajectory_following_value의 스텝별 버전
         
-        Args:
-            episode: 현재 Episode
-            step_idx: 현재 스텝
-            action: 선택된 action (미래 확장용)
-            sim_pos: 시뮬레이션 위치 (미래 확장용)
+    #     Args:
+    #         episode: 현재 Episode
+    #         step_idx: 현재 스텝
+    #         action: 선택된 action (미래 확장용)
+    #         sim_pos: 시뮬레이션 위치 (미래 확장용)
             
-        Returns:
-            환경 reward (-1 ~ 1 범위)
-        """
-        # 예외처리 - step_idx가 episode.states 범위를 벗어나는 경우
-        if step_idx >= len(episode.states):
-            print(f"  - [Target Reward 계산 이상] 스텝 {step_idx}에서 episode.states가 부족합니다. value: 0.0")
-            return 0.0
+    #     Returns:
+    #         환경 reward (-1 ~ 1 범위)
+    #     """
+    #     # 예외처리 - step_idx가 episode.states 범위를 벗어나는 경우
+    #     if step_idx >= len(episode.states):
+    #         print(f"  - [Target Reward 계산 이상] 스텝 {step_idx}에서 episode.states가 부족합니다. value: 0.0")
+    #         return 0.0
         
-        # 1. 경로 추종 정확도 기반 reward
-        # - 현재 simulated_ego_pos와 expert_ego_pos 간의 거리 오차 계산
-        trajectory_reward = self._calculate_trajectory_following_reward(episode, step_idx)
+    #     # 1. 경로 추종 정확도 기반 reward
+    #     # - 현재 simulated_ego_pos와 expert_ego_pos 간의 거리 오차 계산
+    #     trajectory_reward = self._calculate_trajectory_following_reward(episode, step_idx)
         
-        # 2. 충돌 기반 value
-        collision_reward = self._calculate_collision_reward(episode, step_idx)
+    #     # 2. 충돌 기반 value
+    #     collision_reward = self._calculate_collision_reward(episode, step_idx)
 
-        if collision_reward == -1.0:
-            # 충돌 발생 시 큰 페널티
-            print(f"  - 충돌 발생! 스텝 {step_idx}에서 충돌 감지됨. 페널티: -1.0")
-            return -1.0
-        else:
-            # 충돌이 없으면 경로 추종 reward만 사용
-            return trajectory_reward
+    #     if collision_reward == -1.0:
+    #         # 충돌 발생 시 큰 페널티
+    #         print(f"  - 충돌 발생! 스텝 {step_idx}에서 충돌 감지됨. 페널티: -1.0")
+    #         return -1.0
+    #     else:
+    #         # 충돌이 없으면 경로 추종 reward만 사용
+    #         return trajectory_reward
         
-        # return np.clip(reward, -1.0, 1.0)
+    #     # return np.clip(reward, -1.0, 1.0)
     
-    def _calculate_trajectory_following_reward(self, episode: Episode, step_idx: int) -> float:
-        """경로 추종 정확도 기반 value 계산
+    # def _calculate_trajectory_following_reward(self, episode: Episode, step_idx: int) -> float:
+    #     """경로 추종 정확도 기반 value 계산
         
-        특정 step_idx에서 simulated_ego_pos와 expert_ego_pos 간의 거리 오차를 기반으로 계산
-        """
-        # step_idx에 해당하는 스텝에서만 계산
-        if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
-            state = episode.states[step_idx]
-            sim_pos = state.get('simulated_ego_pos')
+    #     특정 step_idx에서 simulated_ego_pos와 expert_ego_pos 간의 거리 오차를 기반으로 계산
+    #     """
+    #     # step_idx에 해당하는 스텝에서만 계산
+    #     if step_idx < len(episode.states) and isinstance(episode.states[step_idx], dict):
+    #         state = episode.states[step_idx]
+    #         sim_pos = state.get('simulated_ego_pos')
             
-            # expert_ego_pos 추출
-            if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
-                expert_pos = episode.expert_ego_pos[step_idx]
+    #         # expert_ego_pos 추출
+    #         if hasattr(episode, 'expert_ego_pos') and step_idx < len(episode.expert_ego_pos):
+    #             expert_pos = episode.expert_ego_pos[step_idx]
                 
-                if sim_pos is not None and expert_pos is not None:
-                    # 둘 다 (row, col) 그리드 좌표
-                    if isinstance(expert_pos, tuple) and len(expert_pos) == 2 and \
-                       isinstance(sim_pos, tuple) and len(sim_pos) == 2:
-                        expert_row, expert_col = expert_pos
-                        sim_row, sim_col = sim_pos
+    #             if sim_pos is not None and expert_pos is not None:
+    #                 # 둘 다 (row, col) 그리드 좌표
+    #                 if isinstance(expert_pos, tuple) and len(expert_pos) == 2 and \
+    #                    isinstance(sim_pos, tuple) and len(sim_pos) == 2:
+    #                     expert_row, expert_col = expert_pos
+    #                     sim_row, sim_col = sim_pos
                         
-                        # 유클리드 거리 계산 (그리드 좌표 기준)
-                        distance = np.sqrt((sim_row - expert_row)**2 + (sim_col - expert_col)**2)
+    #                     # 유클리드 거리 계산 (그리드 좌표 기준)
+    #                     distance = np.sqrt((sim_row - expert_row)**2 + (sim_col - expert_col)**2)
                         
-                        # 디버깅: 거리 계산 과정 로그 출력
-                        reward_value = self._distance_to_value(distance)
-                        if step_idx < 3:  # 처음 3스텝만 로그 출력
-                            print(f"    - [Debug Reward] 스텝 {step_idx}: sim_pos=({sim_row}, {sim_col}), expert_pos=({expert_row}, {expert_col}), distance={distance:.3f}, reward={reward_value:.3f}")
+    #                     # 디버깅: 거리 계산 과정 로그 출력
+    #                     reward_value = self._distance_to_value(distance)
+    #                     if step_idx < 3:  # 처음 3스텝만 로그 출력
+    #                         print(f"    - [Debug Reward] 스텝 {step_idx}: sim_pos=({sim_row}, {sim_col}), expert_pos=({expert_row}, {expert_col}), distance={distance:.3f}, reward={reward_value:.3f}")
                         
-                        # 거리를 value로 변환하여 반환
-                        return reward_value
+    #                     # 거리를 value로 변환하여 반환
+    #                     return reward_value
         
-        # 정보가 없으면 0.0 반환
-        print(f"  - [Target Reward 계산 이상] 스텝 {step_idx}에서 simulated_ego_pos 또는 expert_ego_pos 정보가 없음. value: 0.0")
-        return 0.0
+    #     # 정보가 없으면 0.0 반환
+    #     print(f"  - [Target Reward 계산 이상] 스텝 {step_idx}에서 simulated_ego_pos 또는 expert_ego_pos 정보가 없음. value: 0.0")
+    #     return 0.0
     
     def _distance_to_value(self, distance: float) -> float:
         """거리 오차를 value로 변환 (더 엄격한 매핑)
