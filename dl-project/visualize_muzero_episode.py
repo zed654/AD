@@ -1319,7 +1319,7 @@ def main():
     episodes = data_loader.create_episodes_from_json(
         num_episodes=args.num_episodes,
         episode_step_length=args.episode_step_length,
-        overlap=args.overlap
+        episode_overlap_steps=args.overlap
     )
     
     if not episodes:

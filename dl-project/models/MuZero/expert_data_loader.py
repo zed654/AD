@@ -41,14 +41,14 @@ class ExpertDataLoader:
     def create_episodes_from_json(self, 
                                  num_episodes: int = 10,
                                  episode_step_length: int = 50,
-                                 overlap: int = 25) -> List[Episode]:
+                                 episode_overlap_steps: int = 25) -> List[Episode]:
         """
         JSON 데이터에서 Episode 생성
         
         Args:
             num_episodes: 생성할 에피소드 수
             episode_step_length: 각 에피소드 길이
-            overlap: 에피소드 간 겹치는 프레임 수
+            episode_overlap_steps: 에피소드 간 겹치는 프레임 수
         
         Returns:
             Episode 리스트
@@ -59,29 +59,35 @@ class ExpertDataLoader:
             
         episodes = []
         total_frames = self.parser.get_frame_count()
-        
-        # 시작 위치 계산 (overlap 고려)
-        step = episode_step_length - overlap
-        start_positions = list(range(0, total_frames - episode_step_length, step))[:num_episodes]
-        
-        for ep_idx, start_idx in enumerate(start_positions):
-            print(f"Episode {ep_idx + 1}/{num_episodes} 생성 중...")
-            
-            episode = self._create_single_episode(start_idx, episode_step_length, ep_idx)
 
-            # Episode 품질 검증
+        # 동적 시작점 관리 (효율적인 중복 스캔 방지)
+        current_start_idx = 0
+        ep_idx = 0
+
+        while ep_idx < num_episodes and current_start_idx < total_frames - episode_step_length:
+            print(f"Episode {ep_idx + 1}/{num_episodes} 생성 중... (start_idx={current_start_idx})")
+
+            episode, last_frame_idx = self._create_single_episode(current_start_idx, episode_step_length, ep_idx)
+
+            # Episode 품질 검증 - 마지막 jsonl 의 Frame 만 누락됨
             if episode and self._validate_episode_quality(episode, episode_step_length):
                 episodes.append(episode)
                 print(f"    ✓ Episode {len(episodes)} 추가: {len(episode.states)}개 스텝")
+                # 다음 Episode는 마지막 사용 프레임에서 episode_overlap_steps 만큼 뺀 곳부터 시작
+                current_start_idx = max(last_frame_idx - episode_overlap_steps, current_start_idx + 1)
             else:
                 print(f"    ✗ Episode {ep_idx + 1} 제외: 품질 기준 미달")
+                # Episode 생성 실패시 조금만 앞으로 이동 (데드락 방지)
+                current_start_idx += episode_step_length // 4
+
+            ep_idx += 1
         
         print(f"\n생성된 Episode: {len(episodes)}개")
         return episodes
     
-    def _create_single_episode(self, start_idx: int, length: int, ep_idx: int = 0) -> Optional[Episode]:
+    def _create_single_episode(self, start_idx: int, episode_step_length: int, ep_idx: int = 0) -> Tuple[Optional[Episode], int]:
         """단일 Episode 생성"""
-        # 출처 정보 설정 - 시작 프레임의 실제 파일명 사용
+        # 출처 정보 설정 - 시작 프레임의 실제 파일명 사용 . # episode_step_length: Episode 최대 스텝 수
         source_file = None
         start_frame_data = self.parser.get_frame_data(start_idx)
         if start_frame_data and '_source_file' in start_frame_data:
@@ -95,7 +101,7 @@ class ExpertDataLoader:
         episode = Episode(
             source_file=source_file,
             start_frame=start_idx,
-            end_frame=start_idx + length - 1
+            end_frame=start_idx + episode_step_length - 1
         )
         
         # 상태 추적
@@ -105,13 +111,13 @@ class ExpertDataLoader:
         observations = []
         expert_ego_positions = []  # GT에서 추출한 전문가 ego 위치 (그리드 좌표)
         
-        # 이동 기반 Episode 생성: 실제 이동하는 50개 스텝 수집
+        # 이동 기반 Episode 생성: 실제 이동하는 episode_step_length 개 스텝 수집
         collected_steps = 0
         frame_idx = start_idx
         prev_grid_pos = None
         skip_count = 0  # 스킵한 프레임 수
 
-        while collected_steps < length and frame_idx < self.parser.get_frame_count() - 1:
+        while collected_steps < episode_step_length and frame_idx < self.parser.get_frame_count() - 1:
             # 현재 프레임 데이터
             frame_data = self.parser.get_frame_data(frame_idx)
             if not frame_data:
@@ -178,22 +184,6 @@ class ExpertDataLoader:
                 'simulated_ego_pos': (49, 49)  # 시뮬레이션된 ego 위치 (그리드 좌표, GT 데이터이므로 항상 중앙)
             }
             
-            # 디버깅 포인트 1: observation 확인 (필요시 주석 해제)
-            # if i == 0:  # 첫 프레임만
-            #     print(f"\n=== Episode {ep_idx + 1}, Frame {i} ===")
-            #     print(f"Observation shape: {grid_observation.shape}")
-            #     print(f"Ego info: x={ego_info.x:.2f}, y={ego_info.y:.2f}, yaw={ego_info.yaw:.2f}")
-            #     print(f"Objects: {len(objects)}개")
-            #     print(f"Trajectory points: {len(trajectory)}개")
-            #     if near_destination_direction:
-            #         print(f"Near direction: x={near_destination_direction.get('x', 0):.2f}, y={near_destination_direction.get('y', 0):.2f}")
-            #     if final_destination_direction:
-            #         print(f"Destination direction: x={final_destination_direction.get('x', 0):.2f}, y={final_destination_direction.get('y', 0):.2f}")
-            #     
-            #     # Observation 내용 확인
-            #     decoded = self.obs_builder.decode_observation(observation)
-            #     print(f"Decoded observation: {decoded}")
-            
             observations.append(state_dict)  # 전체 state dict 저장
 
             # 현재 그리드 위치를 expert_ego_positions에 추가
@@ -214,7 +204,7 @@ class ExpertDataLoader:
         # Episode 구성 검증
         if len(expert_ego_positions) == 0 or len(observations) == 0:
             print(f"    - Episode 생성 실패: 유효한 데이터 없음")
-            return None
+            return None, frame_idx
 
         # Episode 생성 (states와 expert_ego_pos 길이를 맞춤)
         for i in range(len(observations)):
@@ -240,8 +230,8 @@ class ExpertDataLoader:
                 value=0.0,          # 0으로 초기화
                 done=(i == len(expert_ego_positions) - 1)
             )
-        
-        return episode
+
+        return episode, frame_idx
     
     def _global_to_grid_coords(self, global_x: float, global_y: float, 
                               ego_start_x: float, ego_start_y: float, ego_start_yaw: float) -> Tuple[int, int]:
@@ -339,7 +329,7 @@ class ExpertDataLoader:
         positions_count = len(episode.expert_ego_pos)
 
         # 1. 최소 길이 검증 (목표의 80% 이상)
-        min_length = max(target_length * 0.8, target_length - 10)  # 최소 40개 또는 target-10
+        min_length = max(target_length * 0.8, target_length - 10)
         if states_count < min_length:
             print(f"      길이 부족: {states_count} < {min_length}")
             return False

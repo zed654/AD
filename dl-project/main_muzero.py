@@ -123,7 +123,7 @@ def train_mode(config, checkpoint_path=None):
         expert_episodes = expert_loader.create_episodes_from_json(
             num_episodes=config.gt_num_episodes,  # config에서 읽기
             episode_step_length=config.max_episode_step_length,  # config에서 읽기
-            overlap=config.gt_episode_overlap  # config에서 읽기
+            episode_overlap_steps=config.gt_episode_overlap  # config에서 읽기
         )
     elif config.observation_provider_type == "ros2":
         print("\n🤖 ROS2 실시간 데이터 로드 중...")
