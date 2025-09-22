@@ -10,7 +10,7 @@ from models.MuZero.action import Action
 # MuZero 설정 클래스
 class MuZeroConfig:
     def __init__(self):
-        self.test_mode = 0  # 0: 학습모드, 1: 테스트모드(빠른학습), 2: 테스트모드(Episode 1개 수렴여부 확인)
+        self.test_mode = 0  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
 
         # 네트워크 설정
         self.seed = 0
@@ -103,7 +103,10 @@ class MuZeroConfig:
         if self.test_mode == 1:
             self.num_iterations = 10
             self.training_steps = 10
-        elif self.test_mode == 0 or self.test_mode == 2:
+        elif self.test_mode == 2:
+            self.num_iterations = 1000 # 100 {Self-Play - 학습} 사이클 반복 횟수
+            self.training_steps = 1000
+        elif self.test_mode == 0:
             self.num_iterations = 100 # 100 {Self-Play - 학습} 사이클 반복 횟수
             self.training_steps = 1000  # 1000. K-Step Unrolling 반복 횟수
         self.unroll_steps = 5  # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
