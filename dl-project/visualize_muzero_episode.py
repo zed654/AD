@@ -1260,7 +1260,15 @@ def save_episode_frames(episodes: List[Episode], config: MuZeroConfig,
                     if expert_action is not None:
                         info_text += f"Expert: {expert_action}\n"
                 
-                info_text += f"Reward: {episode.rewards[step_idx]:.3f}\n"
+                # Reward와 Target Value 한 줄에 표시
+                reward_text = f"Reward: {episode.rewards[step_idx]:.3f}"
+                if hasattr(episode, 'target_values') and step_idx < len(episode.target_values):
+                    target_value = episode.target_values[step_idx]
+                    reward_text += f" | Target Value: {target_value:.3f}"
+                elif step_idx < len(episode.values):
+                    value = episode.values[step_idx]
+                    reward_text += f" | Value: {value:.3f}"
+                info_text += reward_text + "\n"
                 
                 # Policy top 3
                 if step_idx < len(episode.pi) and episode.pi[step_idx] is not None:
