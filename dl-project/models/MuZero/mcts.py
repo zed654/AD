@@ -126,9 +126,10 @@ class MCTS:
         root.expand(network_output)
         
         # 루트 노드에 탐색 노이즈 추가
+        # 적정 alpha = 10/|Action| = 10/9 ≈ 1.1
         if add_exploration_noise:
             root.add_exploration_noise(
-                dirichlet_alpha=0.3,
+                dirichlet_alpha=1.1,
                 exploration_fraction=0.25
             )
             
