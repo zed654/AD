@@ -113,7 +113,7 @@ class SelfPlayManager:
                     
                     # MCTS가 선택한 action 저장
                     selected_action = mcts_result['action']
-                    # selected_action = 6  # Action 고정 테스트 (2=POS2=전방/상단)
+                    # selected_action = 2  # Action 고정 테스트 (2=POS2=전방/상단)
                     episode.actions[step_idx] = selected_action
                     
                     # Action에 따라 simulated_ego_pos 업데이트 (최종 value 계산용)
@@ -347,7 +347,7 @@ class SelfPlayManager:
 
         # 1. 직진성 강화하는 reward (즉, Path 의 오실레이션이 최소화 되어야함)
         trajectory_smooth_reward = self._calculate_smoothness_reward(episode, step_idx)
-        # trajectory_smooth_reward = 0 # FIXME: 제거. 테스트용
+        trajectory_smooth_reward = 0 # FIXME: 제거. 테스트용
 
         # 2. 이전 경로에서 Episode 의 끝 위치로 가까워지는 행동이면 +, 아니면 -
         # Potential-based reward shaping으로 목표 접근을 학습

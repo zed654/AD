@@ -386,14 +386,14 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         # Prediction 네트워크들
         # Policy: 2D -> 1D -> action_space_size
         self.prediction_policy_network = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # (B, 64, 25, 25) -> (B, 64, 1, 1)
-            nn.Flatten(),  # (B, 64)
-            *[layer for layer in mlp(64, fc_policy_layers, self.action_space_size, use_layer_norm=True)]
+            nn.AdaptiveAvgPool2d(3),  # (B, 64, 25, 25) -> (B, 64, 3, 3)
+            nn.Flatten(),  # (B, 576)
+            *[layer for layer in mlp(576, fc_policy_layers, self.action_space_size, use_layer_norm=True)]
         )
-        
-        # Value: 2D -> 1D -> support_size
+
+        # Value: 2D -> 1D -> support_size (전역 정보면 충분)
         self.prediction_value_network = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # (B, 64, 25, 25) -> (B, 64, 1, 1)  
+            nn.AdaptiveAvgPool2d(1),  # (B, 64, 25, 25) -> (B, 64, 1, 1)
             nn.Flatten(),  # (B, 64)
             *[layer for layer in mlp(64, fc_value_layers, self.full_support_size, use_layer_norm=True)]
         )

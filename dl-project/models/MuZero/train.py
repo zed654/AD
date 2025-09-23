@@ -677,11 +677,23 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
         sim_rows = []
         sim_cols = []
         
-        # 디버그: action 정보 출력
+        # 디버그: Episode 정보 출력
         unique_actions = set(enriched_episode.actions)
-        print(f"🔍 Episode {ep_idx+1} - Unique actions: {unique_actions}, Total steps: {len(enriched_episode.actions)}")
+        print(f"🔍 Episode {ep_idx+1} - States: {len(enriched_episode.states)}, Expert pos: {len(enriched_episode.expert_ego_pos)}")
+        print(f"🔍 Actions: {unique_actions}, Total: {len(enriched_episode.actions)}")
+
+        # Action별 Target Reward 평균 계산
+        action_rewards = {}
+        for action, reward in zip(enriched_episode.actions, enriched_episode.rewards):
+            if action not in action_rewards:
+                action_rewards[action] = []
+            action_rewards[action].append(reward)
+
+        action_avg_str = ", ".join([f"{action}:{np.mean(rewards):.3f}" for action, rewards in sorted(action_rewards.items())])
+        print(f"🎯 Action별 Target Reward: {action_avg_str}")
         
         # Episode states에서 직접 simulated_ego_pos 추출
+        fallback_count = 0
         for i in range(len(enriched_episode.states)):
             state = enriched_episode.states[i]
             if isinstance(state, dict) and 'simulated_ego_pos' in state:
@@ -692,6 +704,10 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
                 # fallback: 중앙 위치
                 sim_rows.append(49)
                 sim_cols.append(49)
+                fallback_count += 1
+
+        if fallback_count > 0:
+            print(f"⚠️ {fallback_count}/{len(enriched_episode.states)} 스텝에서 simulated_ego_pos 누락으로 fallback 사용")
         
         print(f"🔍 Simulated path: start({sim_rows[0]}, {sim_cols[0]}) -> end({sim_rows[-1]}, {sim_cols[-1]})")
         
