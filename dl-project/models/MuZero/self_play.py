@@ -306,10 +306,12 @@ class SelfPlayManager:
             prev_pos = (49, 49)
         else:
             prev_pos = st[step_idx - 1].get('simulated_ego_pos')
+        
+        init_pos = (49, 49)
 
         # 벡터 계산
         move_vector = np.array(curr_pos) - np.array(prev_pos)  # 실제 이동 방향
-        goal_vector = np.array(goal_pos) - np.array(prev_pos)  # 목표 방향
+        goal_vector = np.array(goal_pos) - np.array(init_pos)  # 목표 방향
 
         # 내적으로 유사도 계산 (코사인 유사도)
         move_mag = np.linalg.norm(move_vector)
