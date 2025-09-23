@@ -103,7 +103,7 @@ class SelfPlayManager:
                     with torch.no_grad():
                         mcts_result = self.mcts.run(
                             observation_tensor,
-                            add_exploration_noise=True  # GT 데이터는 노이즈 없이
+                            add_exploration_noise=True
                         )
                     
                     # Episode에 MCTS 결과 업데이트

@@ -862,7 +862,16 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
                         pos = enriched_episode.states[step]['simulated_ego_pos']
                         pos_info = f" @{pos}"
                     
-                    action_stats_text += f"  {step+1}: {action_obj.position.value}{pos_info} → {reward:.3f}\n"
+                    # Target Value도 함께 표시
+                    value_info = ""
+                    if hasattr(enriched_episode, 'target_values') and step < len(enriched_episode.target_values):
+                        target_value = enriched_episode.target_values[step]
+                        value_info = f" | Val: {target_value:.3f}"
+                    elif step < len(enriched_episode.values):
+                        value = enriched_episode.values[step]
+                        value_info = f" | Val: {value:.3f}"
+
+                    action_stats_text += f"  {step+1}: {action_obj.position.value}{pos_info} → {reward:.3f}{value_info}\n"
             if len(enriched_episode.actions) > max_display_steps:
                 action_stats_text += f"  ... (+{len(enriched_episode.actions) - max_display_steps} more)\n"
             

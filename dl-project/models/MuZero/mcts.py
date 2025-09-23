@@ -62,7 +62,7 @@ class Node:
     def add_exploration_noise(self, dirichlet_alpha: float, exploration_fraction: float):
         """루트 노드에 탐색 노이즈 추가"""
         actions = list(self.children.keys())
-        noise = np.random.dirichlet([dirichlet_alpha] * len(actions))
+        noise = np.random.dirichlet([dirichlet_alpha] * len(actions)) # [alpha, alpha, ..., alpha] ... actions 개
         
         for action, n in zip(actions, noise):
             self.children[action].prior = (
@@ -126,10 +126,11 @@ class MCTS:
         root.expand(network_output)
         
         # 루트 노드에 탐색 노이즈 추가
+        # Episode 의 prior 값에 노이즈 넣어주는 것
         # 적정 alpha = 10/|Action| = 10/9 ≈ 1.1
         if add_exploration_noise:
             root.add_exploration_noise(
-                dirichlet_alpha=1.1,
+                dirichlet_alpha=0.3, # 탐험도를 높히기 위해 0.3 으로 낮춤 (낮을수록 값 쏠림)
                 exploration_fraction=0.25
             )
             
