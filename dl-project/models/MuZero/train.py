@@ -73,42 +73,84 @@ def get_grid_color(value: float, channel: int = None) -> str:
 
 
 
+def h_transform(x):
+    """
+    MuZero 논문의 transform 함수
+    h(x) = sign(x) * (sqrt(|x| + 1) - 1) + ε*x
+    큰 값을 압축하여 학습 안정성 향상
+    """
+    epsilon = 0.001
+    return torch.sign(x) * (torch.sqrt(torch.abs(x) + 1) - 1) + epsilon * x
+
+def h_inverse(x):
+    """
+    Transform의 역함수
+    """
+    epsilon = 0.001
+    return torch.sign(x) * (
+        ((torch.sqrt(1 + 4 * epsilon * (torch.abs(x) + 1 + epsilon)) - 1) / (2 * epsilon)) ** 2 - 1
+    )
+
 def support_to_scalar(logits, support_size):
     """
-    Support distribution을 스칼라 값으로 변환
+    Support distribution을 스칼라 값으로 변환 (with transform)
     """
     # Logits를 확률로 변환
     probabilities = torch.softmax(logits, dim=1)
     # Support 범위 생성
-    support = torch.arange(-support_size, support_size + 1, 
+    support = torch.arange(-support_size, support_size + 1,
                           dtype=torch.float32, device=logits.device)
     support = support.expand(logits.shape[0], -1)
-    # 기대값 계산
-    return torch.sum(support * probabilities, dim=1)
+    # 기대값 계산 (transformed space에서)
+    transformed_value = torch.sum(support * probabilities, dim=1)
+    # 역변환하여 실제 값 반환
+    return h_inverse(transformed_value)
 
 
 def scalar_to_support(scalars, support_size):
     """
-    스칼라 값을 support distribution으로 변환 (cross_entropy용 인덱스 반환)
+    스칼라 값을 support distribution으로 변환 (Two-hot encoding)
+    MuZero 논문의 정확한 구현
     """
     batch_size = scalars.shape[0]
-    # ex) support_size = 20
-    
-    # Clamp scalars to the valid support range
-    # 1. 범위 제한: -20 ~ +20 (support_size 만큼 범위 제한)
-    scalars = torch.clamp(scalars, -support_size, support_size)
-    
-    # 2. 인덱스로 변환
-    # This is a simplified version - MuZero paper uses a more sophisticated method
-    # -20.3 → -1, -19 → 1, ..., 0 → 20, ..., 19.4 → 39
-    floor_idx = torch.floor(scalars + support_size).long()
-    
-    # 3. 범위 제한: 0 ~ 40 (2 * support_size)
-    # 최대치 제한: 양수의 최고치인 support_size * 2 를 넘어가면 범위 제한
-    # 최소치 제한: 음수를 제외하기위해 0으로 제한
-    floor_idx = torch.clamp(floor_idx, 0, 2 * support_size)
-    
-    return floor_idx
+    device = scalars.device
+
+    # 1. Transform 적용
+    transformed = h_transform(scalars)
+
+    # 2. 범위 제한 (transformed space에서)
+    transformed = torch.clamp(transformed, -support_size, support_size)
+
+    # 3. Support 범위와 인덱스 계산
+    num_atoms = 2 * support_size + 1  # 601개
+
+    # 연속값을 이산 인덱스로 매핑
+    # [-300, 300] → [0, 600]
+    normalized = (transformed + support_size) * (num_atoms - 1) / (2 * support_size)
+
+    # 4. Two-hot encoding (가장 가까운 두 원자에 확률 분배)
+    lower = torch.floor(normalized).long()
+    upper = lower + 1
+
+    # 경계 처리
+    lower = torch.clamp(lower, 0, num_atoms - 1)
+    upper = torch.clamp(upper, 0, num_atoms - 1)
+
+    # 가중치 계산 (float32로 명시적 변환)
+    upper_weight = (normalized - lower.float()).float()
+    lower_weight = (1 - upper_weight).float()
+
+    # 5. Categorical distribution 생성 (dtype 명시)
+    targets = torch.zeros(batch_size, num_atoms, device=device, dtype=torch.float32)
+
+    # 배치 인덱스
+    batch_idx = torch.arange(batch_size, device=device)
+
+    # Two-hot assignment (squeeze 제거 - 이미 1D)
+    targets[batch_idx, lower.squeeze()] = lower_weight
+    targets[batch_idx, upper.squeeze()] = upper_weight
+
+    return targets
 
 def train_network(network, replay_buffer, config, device, logger, iteration_num=1, base_step=0, loss_history=None, writer=None):
     """MuZero 네트워크 학습
@@ -280,11 +322,13 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             else:
                 # Fallback: target_values가 없으면 values 사용
                 target_value_scalar = episode.values[start_idx] if episode.values[start_idx] is not None else 0.0
-            target_value_idx = scalar_to_support(
+            # Two-hot categorical distribution
+            target_value_dist = scalar_to_support(
                 torch.tensor([target_value_scalar], device=device),
                 config.support_size
             )
-            value_loss += torch.nn.functional.cross_entropy(value, target_value_idx)
+            # Categorical cross-entropy loss
+            value_loss += -(target_value_dist * torch.nn.functional.log_softmax(value, dim=1)).sum(1).mean()
             value_count += 1
 
             # Policy loss
@@ -322,11 +366,13 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 
                 # Reward loss (k번째 액션의 reward)
                 target_reward_scalar = episode.rewards[start_idx + k]
-                target_reward_idx = scalar_to_support(
+                # Two-hot categorical distribution
+                target_reward_dist = scalar_to_support(
                     torch.tensor([target_reward_scalar], device=device),
                     config.support_size
                 )
-                reward_loss += torch.nn.functional.cross_entropy(reward, target_reward_idx)
+                # Categorical cross-entropy loss
+                reward_loss += -(target_reward_dist * torch.nn.functional.log_softmax(reward, dim=1)).sum(1).mean()
                 reward_count += 1
 
                 # Value loss (k+1번째 상태의 value)
@@ -338,11 +384,13 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                     # Fallback: target_values가 없으면 values 사용
                     if start_idx + k + 1 < len(episode.values):
                         target_value_scalar = episode.values[start_idx + k + 1] if episode.values[start_idx + k + 1] is not None else target_value_scalar
-                target_value_idx = scalar_to_support(
+                # Two-hot categorical distribution
+                target_value_dist = scalar_to_support(
                     torch.tensor([target_value_scalar], device=device),
                     config.support_size
                 )
-                value_loss += torch.nn.functional.cross_entropy(value, target_value_idx)
+                # Categorical cross-entropy loss
+                value_loss += -(target_value_dist * torch.nn.functional.log_softmax(value, dim=1)).sum(1).mean()
                 value_count += 1
 
                 # Policy loss (k+1번째 상태의 policy)

@@ -80,8 +80,8 @@ class Node:
 
 class MCTS:
     """Monte Carlo Tree Search 구현"""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  network: 'AbstractNetwork',
                  action_space_size: int,
                  num_simulations: int,
@@ -89,18 +89,29 @@ class MCTS:
                  c1: float = 1.25,
                  c2: float = 19652,
                  device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
-        
+
         self.network = network
         self.action_space_size = action_space_size
         self.num_simulations = num_simulations
         self.discount = discount
-        
+
         # PUCT 하이퍼파라미터
         self.c1 = c1  # 탐색 상수
         self.c2 = c2  # 탐색 상수
-        
+
         self.device = device
         self.min_max_stats = MinMaxStats()
+
+    def _h_inverse(self, x):
+        """
+        MuZero transform의 역함수 (스칼라 버전)
+        """
+        epsilon = 0.001
+        sign_x = 1 if x > 0 else -1 if x < 0 else 0
+        abs_x = abs(x)
+        return sign_x * (
+            ((math.sqrt(1 + 4 * epsilon * (abs_x + 1 + epsilon)) - 1) / (2 * epsilon)) ** 2 - 1
+        )
         
     def run(self, observation: torch.Tensor, add_exploration_noise: bool = True, debug: bool = False) -> Dict:
         """Self-play를 위한 MCTS 실행
@@ -148,7 +159,8 @@ class MCTS:
             
             # 리프 노드까지 선택
             while node.expanded():
-                current_action, node = self._select_child(node) # PUCT 통해 Action 선택
+                # 여기 _select_child() 에서는 temperature 쓰면 안됌. Loss 깨짐
+                current_action, node = self._select_child(node) # PUCT 통해 Action 선택 
                 search_path.append(node)
             
             # 리프 노드 평가 및 확장
@@ -179,6 +191,8 @@ class MCTS:
             print(f"시뮬레이션 완료! 최종 노드 수: {root.count_nodes()}")
             
         # 액션 선택 및 정책 타겟 계산
+        # 나중에 실제 학습할 때는 temperature 를 iteration 끝날 시점에 0 까지 줄이도록 해야함
+        # 얘는 학습에 영향 안 줌. 왜냐하면, Episode 의 다음 Step 에서 다시 MCTS Sim 돌리는데, Root 는 초기화되어있기 때문.
         action = self._select_action(root, temperature=1.0) # 시뮬레이션 종료 후 방문 횟수에 따른 액션 선택
         # action = 6  # Test 용 - 최종 선택도 2로 강제 FIXME: remove this line
         policy_targets = self._get_pi_targets(root)
@@ -281,8 +295,10 @@ class MCTS:
             action = actions[np.argmax(visit_counts)]
         else:
             # 온도에 따른 확률적 선택
-            visit_count_distribution = visit_counts ** (1 / temperature)
+            visit_count_distribution = visit_counts ** (1 / temperature) # np.array ** k -> 각 요소에 k 제곱
             visit_count_distribution = visit_count_distribution / sum(visit_count_distribution)
+            
+            # 확률 분포 기반으로 선택
             action = np.random.choice(actions, p=visit_count_distribution)
             
         return action
@@ -347,18 +363,35 @@ class MCTS:
             dtype=torch.float32
         )
         
-        # value와 reward를 스칼라 값으로 변환
+        # # 네트워크 출력: (B, 21)
+        # logits = [0.1, 0.2, ..., 0.8, ...]  # 21개
+
+        # # Softmax 후 확률
+        # probs = softmax(logits)  # [0.05, 0.1, ..., 0.3, ...]
+
+        # # 최종 scalar value
+        # value = sum(probs * [-10, -9, ..., 0, ..., 10])
+        # value = 0.05*(-10) + 0.1*(-9) + ... + 0.3*(0) + ...
+        # value = -2.5  # 예시
+        # -> 사실상 내적임
+
+
+        # value와 reward를 스칼라 값으로 변환 (with h_inverse transform)
         # Categorical distribution: logits -> probabilities -> scalar
         if value.shape[1] == len(support):
             value_probs = torch.softmax(value[0], dim=0)
-            value_scalar = torch.sum(value_probs * support).item()
+            transformed_value = torch.sum(value_probs * support).item()
+            # MuZero transform 역변환
+            value_scalar = self._h_inverse(transformed_value)
         else:
             # Support 크기가 맞지 않으면 0 반환
             value_scalar = 0.0
-        
+
         if reward.shape[1] == len(support):
             reward_probs = torch.softmax(reward[0], dim=0)
-            reward_scalar = torch.sum(reward_probs * support).item()
+            transformed_reward = torch.sum(reward_probs * support).item()
+            # MuZero transform 역변환
+            reward_scalar = self._h_inverse(transformed_reward)
         else:
             reward_scalar = 0.0
         

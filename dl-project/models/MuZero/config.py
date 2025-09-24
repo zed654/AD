@@ -49,7 +49,11 @@ class MuZeroConfig:
 
         # 네트워크 설정
         self.network = "fullyconnected"  # "resnet" 또는 "fullyconnected" 또는 "fullyconnected_test"
-        self.support_size = 10
+
+        # MuZero 논문의 Categorical 설정
+        self.support_size = 300  # MuZero 논문 기본값 (-300 ~ +300)
+        # Transform h(x) = sign(x) * (sqrt(|x| + 1) - 1) + ε*x 적용 시
+        # 실제 표현 가능 범위는 약 ±17 정도로 압축됨
         
         # Fully Connected Network 설정
         self.encoding_size = 64  # 8 -> 64로 증가
@@ -88,6 +92,7 @@ class MuZeroConfig:
         self.replay_buffer_size = 3300 # 3300  # Replay Buffer 최대 사이즈. 너무 크게하면 과거 데이터의 업데이트가 늦어질 수 있음.
         
         # Self-Play 설정
+        # TODO: 실제 Inference 할 때, MCTS Sim 이후 Step 선택하는 Action 부에 Temperature 를 0으로 줘야함
         self.num_workers = 1
         self.selfplay_on_gpu = False
         self.num_simulations = 50  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)

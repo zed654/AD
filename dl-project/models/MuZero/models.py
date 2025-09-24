@@ -384,18 +384,38 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         )
         
         # Prediction 네트워크들
-        # Policy: 2D -> 1D -> action_space_size
+        # Policy: Conv layers로 공간 정보 보존하며 압축
+        # Input: (B, 64, 25, 25)
         self.prediction_policy_network = nn.Sequential(
-            nn.AdaptiveAvgPool2d(3),  # (B, 64, 25, 25) -> (B, 64, 3, 3)
-            nn.Flatten(),  # (B, 576)
-            *[layer for layer in mlp(576, fc_policy_layers, self.action_space_size, use_layer_norm=True)]
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # (B, 64, 25, 25) -> (B, 128, 13, 13)
+            nn.ReLU(),
+            nn.LayerNorm([128, 13, 13]),
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),  # (B, 128, 13, 13) -> (B, 256, 7, 7)
+            nn.ReLU(),
+            nn.LayerNorm([256, 7, 7]),
+            nn.AdaptiveAvgPool2d(3),  # (B, 256, 7, 7) -> (B, 256, 3, 3)
+            nn.Flatten(),  # (B, 2304)
+            *[layer for layer in mlp(2304, fc_policy_layers, self.action_space_size, use_layer_norm=True)]
         )
 
-        # Value: 2D -> 1D -> support_size (전역 정보면 충분)
+        # Value: Improved with learned pooling and deeper MLP
+        # Input: (B, 64, 25, 25)
         self.prediction_value_network = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # (B, 64, 25, 25) -> (B, 64, 1, 1)
-            nn.Flatten(),  # (B, 64)
-            *[layer for layer in mlp(64, fc_value_layers, self.full_support_size, use_layer_norm=True)]
+            nn.AdaptiveAvgPool2d(3),  # (B, 64, 25, 25) -> (B, 64, 3, 3)
+            nn.Conv2d(self.latent_channels, self.latent_channels, kernel_size=3, bias=False),  # (B, 64, 3, 3) -> (B, 64, 1, 1) learned pooling
+            nn.Flatten(),  # (B, 64, 1, 1) -> (B, 64)
+            nn.LayerNorm(64),
+            # *[layer for layer in mlp(64, fc_value_layers, self.full_support_size, use_layer_norm=True)]
+            nn.Linear(64, 256), # (B, 64) -> (B, 256)
+            nn.ReLU(),
+            nn.LayerNorm(256),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, self.full_support_size)
+
+            # nn.AdaptiveAvgPool2d(1),  # (B, 64, 25, 25) -> (B, 64, 1, 1)
+            # nn.Flatten(),  # (B, 64)
+            # *[layer for layer in mlp(64, fc_value_layers, self.full_support_size, use_layer_norm=True)]
         )
 
     def prediction(self, latent):
