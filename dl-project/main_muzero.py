@@ -37,7 +37,7 @@ def get_network(config, device):
             config.fc_policy_layers,
             config.fc_representation_layers,
             config.fc_dynamics_layers,
-            config.support_size,
+            config.num_categorical_distribution_atoms,
             # 새로운 파라미터들
             use_coordconv=config.use_coordconv,
             use_goal_map=config.use_goal_map,

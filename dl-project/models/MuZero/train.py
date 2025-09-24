@@ -91,15 +91,23 @@ def h_inverse(x):
         ((torch.sqrt(1 + 4 * epsilon * (torch.abs(x) + 1 + epsilon)) - 1) / (2 * epsilon)) ** 2 - 1
     )
 
-def support_to_scalar(logits, support_size):
+def support_to_scalar(logits, config):
     """
     Support distribution을 스칼라 값으로 변환 (with transform)
+    config의 categorical_distribution_min/max 사용
     """
     # Logits를 확률로 변환
     probabilities = torch.softmax(logits, dim=1)
-    # Support 범위 생성
-    support = torch.arange(-support_size, support_size + 1,
-                          dtype=torch.float32, device=logits.device)
+    # Support 범위 생성 (config 기반)
+    if hasattr(config, 'categorical_distribution_min'):
+        num_categorical_distribution_atoms = config.num_categorical_distribution_atoms if hasattr(config, 'num_categorical_distribution_atoms') else logits.shape[1]
+        support = torch.linspace(config.categorical_distribution_min, config.categorical_distribution_max, num_categorical_distribution_atoms,
+                                dtype=torch.float32, device=logits.device)
+    else:
+        # Fallback
+        support_size = (logits.shape[1] - 1) // 2
+        support = torch.arange(-support_size, support_size + 1,
+                              dtype=torch.float32, device=logits.device)
     support = support.expand(logits.shape[0], -1)
     # 기대값 계산 (transformed space에서)
     transformed_value = torch.sum(support * probabilities, dim=1)
@@ -107,10 +115,10 @@ def support_to_scalar(logits, support_size):
     return h_inverse(transformed_value)
 
 
-def scalar_to_support(scalars, support_size):
+def scalar_to_support(scalars, config):
     """
     스칼라 값을 support distribution으로 변환 (Two-hot encoding)
-    MuZero 논문의 정확한 구현
+    config의 categorical_distribution_min/max 사용
     """
     batch_size = scalars.shape[0]
     device = scalars.device
@@ -119,29 +127,31 @@ def scalar_to_support(scalars, support_size):
     transformed = h_transform(scalars)
 
     # 2. 범위 제한 (transformed space에서)
-    transformed = torch.clamp(transformed, -support_size, support_size)
+    categorical_distribution_min = config.categorical_distribution_min if hasattr(config, 'categorical_distribution_min') else -config.support_size
+    categorical_distribution_max = config.categorical_distribution_max if hasattr(config, 'categorical_distribution_max') else config.support_size
+    transformed = torch.clamp(transformed, categorical_distribution_min, categorical_distribution_max)
 
     # 3. Support 범위와 인덱스 계산
-    num_atoms = 2 * support_size + 1  # 601개
+    num_categorical_distribution_atoms = config.num_categorical_distribution_atoms if hasattr(config, 'num_categorical_distribution_atoms') else (2 * config.support_size + 1)
 
     # 연속값을 이산 인덱스로 매핑
-    # [-300, 300] → [0, 600]
-    normalized = (transformed + support_size) * (num_atoms - 1) / (2 * support_size)
+    # [categorical_distribution_min, categorical_distribution_max] → [0, num_categorical_distribution_atoms-1]
+    normalized = (transformed - categorical_distribution_min) * (num_categorical_distribution_atoms - 1) / (categorical_distribution_max - categorical_distribution_min)
 
     # 4. Two-hot encoding (가장 가까운 두 원자에 확률 분배)
     lower = torch.floor(normalized).long()
     upper = lower + 1
 
     # 경계 처리
-    lower = torch.clamp(lower, 0, num_atoms - 1)
-    upper = torch.clamp(upper, 0, num_atoms - 1)
+    lower = torch.clamp(lower, 0, num_categorical_distribution_atoms - 1)
+    upper = torch.clamp(upper, 0, num_categorical_distribution_atoms - 1)
 
     # 가중치 계산 (float32로 명시적 변환)
     upper_weight = (normalized - lower.float()).float()
     lower_weight = (1 - upper_weight).float()
 
     # 5. Categorical distribution 생성 (dtype 명시)
-    targets = torch.zeros(batch_size, num_atoms, device=device, dtype=torch.float32)
+    targets = torch.zeros(batch_size, num_categorical_distribution_atoms, device=device, dtype=torch.float32)
 
     # 배치 인덱스
     batch_idx = torch.arange(batch_size, device=device)
@@ -325,7 +335,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             # Two-hot categorical distribution
             target_value_dist = scalar_to_support(
                 torch.tensor([target_value_scalar], device=device),
-                config.support_size
+                config
             )
             # Categorical cross-entropy loss
             value_loss += -(target_value_dist * torch.nn.functional.log_softmax(value, dim=1)).sum(1).mean()
@@ -369,7 +379,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 # Two-hot categorical distribution
                 target_reward_dist = scalar_to_support(
                     torch.tensor([target_reward_scalar], device=device),
-                    config.support_size
+                    config
                 )
                 # Categorical cross-entropy loss
                 reward_loss += -(target_reward_dist * torch.nn.functional.log_softmax(reward, dim=1)).sum(1).mean()
@@ -387,7 +397,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 # Two-hot categorical distribution
                 target_value_dist = scalar_to_support(
                     torch.tensor([target_value_scalar], device=device),
-                    config.support_size
+                    config
                 )
                 # Categorical cross-entropy loss
                 value_loss += -(target_value_dist * torch.nn.functional.log_softmax(value, dim=1)).sum(1).mean()
@@ -997,7 +1007,7 @@ def get_network(config, device):
             config.fc_policy_layers,
             config.fc_representation_layers,
             config.fc_dynamics_layers,
-            config.support_size,
+            config.num_categorical_distribution_atoms,
             # 새로운 파라미터들
             use_coordconv=config.use_coordconv,
             use_goal_map=config.use_goal_map,

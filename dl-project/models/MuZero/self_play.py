@@ -55,7 +55,8 @@ class SelfPlayManager:
             discount=config.discount,
             c1=config.pb_c_init,
             c2=config.pb_c_base,
-            device=device
+            device=device,
+            config=config  # Config 전달 추가
         )
         
     def enrich_episodes_with_mcts(self, episodes: List['Episode']) -> List['Episode']:

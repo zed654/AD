@@ -318,7 +318,7 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         fc_policy_layers,
         fc_representation_layers,  # 사용하지 않음
         fc_dynamics_layers,
-        support_size,
+        num_categorical_distribution_atoms,
         # 새로운 설정들
         use_coordconv=False,
         use_goal_map=False,
@@ -327,7 +327,8 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
     ):
         super().__init__()
         self.action_space_size = action_space_size
-        self.full_support_size = 2 * support_size + 1
+        # num_categorical_distribution_atoms 직접 사용
+        self.num_categorical_distribution_atoms = num_categorical_distribution_atoms
         self.observation_shape = observation_shape
         
         # 새로운 구조 설정
@@ -380,7 +381,7 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         reward_input_size = 64 + 64 + self.action_space_size  # prev_latent + next_latent + action
         self.reward_input_norm = nn.LayerNorm(reward_input_size)  # 입력 정규화
         self.dynamics_reward_network = mlp(
-            reward_input_size, fc_reward_layers, self.full_support_size, use_layer_norm=True
+            reward_input_size, fc_reward_layers, self.num_categorical_distribution_atoms, use_layer_norm=True
         )
         
         # Prediction 네트워크들
@@ -411,7 +412,7 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
             nn.LayerNorm(256),
             nn.Linear(256, 256),
             nn.ReLU(),
-            nn.Linear(256, self.full_support_size)
+            nn.Linear(256, self.num_categorical_distribution_atoms)
 
             # nn.AdaptiveAvgPool2d(1),  # (B, 64, 25, 25) -> (B, 64, 1, 1)
             # nn.Flatten(),  # (B, 64)
@@ -589,8 +590,8 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         # reward equal to 0 for consistency
         # 중앙값(0)에 해당하는 logits 생성 (log-softmax 이전 상태)
         # 큰 음수로 초기화하고 중앙 인덱스만 0으로 설정
-        reward = torch.full((len(observation), self.full_support_size), -1e8, device=observation.device)
-        reward[:, self.full_support_size // 2] = 0  # 중앙값(0)에 높은 확률 할당
+        reward = torch.full((len(observation), self.num_categorical_distribution_atoms), -1e8, device=observation.device)
+        reward[:, self.num_categorical_distribution_atoms // 2] = 0  # 중앙값(0)에 높은 확률 할당
 
         return (
             value,

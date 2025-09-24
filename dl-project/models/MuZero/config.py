@@ -50,11 +50,18 @@ class MuZeroConfig:
         # 네트워크 설정
         self.network = "fullyconnected"  # "resnet" 또는 "fullyconnected" 또는 "fullyconnected_test"
 
-        # MuZero 논문의 Categorical 설정
-        self.support_size = 300  # MuZero 논문 기본값 (-300 ~ +300)
-        # Transform h(x) = sign(x) * (sqrt(|x| + 1) - 1) + ε*x 적용 시
-        # 실제 표현 가능 범위는 약 ±17 정도로 압축됨
-        
+        # MuZero Categorical Distribution Value/Reward 설정
+        # 논문: 범위와 해상도를 독립적으로 설정
+        # Reward 와 Value 모두 적용됨
+        # Reward 실제 범위: -2.0 ~ +0.1 → h_transform 후 -0.73 ~ +0.05
+        # Value는 누적되므로 더 넓은 범위 필요
+        self.categorical_distribution_min = -2.0    # 최소 값
+        self.categorical_distribution_max = 2.0     # 최대 값
+        self.num_categorical_distribution_atoms = 21      # 카테고리 개수 (홀수 권장; 해상도임)
+        # -2.0~2.0 에 atoms 21 이면
+        #     [2.0, -1.8, -1.6, -1.4, -1.2, -1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
+
+
         # Fully Connected Network 설정
         self.encoding_size = 64  # 8 -> 64로 증가
         self.fc_representation_layers = [128, 64]  # 히든 레이어 추가

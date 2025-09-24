@@ -88,12 +88,14 @@ class MCTS:
                  discount: float = 0.997,
                  c1: float = 1.25,
                  c2: float = 19652,
-                 device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
+                 device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
+                 config=None):
 
         self.network = network
         self.action_space_size = action_space_size
         self.num_simulations = num_simulations
         self.discount = discount
+        self.config = config  # Config 저장
 
         # PUCT 하이퍼파라미터
         self.c1 = c1  # 탐색 상수
@@ -352,16 +354,25 @@ class MCTS:
                 hidden_state, action_tensor
             )
             
-        # Support를 실제 값으로 변환 (간단한 구현)
-        # MuZero는 categorical representation을 사용
-        # support_size = 10이면 범위는 [-10, -9, ..., 0, ..., 9, 10] (21개)
-        support_size = (self.network.full_support_size - 1) // 2
-        support = torch.arange(
-            -support_size,
-            support_size + 1,
-            device=value.device,
-            dtype=torch.float32
-        )
+        # Support를 실제 값으로 변환 (config의 categorical_distribution_min/max 사용)
+        # num_categorical_distribution_atoms개의 균등 간격 support 생성
+        if hasattr(self.config, 'categorical_distribution_min'):
+            support = torch.linspace(
+                self.config.categorical_distribution_min,
+                self.config.categorical_distribution_max,
+                self.network.num_categorical_distribution_atoms,
+                device=value.device,
+                dtype=torch.float32
+            )
+        else:
+            # Fallback: 기존 방식
+            support_size = (self.network.num_categorical_distribution_atoms - 1) // 2
+            support = torch.arange(
+                -support_size,
+                support_size + 1,
+                device=value.device,
+                dtype=torch.float32
+            )
         
         # # 네트워크 출력: (B, 21)
         # logits = [0.1, 0.2, ..., 0.8, ...]  # 21개
@@ -376,13 +387,13 @@ class MCTS:
         # -> 사실상 내적임
 
 
-        # value와 reward를 스칼라 값으로 변환 (with h_inverse transform)
+        # value와 reward를 스칼라 값으로 변환 (transformed 값 유지)
         # Categorical distribution: logits -> probabilities -> scalar
         if value.shape[1] == len(support):
             value_probs = torch.softmax(value[0], dim=0)
             transformed_value = torch.sum(value_probs * support).item()
-            # MuZero transform 역변환
-            value_scalar = self._h_inverse(transformed_value)
+            # MCTS 내부에서는 transformed 값을 유지 (h_inverse 제거)
+            value_scalar = transformed_value
         else:
             # Support 크기가 맞지 않으면 0 반환
             value_scalar = 0.0
@@ -390,11 +401,11 @@ class MCTS:
         if reward.shape[1] == len(support):
             reward_probs = torch.softmax(reward[0], dim=0)
             transformed_reward = torch.sum(reward_probs * support).item()
-            # MuZero transform 역변환
-            reward_scalar = self._h_inverse(transformed_reward)
+            # MCTS 내부에서는 transformed 값을 유지 (h_inverse 제거)
+            reward_scalar = transformed_reward
         else:
             reward_scalar = 0.0
-        
+
         return {
             'value': value_scalar,
             'reward': reward_scalar,
