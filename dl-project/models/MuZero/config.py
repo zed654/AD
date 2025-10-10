@@ -45,7 +45,7 @@ class MuZeroConfig:
         
         # PUCB 하이퍼 파라미터 설정
         self.pb_c_base = 19652
-        self.pb_c_init = 1.25 # 높을수록 새로운 가지 탐색이 늘어남. Deafult: 1.25
+        self.pb_c_init = 2.5 # 높을수록 새로운 가지 탐색이 늘어남. Deafult: 1.25
 
         # 네트워크 설정
         self.network = "fullyconnected"  # "resnet" 또는 "fullyconnected" 또는 "fullyconnected_test"
@@ -107,8 +107,8 @@ class MuZeroConfig:
         self.mcts_value_backup_discount = 0.99
         self.puct_discount = 0.997
         self.temperature_threshold = None
-        self.mcts_dirichlet_alpha = 0.3  # dirichlet noise - 탐험도를 높히기 위해 0.3 으로 낮춤 (낮을수록 값 쏠림)
-        self.mcts_exploration_fraction = 0.25  # dirichlet noise
+        self.mcts_dirichlet_alpha = 1.2  # dirichlet noise - 탐험도를 높히기 위해 값을 키워야함 (a = 1 이면 정규분포임. 현 코드에서 얘를 기반으로 랜덤확률로 씀. 즉, 탐험항 높히려면 가치 낮은애가 커질 수 있어야함. 그렇기 때문에 alpha 값은 작을수록 탐험도가 강해짐). alpha 가 작으면 값이 큰 인덱스(prior 높은애) 의 변화량이 더 커짐
+        self.mcts_exploration_fraction = 0.25  # dirichlet noise (클 수록 탐험도 커짐) -> 기존 prior 를 얼마나 깎고, noise 로 대체할건지 결정하는 항임. 값이 크면 prior 덜 반영됨 (0~1 사이). 1이면, prior 결과 안쓰고 noise 만 쓴다는거임
         self.num_stochastic_steps = 30  # [지금 얘 안씀] 초기 30스텝 동안 확률적 행동 선택
         self.max_game_length = 500  # Self-play 안전장치 (무한루프 방지)
         self.num_selfplay_games = 5  # Self-play로 실행할 게임 수
