@@ -22,7 +22,7 @@ class ExpertDataLoader:
             observation_provider: GT 데이터 제공자 (선택적)
         """
         self.config = config
-        self.discount = config.discount
+        # self.discount = config.discount
         
         # ObservationProvider에서 parser와 데이터 가져오기
         if observation_provider and hasattr(observation_provider, 'get_parser'):

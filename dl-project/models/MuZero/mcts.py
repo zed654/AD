@@ -85,7 +85,8 @@ class MCTS:
                  network: 'AbstractNetwork',
                  action_space_size: int,
                  num_simulations: int,
-                 discount: float = 0.997,
+                 mcts_value_backup_discount: float = 0.99,
+                 puct_discount: float = 0.997,
                  c1: float = 1.25,
                  c2: float = 19652,
                  device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
@@ -94,7 +95,8 @@ class MCTS:
         self.network = network
         self.action_space_size = action_space_size
         self.num_simulations = num_simulations
-        self.discount = discount
+        self.mcts_value_backup_discount = mcts_value_backup_discount
+        self.puct_discount = puct_discount
         self.config = config  # Config 저장
 
         # PUCT 하이퍼파라미터
@@ -250,7 +252,7 @@ class MCTS:
             # Q(s,a) = reward + γ * V(next)
             # child.reward: s에서 a를 취했을 때의 즉각적 보상
             # child.value(): 자식 노드들의 평균 가치 (다음 상태의 가치)
-            q_sa = child.reward + self.discount * child.value()
+            q_sa = child.reward + self.config.puct_discount * child.value()
             value_score = self.min_max_stats.normalize(q_sa)
         else:
             value_score = 0
@@ -271,15 +273,17 @@ class MCTS:
         
     def _backup(self, search_path: List[Node], value: float):
         """검색 경로를 따라 가치 역전파"""
+        # leaf -> parents -> root 순서로 업데이트
+        # 핵심은, Parent 3 이라는 부모의 자식 Leaf 1, Leaf 2 가 있을 때, Parent 3 의 Value 는 Leaf 1, Leaf 2 의 Value 가 모두 반영되어야 한다는 것.
         for node in reversed(search_path):  # Leaf -> root 순서
             node.value_sum += value         # W(s, a) 업데이트
             node.visit_count += 1           # N(s, a) 업데이트
             
             # Q(s,a) = r + γV를 min-max 통계에 반영
             # 현재 전파 중인 value를 사용 (평균이 아닌 실제 백업 값)
-            q_value = node.reward + self.discount * value
+            q_value = node.reward + self.config.mcts_value_backup_discount * value
             
-            # Min-max 통계 업데이트
+            # Min-max 통계 업데이트 ... PUCT 계산(_puct_score() 함수)에서 q_sa 정규화에 사용됨
             self.min_max_stats.update(q_value)
             
             # 다음 노드를 위한 value 계산 (할인된 가치로 업데이트)

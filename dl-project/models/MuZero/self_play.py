@@ -52,7 +52,8 @@ class SelfPlayManager:
             network=network,
             action_space_size=len(config.action_space),
             num_simulations=config.num_simulations,
-            discount=config.discount,
+            mcts_value_backup_discount=config.mcts_value_backup_discount,
+            puct_discount=config.puct_discount,
             c1=config.pb_c_init,
             c2=config.pb_c_base,
             device=device,
@@ -369,71 +370,53 @@ class SelfPlayManager:
             return trajectory_goal_follow_reward + trajectory_smooth_reward
         
     def _calculate_target_value(self, episode: Episode):
+        """MuZero n-step bootstrap target value 계산
+
+        target[t] = r[t] + γ*r[t+1] + ... + γ^(k-1)*r[t+k-1] + γ^k*V[t+k]
         """
-        MuZero n-step targets (정석)
-        z_t = sum_{k=0}^{steps-1} γ^k r_{t+k} + γ^{steps} * V(s_{t+steps})
-        - 여기서 steps = min(n, 터미널 도달 전까지의 실제 합산 스텝 수)
-        - dones[j]==True면 그 전이에서 종료(부트스트랩 금지)
-        - 예측 로그(root values)와 타깃은 분리 저장
-        """
-        n = int(self.config.unroll_steps)
-        gamma = float(self.config.discount)
+        # 예외 처리: rewards가 비어있는 경우
+        if not episode.rewards:
+            return []
 
-        rewards = episode.rewards
-        T = len(rewards)
-        
-        # dones 필드 처리 - 길이를 rewards와 맞춤
-        if hasattr(episode, "dones") and episode.dones is not None:
-            dones = episode.dones
-            # dones 길이가 rewards보다 짧으면 False로 채움
-            if len(dones) < T:
-                dones = list(dones) + [False] * (T - len(dones))
-        else:
-            dones = [False] * T
+        T = len(episode.rewards)
+        # n_max가 T보다 크면 T-1로 제한 (항상 Bootstrap 사용)
+        n_max = min(self.config.n_target_value_bootstrap, T - 1) if T > 1 else 1
+        gamma = self.config.value_bootstrap_discount
 
-        # 예측 로그(root values) 소스: root_values > values > None
-        root_values = getattr(episode, "root_values", None)
-        if root_values is None:
-            root_values = getattr(episode, "values", None)
-        if root_values is None:
-            root_values = [None] * T
+        # Values와 dones 길이를 rewards에 맞춤
+        values = episode.values if hasattr(episode, "values") and episode.values else [0.0] * T
+        if len(values) < T:
+            values = list(values) + [0.0] * (T - len(values))
 
-        targets = [0.0] * T
+        dones = list(episode.dones) if hasattr(episode, "dones") and episode.dones else [False] * T
+        if len(dones) < T:
+            dones = dones + [False] * (T - len(dones))
 
+        targets = []
         for t in range(T):
-            G = 0.0
-            discount = 1.0
-            steps = 0
-            hit_terminal = False
+            target_value = 0.0
 
-            # n-step 누적 (조기 종료)
-            while steps < n and (t + steps) < T:
-                j = t + steps
-                G += discount * float(rewards[j])
+            # n-step discounted rewards 누적
+            for k in range(n_max):
+                idx = t + k
+                if idx >= T:
+                    break
 
-                if dones[j]:                 # 전이 (s_j,a_j)->s_{j+1} 직후 터미널
-                    hit_terminal = True
-                    break                     # 부트스트랩 금지
+                # Reward 누적
+                target_value += (gamma ** k) * episode.rewards[idx]
 
-                discount *= gamma
-                steps += 1
+                # Terminal 체크 (reward 누적 후)
+                if dones[idx]:
+                    break
+            else: # break 없이 for 문이 정상 종료된 경우 실행됨
+                # Bootstrap: Terminal 도달 안했을 때만 (for-else)
+                bootstrap_idx = t + n_max
+                if bootstrap_idx < T:
+                    bootstrap_value = values[bootstrap_idx] if values[bootstrap_idx] is not None else 0.0
+                    target_value += (gamma ** n_max) * bootstrap_value
 
-            if hit_terminal:
-                targets[t] = G
-                continue
+            targets.append(target_value)
 
-            # 부트스트랩: 비터미널인 경우에만, s_{t+steps}
-            j_boot = t + steps
-            if j_boot < T:
-                v_boot = root_values[j_boot]
-                if v_boot is None: # 사실상 동작하지 않는 코드
-                    v_boot = 0.0
-                G += discount * float(v_boot)
-
-            targets[t] = G
-
-        # 예측 로그를 보존하고 타깃은 별도 필드에 저장
-        # episode.target_values = targets
         return targets
     
     # def _infer_value_from_state(self, episode: Episode, idx: int) -> float:
