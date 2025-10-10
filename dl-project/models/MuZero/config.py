@@ -107,6 +107,8 @@ class MuZeroConfig:
         self.mcts_value_backup_discount = 0.99
         self.puct_discount = 0.997
         self.temperature_threshold = None
+        self.mcts_dirichlet_alpha = 0.3  # dirichlet noise - 탐험도를 높히기 위해 0.3 으로 낮춤 (낮을수록 값 쏠림)
+        self.mcts_exploration_fraction = 0.25  # dirichlet noise
         self.num_stochastic_steps = 30  # [지금 얘 안씀] 초기 30스텝 동안 확률적 행동 선택
         self.max_game_length = 500  # Self-play 안전장치 (무한루프 방지)
         self.num_selfplay_games = 5  # Self-play로 실행할 게임 수

@@ -259,11 +259,74 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
     print("\n=== MuZero 네트워크 학습 시작 ===")
     for step in range(training_steps):
         # 배치 샘플링 ( n Batch = Episode n 개)
-        batch = replay_buffer.get_batch(batch_size) # Replay Buffer 에서 batch_size 만큼 랜덤하게 Episode 를 뽑아냄 
+        batch = replay_buffer.get_batch(batch_size) # Replay Buffer 에서 batch_size 만큼 랜덤하게 Episode 를 뽑아냄
         if batch is None:
             print(f"Step {step}: 배치 샘플링 실패 (데이터 부족)")
             continue
-        
+
+        # Episode 통계 수집 (TensorBoard용)
+        episode_rewards = []
+        episode_values = []
+        episode_target_values = []
+
+        def to_python_float(value):
+            """모든 타입을 Python float로 안전하게 변환
+
+            Categorical distribution (21-element Tensor)을 scalar로 변환:
+            - Softmax로 확률 분포 계산
+            - Support와 내적하여 기댓값 계산
+            """
+            if isinstance(value, torch.Tensor):
+                value = value.detach().cpu()
+
+                # 1-element tensor: 바로 scalar 반환
+                if value.numel() == 1:
+                    return float(value.item())
+
+                # (1, 21) 또는 (21,) shape의 categorical distribution
+                if value.numel() == 21:
+                    # Flatten to 1D
+                    value_1d = value.flatten()
+
+                    # Support 생성 (config의 설정 사용)
+                    if hasattr(config, 'categorical_distribution_min'):
+                        support = torch.linspace(
+                            config.categorical_distribution_min,
+                            config.categorical_distribution_max,
+                            21,
+                            dtype=torch.float32
+                        )
+                    else:
+                        support = torch.arange(-10, 11, dtype=torch.float32)
+
+                    # Logits → Probabilities → Expected Value
+                    probs = torch.softmax(value_1d, dim=0)
+                    scalar_value = torch.sum(probs * support).item()
+                    return float(scalar_value)
+                else:
+                    # 그 외 다차원 Tensor는 평균 사용
+                    print(f"Warning: Unexpected tensor size ({value.shape}), using mean")
+                    return float(value.mean().item())
+            elif isinstance(value, np.ndarray):
+                if value.size == 1:
+                    return float(value.item())
+                else:
+                    print(f"Warning: Multi-element array (size={value.shape}), using mean")
+                    return float(np.mean(value))
+            else:
+                return float(value)
+
+        for episode in batch:
+            if hasattr(episode, 'rewards') and episode.rewards:
+                for r in episode.rewards:
+                    episode_rewards.append(to_python_float(r))
+            if hasattr(episode, 'values') and episode.values:
+                for v in episode.values:
+                    episode_values.append(to_python_float(v))
+            if hasattr(episode, 'target_values') and episode.target_values:
+                for tv in episode.target_values:
+                    episode_target_values.append(to_python_float(tv))
+
         # 손실 누적 변수
         total_loss = 0
         value_loss = 0
@@ -472,7 +535,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
         if step % 10 == 0:
             print(f"Step {step}: Loss={total_loss:.4f} "
                   f"(V={value_loss:.4f}, R={reward_loss:.4f}, P={policy_loss:.4f})")
-            
+
             # TensorBoard 로깅 (전역 스텝 사용)
             global_step = base_step + step
             writer.add_scalar('Loss/Total', total_loss.item(), global_step)
@@ -481,6 +544,29 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             writer.add_scalar('Loss/Policy', policy_loss.item(), global_step)
             writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], global_step)
             writer.add_scalar('Training/Iteration', iteration_num, global_step)
+
+            # Episode 통계 TensorBoard 로깅
+            if len(episode_rewards) > 0:
+                mean_reward = sum(episode_rewards) / len(episode_rewards)
+                sum_reward = sum(episode_rewards)
+                writer.add_scalar('Episode/Mean_Reward', mean_reward, global_step)
+                writer.add_scalar('Episode/Sum_Reward', sum_reward, global_step)
+                writer.add_scalar('Episode/Std_Reward', float(np.std(episode_rewards)), global_step)
+
+            if len(episode_values) > 0:
+                mean_value = sum(episode_values) / len(episode_values)
+                writer.add_scalar('Episode/Mean_Value', mean_value, global_step)
+                writer.add_scalar('Episode/Std_Value', float(np.std(episode_values)), global_step)
+
+            if len(episode_target_values) > 0:
+                mean_tv = sum(episode_target_values) / len(episode_target_values)
+                writer.add_scalar('Episode/Mean_Target_Value', mean_tv, global_step)
+                writer.add_scalar('Episode/Std_Target_Value', float(np.std(episode_target_values)), global_step)
+
+            # Value-Target 상관계수 계산
+            if len(episode_values) > 0 and len(episode_target_values) > 0 and len(episode_values) == len(episode_target_values):
+                correlation = np.corrcoef(episode_values, episode_target_values)[0, 1]
+                writer.add_scalar('Metrics/Value_Target_Correlation', float(correlation), global_step)
         
         # 학습률 업데이트
         if (step + 1) % config.lr_decay_steps == 0:

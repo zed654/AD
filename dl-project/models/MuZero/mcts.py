@@ -145,8 +145,8 @@ class MCTS:
         # 적정 alpha = 10/|Action| = 10/9 ≈ 1.1
         if add_exploration_noise:
             root.add_exploration_noise(
-                dirichlet_alpha=0.3, # 탐험도를 높히기 위해 0.3 으로 낮춤 (낮을수록 값 쏠림)
-                exploration_fraction=0.25
+                dirichlet_alpha=self.config.mcts_dirichlet_alpha,
+                exploration_fraction=self.config.mcts_exploration_fraction
             )
             
         # Min-Max 통계 초기화
