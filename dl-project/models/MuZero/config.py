@@ -10,7 +10,7 @@ from models.MuZero.action import Action
 # MuZero 설정 클래스
 class MuZeroConfig:
     def __init__(self):
-        self.test_mode = 2  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
+        self.test_mode = 0  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
 
         # 네트워크 설정
         self.seed = 0
