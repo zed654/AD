@@ -10,7 +10,7 @@ from models.MuZero.action import Action
 # MuZero 설정 클래스
 class MuZeroConfig:
     def __init__(self):
-        self.test_mode = 0  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
+        self.test_mode = 2  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
 
         # 네트워크 설정
         self.seed = 0
@@ -43,7 +43,7 @@ class MuZeroConfig:
         self.goal_threshold = 1.0  # 목표 도달 판정 거리
         self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
         
-        # PUCB 하이퍼 파라미터 설정
+        # PUCT 하이퍼 파라미터 설정
         self.pb_c_base = 19652
         self.pb_c_init = 2.5 # 높을수록 새로운 가지 탐색이 늘어남. Deafult: 1.25
 

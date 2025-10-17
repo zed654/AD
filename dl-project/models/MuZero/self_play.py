@@ -302,6 +302,7 @@ class SelfPlayManager:
         # 현재 위치와 목표 위치
         curr_pos = st[step_idx].get('simulated_ego_pos')
         goal_pos = episode.expert_ego_pos[-1]
+        # goal_pos = (10, 49); # FIXME: 의도적으로 아래로 가도록 유도 
 
         # 이전 위치 (이동 벡터 계산용)
         if step_idx == 0:
