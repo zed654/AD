@@ -5,11 +5,19 @@ MuZero의 Self-play 게임을 실행하고 데이터를 수집
 import torch
 import numpy as np
 from typing import List, Dict, Optional, Tuple
+from pathlib import Path
 from .mcts import MCTS
 from .environment import BaseEnvironment
 from .action import Action
 from .replay_buffer import ReplayBuffer, Episode
 from .utils import build_observation_tensor
+
+# rosetta.py에서 Grid value 상수 import
+import sys
+sys.path.append(str(Path(__file__).parent.parent.parent / 'data' / 'db3_parser'))
+from rosetta import (
+    GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, GRID_VALUE_MISSING_POINTS
+)
 
 
 class GameHistory:
@@ -97,7 +105,17 @@ class SelfPlayManager:
                     # 6채널 observation 생성 (공용 함수 사용)
                     device = self.device if hasattr(self, 'device') else 'cpu'
                     observation_tensor = build_observation_tensor(state_dict_copy, self.config.observation_shape, device, self.config.use_obstacle_channels)
-                    
+
+                    # Legal mask 계산
+                    legal_mask = self._calculate_legal_mask(
+                        state_dict_copy,
+                        (simulated_ego_row, simulated_ego_col)
+                    )
+
+                    for legal_mask_idx in range(len(legal_mask)):
+                        if legal_mask[legal_mask_idx] == 0.0:
+                            print(f"    - 스텝 {step_idx}에서 액션 {legal_mask_idx}는 불법입니다.")
+
                     # MCTS 실행
                     # - representation(): observation → latent
                     # - 시뮬레이션: dynamics()로 미래 예측, prediction()으로 policy/value 계산
@@ -105,14 +123,17 @@ class SelfPlayManager:
                     with torch.no_grad():
                         mcts_result = self.mcts.run(
                             observation_tensor,
-                            add_exploration_noise=True
+                            add_exploration_noise=True,
+                            legal_mask=legal_mask
                         )
                     
                     # Episode에 MCTS 결과 업데이트
                     episode.pi[step_idx] = mcts_result['policy_targets']
                     # MCTS가 계산한 value 저장 (bootstrap에 사용됨)
                     episode.values[step_idx] = mcts_result['root_value']
-                    
+                    # Legal mask 저장
+                    episode.legal_mask[step_idx] = legal_mask
+
                     # MCTS가 선택한 action 저장
                     selected_action = mcts_result['action']
                     # selected_action = 2  # Action 고정 테스트 (2=POS2=전방/상단)
@@ -127,7 +148,7 @@ class SelfPlayManager:
                     
                     # Episode state에도 업데이트 (최종 거리 계산을 위해)
                     episode.states[step_idx]['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
-                    
+
                     # 디버깅: 데이터 타입 확인 (처음 몇 스텝만)
                     if step_idx < 2:
                         obs_type = type(episode.states[step_idx].get('obstacles', None))
@@ -140,23 +161,25 @@ class SelfPlayManager:
                     )
                     episode.rewards[step_idx] = reward
                     
-                    # 충돌 발생 시 Episode 종료
-                    if reward == self.config.collision_penalty:
-                        print(f"    - 충돌로 인해 Episode 종료 (스텝 {step_idx + 1}/{len(episode.states)})")
-                        # 현재 스텝을 터미널로 표시 (잘라내기 전에 먼저 설정)
-                        if step_idx < len(episode.dones):
-                            episode.dones[step_idx] = True
-                        # Episode 길이를 충돌 지점까지로 잘라냄
-                        episode.states = episode.states[:step_idx + 1]
-                        episode.rewards = episode.rewards[:step_idx + 1]
-                        episode.pi = episode.pi[:step_idx + 1]
-                        episode.values = episode.values[:step_idx + 1]
-                        episode.actions = episode.actions[:step_idx + 1]
-                        episode.dones = episode.dones[:step_idx + 1]
-                        # 정답 위치는 유지. Target Reward 의 목표로 활용해야함
-                        # if hasattr(episode, 'expert_ego_pos'):
-                        #     episode.expert_ego_pos = episode.expert_ego_pos[:step_idx + 1]
-                        break  # MCTS 적용 루프 종료
+                    # # 충돌 발생 시 Episode 종료
+                    # # 합법 마스킹 적용된 상황에서는 절대 발생되면 안됨
+                    # if reward == self.config.collision_penalty:
+                    #     print(f"    - 충돌로 인해 Episode 종료 (스텝 {step_idx + 1}/{len(episode.states)})")
+                    #     # 현재 스텝을 터미널로 표시 (잘라내기 전에 먼저 설정)
+                    #     if step_idx < len(episode.dones):
+                    #         episode.dones[step_idx] = True
+                    #     # Episode 길이를 충돌 지점까지로 잘라냄
+                    #     episode.states = episode.states[:step_idx + 1]
+                    #     episode.rewards = episode.rewards[:step_idx + 1]
+                    #     episode.pi = episode.pi[:step_idx + 1]
+                    #     episode.values = episode.values[:step_idx + 1]
+                    #     episode.actions = episode.actions[:step_idx + 1]
+                    #     episode.dones = episode.dones[:step_idx + 1]
+                    #     episode.legal_mask = episode.legal_mask[:step_idx + 1]
+                    #     # 정답 위치는 유지. Target Reward 의 목표로 활용해야함
+                    #     # if hasattr(episode, 'expert_ego_pos'):
+                    #     #     episode.expert_ego_pos = episode.expert_ego_pos[:step_idx + 1]
+                    #     break  # MCTS 적용 루프 종료
                 
                 if step_idx % 10 == 0:
                     print(f"  - 진행률: {step_idx}/{len(episode.states)} 스텝 (각 스텝마다 {self.config.num_simulations}회 시뮬레이션)")
@@ -172,8 +195,92 @@ class SelfPlayManager:
                   f"평균 target value: {avg_target_value:.3f}")
         
         return enriched_episodes
-    
-    
+
+    def _calculate_legal_mask(self, state_dict: dict, current_pos: Tuple[int, int]) -> np.ndarray:
+        """합법 액션 마스크 계산
+
+        현재 위치에서 각 action을 취했을 때 충돌 여부를 체크하여
+        합법 마스크 생성 (1=합법, 0=불법)
+
+        Args:
+            state_dict: observation dictionary (obstacles, static_environment 포함)
+            current_pos: 현재 simulated ego 위치 (row, col)
+
+        Returns:
+            legal_mask: 9개 원소의 0/1 배열 (Action 개수만큼)
+        """
+        legal_mask = np.ones(Action.get_action_space_size(), dtype=np.float32)
+
+        current_row, current_col = current_pos
+        boundary = self.config.obstacles_collision_boundary
+        half_boundary = boundary // 2
+
+        # 각 action에 대해 충돌 체크
+        for action_idx in range(Action.get_action_space_size()):
+            action = Action.from_index(action_idx)
+            dx, dy = action.get_movement_vector()
+
+            # Action 적용 후 위치
+            next_row = current_row + dx
+            next_col = current_col + dy
+
+            # 그리드 경계 체크
+            if next_row < 0 or next_row >= 99 or next_col < 0 or next_col >= 99:
+                legal_mask[action_idx] = 0.0
+                continue
+
+            # 장애물 충돌 체크 (obstacles_collision_boundary 영역)
+            has_collision = False
+            for dr in range(-half_boundary, half_boundary + 1):
+                for dc in range(-half_boundary, half_boundary + 1):
+                    check_row = next_row + dr
+                    check_col = next_col + dc
+
+                    # 그리드 범위 체크
+                    if 0 <= check_row < 99 and 0 <= check_col < 99:
+                        # Channel 0: Dynamic objects 체크 (모든 값 > 0)
+                        if 'obstacles' in state_dict and state_dict['obstacles'] is not None:
+                            obs = state_dict['obstacles']
+                            if hasattr(obs, 'shape') and len(obs.shape) >= 2:
+                                try:
+                                    if isinstance(obs, torch.Tensor):
+                                        val = obs[check_row, check_col].item()
+                                    else:
+                                        val = obs[check_row, check_col]
+                                    if val > 0:
+                                        has_collision = True
+                                        break
+                                except (IndexError, TypeError):
+                                    pass
+
+                        # Channel 1: Static environment 체크
+                        # Cliff, Static Obstacle, Missing Points만 충돌로 간주
+                        if not has_collision and 'static_environment' in state_dict and state_dict['static_environment'] is not None:
+                            static = state_dict['static_environment']
+                            if hasattr(static, 'shape') and len(static.shape) >= 2:
+                                try:
+                                    if isinstance(static, torch.Tensor):
+                                        static_val = static[check_row, check_col].item()
+                                    else:
+                                        static_val = static[check_row, check_col]
+
+                                    # Cliff, Static Obstacle, Missing Points 체크
+                                    if (abs(static_val - GRID_VALUE_CLIFF) < 0.01 or
+                                        abs(static_val - GRID_VALUE_STATIC_OBSTACLE) < 0.01 or
+                                        abs(static_val - GRID_VALUE_MISSING_POINTS) < 0.01):
+                                        has_collision = True
+                                        break
+                                except (IndexError, TypeError):
+                                    pass
+
+                if has_collision:
+                    break
+
+            if has_collision:
+                legal_mask[action_idx] = 0.0
+
+        return legal_mask
+
     def _calculate_collision_reward(self, episode: Episode, step_idx: int) -> float:
         """충돌 기반 reward 계산
         
@@ -362,6 +469,7 @@ class SelfPlayManager:
         # 3. 장애물과 충돌 상황에 대한 패널티
         collision_reward = self._calculate_collision_reward(episode, step_idx)
         
+        # 합법 마스킹 적용된 상황에서는 절대 발생되면 안됨
         if collision_reward == self.config.collision_penalty:
             # 충돌 발생 시 큰 페널티
             print(f"  - 충돌 발생! 스텝 {step_idx}에서 충돌 감지됨. 페널티: {self.config.collision_penalty}")

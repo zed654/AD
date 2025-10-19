@@ -408,6 +408,15 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             # [참고] MuZero 논문에서는 CrossEntropy 사용했음
             if episode.pi[start_idx] is not None:
                 target_policy = torch.tensor(episode.pi[start_idx], device=device).unsqueeze(0)
+
+                # Legal mask 적용
+                if hasattr(episode, 'legal_mask') and episode.legal_mask[start_idx] is not None:
+                    legal_mask = torch.tensor(episode.legal_mask[start_idx], device=device).unsqueeze(0)
+                    target_policy = target_policy * legal_mask  # 불법 action의 확률을 0으로
+                    policy_sum = target_policy.sum(dim=1, keepdim=True)
+                    if policy_sum > 0:
+                        target_policy = target_policy / policy_sum  # 재정규화
+
                 # KL divergence loss (target_policy는 확률 분포)
                 log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
                 policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
@@ -416,6 +425,15 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 # GT 데이터의 경우 policy가 없으므로 uniform distribution 사용
                 num_actions = policy_logits.shape[1]
                 target_policy = torch.ones(1, num_actions, device=device) / num_actions
+
+                # Legal mask 적용
+                if hasattr(episode, 'legal_mask') and episode.legal_mask[start_idx] is not None:
+                    legal_mask = torch.tensor(episode.legal_mask[start_idx], device=device).unsqueeze(0)
+                    target_policy = target_policy * legal_mask
+                    policy_sum = target_policy.sum(dim=1, keepdim=True)
+                    if policy_sum > 0:
+                        target_policy = target_policy / policy_sum
+
                 log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
                 policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
                 policy_count += 1
@@ -470,6 +488,15 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 if start_idx + k + 1 < len(episode):
                     if episode.pi[start_idx + k + 1] is not None:
                         target_policy = torch.tensor(episode.pi[start_idx + k + 1], device=device).unsqueeze(0)
+
+                        # Legal mask 적용
+                        if hasattr(episode, 'legal_mask') and start_idx + k + 1 < len(episode.legal_mask) and episode.legal_mask[start_idx + k + 1] is not None:
+                            legal_mask = torch.tensor(episode.legal_mask[start_idx + k + 1], device=device).unsqueeze(0)
+                            target_policy = target_policy * legal_mask
+                            policy_sum = target_policy.sum(dim=1, keepdim=True)
+                            if policy_sum > 0:
+                                target_policy = target_policy / policy_sum
+
                         # KL divergence loss (target_policy는 확률 분포)
                         log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
                         policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
@@ -478,6 +505,15 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                         # GT 데이터의 경우 policy가 없으므로 uniform distribution 사용
                         num_actions = policy_logits.shape[1]
                         target_policy = torch.ones(1, num_actions, device=device) / num_actions
+
+                        # Legal mask 적용
+                        if hasattr(episode, 'legal_mask') and start_idx + k + 1 < len(episode.legal_mask) and episode.legal_mask[start_idx + k + 1] is not None:
+                            legal_mask = torch.tensor(episode.legal_mask[start_idx + k + 1], device=device).unsqueeze(0)
+                            target_policy = target_policy * legal_mask
+                            policy_sum = target_policy.sum(dim=1, keepdim=True)
+                            if policy_sum > 0:
+                                target_policy = target_policy / policy_sum
+
                         log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
                         policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
                         policy_count += 1
@@ -680,6 +716,8 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
             full_episode.rewards.append(0.0)  # 임시 reward
             full_episode.values.append(0.0)  # 임시 value
             full_episode.pi.append(None)  # 임시 π
+            full_episode.legal_mask.append(None)  # 임시 legal_mask (MCTS에서 계산됨)
+            full_episode.dones.append(False)  # 임시 done
 
         # expert_ego_pos는 states보다 길 수 있으므로 별도로 모든 위치 복사
         full_episode.expert_ego_pos = episode.expert_ego_pos.copy()

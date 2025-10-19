@@ -415,7 +415,7 @@ class ObservationBuilder:
                     grid[0, grid_row, grid_col] = grid_value  # Channel 0: Dynamic objects
                     # Channel 2는 LDM semantic 정보만 저장, objects는 저장하지 않음
         
-        # 3. LDM 포인트 추가 (모든 타입을 Channel 1에 통합)
+        # 2. LDM 포인트 추가 (모든 타입을 Channel 1에 통합)
         for ldm in ldm_points:
             # Episode 시작점 기준 상대 좌표로 변환
             rel_x, rel_y = CoordinateTransformer.global_to_ego(
@@ -434,7 +434,7 @@ class ObservationBuilder:
                 # LDM의 semantic class_id를 Channel 2에 저장 (obstacles_type과 무관하게 모든 LDM 포인트)
                 grid[2, grid_row, grid_col] = ldm.class_id
         
-        # 4. 방향 벡터 정보 준비 (별도 벡터로 저장)
+        # 3. 방향 벡터 정보 준비 (별도 벡터로 저장)
         direction_vectors = np.zeros(4, dtype=np.float32)  # [near_x, near_y, dest_x, dest_y]
         
         if near_destination_direction:

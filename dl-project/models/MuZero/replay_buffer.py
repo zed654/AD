@@ -12,18 +12,19 @@ class Episode:
     def __init__(self, source_file=None, start_frame=None, end_frame=None):
         self.states = []      # 상태 목록
         self.actions = []     # 액션 목록 (self-play로 선택된 action)
-        self.expert_ego_pos = []  # 전문가 ego 위치 목록 (GT 그리드 좌표 (row, col) 튜플) 
+        self.expert_ego_pos = []  # 전문가 ego 위치 목록 (GT 그리드 좌표 (row, col) 튜플)
         self.rewards = []     # 보상 목록
         self.pi = []    # MCTS 방문분포 목록 (π)
         self.values = []      # MCTS 가치 목록
         self.dones = []       # 종료 여부 목록
-        
+        self.legal_mask = []  # 합법 액션 마스크 (9개 원소의 0/1 배열)
+
         # Episode 출처 정보
         self.source_file = source_file      # JSONL 파일명
         self.start_frame = start_frame      # 시작 프레임 번호
         self.end_frame = end_frame          # 종료 프레임 번호
         
-    def add_step(self, state, action, reward, pi=None, value=None, done=False, expert_ego_pos=None):
+    def add_step(self, state, action, reward, pi=None, value=None, done=False, expert_ego_pos=None, legal_mask=None):
         """한 스텝의 데이터 추가"""
         self.states.append(state)
         self.actions.append(action)
@@ -32,6 +33,7 @@ class Episode:
         self.pi.append(pi)
         self.values.append(value)
         self.dones.append(done)
+        self.legal_mask.append(legal_mask)
         
     def __len__(self):
         return len(self.states)

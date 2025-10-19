@@ -47,19 +47,30 @@ class Node:
             return 0
         return self.value_sum / self.visit_count
     
-    def expand(self, network_output):
-        """네트워크 출력을 사용해 노드 확장"""
+    def expand(self, network_output, legal_mask=None):
+        """네트워크 출력을 사용해 노드 확장
+
+        Args:
+            network_output: 네트워크 출력 (policy_logits, value 등)
+            legal_mask: 합법 액션 마스크 (None이면 모든 액션 합법, Root node에만 적용)
+        """
         # policy_logits를 확률로 변환
-        if isinstance(network_output['policy_logits'], torch.Tensor):
-            priors = torch.softmax(network_output['policy_logits'], dim=-1).cpu().numpy()
+        logits = network_output['policy_logits'].clone()
+        # Legal mask 적용 (Root node only) ... MCTS Sim 과정에서는 Expand() 에 lagal_mask 적용하지 않으므로, 합법 마스킹 적용 안됨
+        if legal_mask is not None:
+            for action_idx in range(len(legal_mask)):
+                if legal_mask[action_idx] == 0.0:  # 불법 action
+                    logits[action_idx] = -1e10  # 매우 작은 값으로 설정
+        if isinstance(logits, torch.Tensor):
+            priors = torch.softmax(logits, dim=-1).cpu().numpy()
         else:
-            priors = network_output['policy_logits']
-            
+            priors = logits
+        
         # 각 액션에 대해 자식 노드 생성
         for action, prior in enumerate(priors):
             self.children[action] = Node(prior)
             
-    def add_exploration_noise(self, dirichlet_alpha: float, exploration_fraction: float):
+    def add_exploration_noise(self, dirichlet_alpha: float, exploration_fraction: float, legal_mask=None):
         """루트 노드에 탐색 노이즈 추가"""
         actions = list(self.children.keys())
         noise = np.random.dirichlet([dirichlet_alpha] * len(actions)) # [alpha, alpha, ..., alpha] ... actions 개
@@ -69,6 +80,14 @@ class Node:
                 self.children[action].prior * (1 - exploration_fraction) +
                 n * exploration_fraction
             )
+        
+        # Noise 추가 후 legal mask 재적용 (noise로 인해 불법 action의 prior가 0이 아니게 될 수 있음)
+        if legal_mask is not None:
+            for action_idx in range(len(legal_mask)):
+                if legal_mask[action_idx] == 0.0:  # 불법 action
+                    if action_idx in self.children:
+                        self.children[action_idx].prior = 0.0
+
     
     def count_nodes(self) -> int:
         """현재 노드를 포함한 서브트리의 전체 노드 개수 카운트"""
@@ -117,14 +136,15 @@ class MCTS:
             ((math.sqrt(1 + 4 * epsilon * (abs_x + 1 + epsilon)) - 1) / (2 * epsilon)) ** 2 - 1
         )
         
-    def run(self, observation: torch.Tensor, add_exploration_noise: bool = True, debug: bool = False) -> Dict:
+    def run(self, observation: torch.Tensor, add_exploration_noise: bool = True, debug: bool = False, legal_mask=None) -> Dict:
         """Self-play를 위한 MCTS 실행
-        
+
         Args:
             observation: 현재 관측값
             add_exploration_noise: 루트 노드에 탐색 노이즈 추가 여부
             debug: 시뮬레이션 진행 상황을 출력하는 옵션
-            
+            legal_mask: 합법 액션 마스크 (9개 원소의 0/1 배열, None이면 모두 합법)
+
         Returns:
             선택된 액션, 루트 가치, 정책 타겟 등을 포함한 딕셔너리
         """
@@ -138,17 +158,18 @@ class MCTS:
         # 초기 추론으로 hidden state 얻기
         network_output = self._initial_inference(observation)
         root.hidden_state = network_output['hidden_state']
-        root.expand(network_output)
-        
+        root.expand(network_output, legal_mask)
+
         # 루트 노드에 탐색 노이즈 추가
         # Episode 의 prior 값에 노이즈 넣어주는 것
         # 적정 alpha = 10/|Action| = 10/9 ≈ 1.1
         if add_exploration_noise:
             root.add_exploration_noise(
                 dirichlet_alpha=self.config.mcts_dirichlet_alpha,
-                exploration_fraction=self.config.mcts_exploration_fraction
+                exploration_fraction=self.config.mcts_exploration_fraction,
+                legal_mask=legal_mask
             )
-            
+
         # Min-Max 통계 초기화
         self.min_max_stats = MinMaxStats()
         
@@ -164,7 +185,9 @@ class MCTS:
             # 리프 노드까지 선택
             while node.expanded():
                 # 여기 _select_child() 에서는 temperature 쓰면 안됌. Loss 깨짐
-                current_action, node = self._select_child(node) # PUCT 통해 Action 선택 
+                # Root node에만 legal_mask 전달
+                is_root = (node is root)
+                current_action, node = self._select_child(node, legal_mask if is_root else None) # PUCT 통해 Action 선택. is_root 가 True일 경우만 regal_mask 적용
                 search_path.append(node)
             
             # 리프 노드 평가 및 확장
@@ -209,22 +232,32 @@ class MCTS:
             'root_value': root.value(),
             'policy_targets': policy_targets,
             'root_node': root,
-            'total_nodes': total_nodes  # 트리의 전체 노드 개수
+            'total_nodes': total_nodes,  # 트리의 전체 노드 개수
+            'legal_mask': None  # 합법 액션 마스크 (추후 구현 필요)
         }
         
-    def _select_child(self, node: Node) -> Tuple[int, Node]:
-        """PUCT를 사용해 자식 노드 선택"""
+    def _select_child(self, node: Node, legal_mask=None) -> Tuple[int, Node]:
+        """PUCT를 사용해 자식 노드 선택
+
+        Args:
+            node: 현재 노드
+            legal_mask: 합법 액션 마스크 (Root node에만 전달, None이면 모든 액션 고려)
+        """
         best_score = -float('inf')
         best_action = None
         best_child = None
-        
+
         for action, child in node.children.items():
+            # Legal mask 체크 (Root node인 경우만 적용). is_root 가 True일 경우만 regal_mask 적용
+            if legal_mask is not None and legal_mask[action] == 0.0:
+                continue  # 불법 action은 스킵
+
             score = self._puct_score(node, child)
             if score > best_score:
                 best_score = score
                 best_action = action
                 best_child = child
-                
+
         return best_action, best_child
         
     def _puct_score(self, parent: Node, child: Node) -> float:

@@ -42,6 +42,7 @@ class MuZeroConfig:
         self.collision_penalty = -2.0  # 충돌 시 패널티 (reward 값)
         self.goal_threshold = 1.0  # 목표 도달 판정 거리
         self.cell_size = 0.2  # 각 그리드 셀의 크기 (m)
+        self.obstacles_collision_boundary = 3  # 장애물 충돌 판정 영역 크기 (3 = 3x3, 5 = 5x5)
         
         # PUCT 하이퍼 파라미터 설정
         self.pb_c_base = 19652

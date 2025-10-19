@@ -139,6 +139,8 @@ class ExpertDataLoader:
                 self.episode_start_ego = ego_info
                 prev_grid_pos = None  # 첫 스텝은 무조건 포함
             
+            # Grid[0]: 동적 장애물 (/obstacles_tracking_msg)
+            # Grid[1]: 정적 환경 (/ldm_msg 의 GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, GRID_VALUE_MISSING_POINTS)
             observation = self.obs_builder.build_observation(
                 ego_info, objects, ldm_points, near_destination_direction, final_destination_direction,
                 episode_start_ego=self.episode_start_ego
@@ -228,11 +230,13 @@ class ExpertDataLoader:
                 reward=0.0,         # GT에서는 항상 0
                 pi=None,        # MCTS/self-play에서 계산됨 (Action 개수만큼 있어야함)
                 value=0.0,          # 0으로 초기화
-                done=(i == len(expert_ego_positions) - 1)
+                done=(i == len(expert_ego_positions) - 1),
+                legal_mask=None  # 합법 액션 마스크 ... 추후 Self-play 단계에서 기입됨. 현재는 빈 값 사용
             )
 
         return episode, frame_idx
     
+
     def _global_to_grid_coords(self, global_x: float, global_y: float, 
                               ego_start_x: float, ego_start_y: float, ego_start_yaw: float) -> Tuple[int, int]:
         """전역 좌표를 그리드 좌표로 변환
