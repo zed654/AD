@@ -469,14 +469,16 @@ class SelfPlayManager:
         # 3. 장애물과 충돌 상황에 대한 패널티
         collision_reward = self._calculate_collision_reward(episode, step_idx)
         
-        # 합법 마스킹 적용된 상황에서는 절대 발생되면 안됨
-        if collision_reward == self.config.collision_penalty:
-            # 충돌 발생 시 큰 페널티
-            print(f"  - 충돌 발생! 스텝 {step_idx}에서 충돌 감지됨. 페널티: {self.config.collision_penalty}")
-            return self.config.collision_penalty
-        else:
-            # 충돌이 없으면 경로 추종 reward만 사용
-            return trajectory_goal_follow_reward + trajectory_smooth_reward
+        # # 합법 마스킹 적용된 상황에서는 절대 발생되면 안됨
+        # if collision_reward == self.config.collision_penalty:
+        #     # 충돌 발생 시 큰 페널티
+        #     print(f"  - 충돌 발생! 스텝 {step_idx}에서 충돌 감지됨. 페널티: {self.config.collision_penalty}")
+        #     return self.config.collision_penalty
+        # else:
+        #     # 충돌이 없으면 경로 추종 reward만 사용
+        #     return trajectory_goal_follow_reward + trajectory_smooth_reward
+        
+        return trajectory_goal_follow_reward + trajectory_smooth_reward
         
     def _calculate_target_value(self, episode: Episode):
         """MuZero n-step bootstrap target value 계산

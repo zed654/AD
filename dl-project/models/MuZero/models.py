@@ -102,16 +102,16 @@ def compute_edt(occupancy_grid):
 
 class DepthwiseSeparableConv2d(nn.Module):
     """Depthwise Separable Convolution for efficient CNN"""
-    
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False):
+
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1, bias=False):
         super().__init__()
-        self.depthwise = nn.Conv2d(in_channels, in_channels, kernel_size, stride, padding, groups=in_channels, bias=bias)
+        self.depthwise = nn.Conv2d(in_channels, in_channels, kernel_size, stride, padding, dilation=dilation, groups=in_channels, bias=bias)
         self.pointwise = nn.Conv2d(in_channels, out_channels, 1, bias=bias)
         # GroupNorm: 8 groups (out_channels should be divisible by 8)
         num_groups = min(8, out_channels) if out_channels >= 8 else out_channels
         self.gn = nn.GroupNorm(num_groups, out_channels)
         self.relu = nn.ReLU6(inplace=True)
-    
+
     def forward(self, x):
         x = self.depthwise(x)
         x = self.pointwise(x)
@@ -134,8 +134,14 @@ class CNNLiteBackbone(nn.Module):
         # Stem: 99x99 -> 99x99
         self.stem = DepthwiseSeparableConv2d(in_channels, 32, stride=1)
         
+        # Block0: 99x99 -> 99x99 (stride=1) ... Depth 늘려 수용력 향상
+        self.block0_0 = DepthwiseSeparableConv2d(32, 32, stride=1, padding=2, dilation=2)  # 조밀한 정보
+        self.block0_1 = DepthwiseSeparableConv2d(32, 32, stride=1, padding=2, dilation=2)  # 넓은 수용 영역
+        self.block0_2 = DepthwiseSeparableConv2d(32, 32, stride=1, padding=2, dilation=2)  # 넓은 수용 영역
+        
         # Block1: 99x99 -> 50x50 (stride=2로 축소)
-        self.block1 = DepthwiseSeparableConv2d(32, 48, stride=2, padding=1)
+        self.block1_0 = DepthwiseSeparableConv2d(32, 48, stride=2, padding=1)
+        self.block1_1 = DepthwiseSeparableConv2d(48, 48, stride=1, padding=2, dilation=2)
         
         # Block2: 50x50 -> 25x25 (stride=2로 축소)
         self.block2 = DepthwiseSeparableConv2d(48, 64, stride=2, padding=1)
@@ -154,16 +160,20 @@ class CNNLiteBackbone(nn.Module):
     
     def forward(self, x):
         batch_size, _, height, width = x.shape
-        
+
         # CoordConv 적용
         if self.use_coordconv:
             coord_grid = self._get_coord_grid(batch_size, height, width, x.device)
             x = torch.cat([x, coord_grid], dim=1)
-        
-        x = self.stem(x)      # 99x99 -> 99x99
-        x = self.block1(x)    # 99x99 -> 50x50
-        x = self.block2(x)    # 50x50 -> 25x25
-        
+
+        x = self.stem(x)         # 99x99 -> 99x99
+        x = self.block0_0(x)     # 99x99 -> 99x99 (dilation=1)
+        x = self.block0_1(x)     # 99x99 -> 99x99 (dilation=2)
+        x = self.block0_2(x)     # 99x99 -> 99x99 (dilation=2)
+        x = self.block1_0(x)     # 99x99 -> 50x50 (stride=2, dilation=2)
+        x = self.block1_1(x)     # 50x50 -> 50x50 (dilation=2) ← 여기 문제!
+        x = self.block2(x)       # 50x50 -> 25x25
+
         return x
 
 
@@ -264,44 +274,62 @@ class ConvGRU(nn.Module):
 
 
 class DirectionalGating(nn.Module):
-    """Goal 기반 방향 내적 게이팅"""
-    
-    def __init__(self, c=64, gdim=4, hidden=64, alpha_init=0.5):
+    """Goal 기반 방향 내적 게이팅 - 근접/최종 목적지 독립 처리"""
+
+    def __init__(self, c=64, hidden=64, alpha_init=0.5):
         super().__init__()
-        self.goal_mlp = nn.Sequential(
-            nn.Linear(gdim, hidden),
+        # 근접 목적지 (g_near)와 최종 목적지 (g_final)를 독립적으로 처리
+        self.near_mlp = nn.Sequential(
+            nn.Linear(2, hidden),
             nn.ReLU(),
             nn.Linear(hidden, c)
         )
-        self.alpha_raw = nn.Parameter(torch.tensor(alpha_init).log())
+        self.final_mlp = nn.Sequential(
+            nn.Linear(2, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, c)
+        )
+        # 각각 독립적인 alpha 파라미터
+        self.alpha_near_raw = nn.Parameter(torch.tensor(alpha_init).log())
+        self.alpha_final_raw = nn.Parameter(torch.tensor(alpha_init).log())
         self.softplus = nn.Softplus()
         self.c = c
-    
+
     def forward(self, z, g):
         """
         Args:
             z: [B, C, H, W] feature maps
-            g: [B, gdim] goal vector
+            g: [B, 4] goal vector (near_direction[2] + final_direction[2])
         Returns:
             gated feature maps [B, C, H, W]
         """
         B, C, H, W = z.shape
-        
-        # Goal embedding
-        e = self.goal_mlp(g) / (self.c ** 0.5)  # [B, C] ... [64, 64]
-        
-        # 내적 계산 (A=(a1, a2, ..., aC), B=(b1, b2, ..., bC) 일 때 A·B = a1*b1 + a2*b2 + ... + aC*bC)
-        p = z * e.view(B, C, 1, 1) # [B, C, H, W] * [B, C, H, W]
-        s = p.sum(dim=1)  # [B, H, W]
-        
-        # 시그모이드 마스크
-        m = torch.sigmoid(s)  # [B, H, W]
-        
-        # 학습 가능한 alpha (>= 0)
-        alpha = self.softplus(self.alpha_raw)
-        
-        # 비감쇠 게이팅: 증폭만 허용
-        return z * (1 + alpha * m.unsqueeze(1))  # [B, C, H, W]
+
+        # 목적지 방향 벡터 분리
+        g_near = g[:, :2]   # [B, 2] - 근접 목적지 방향
+        g_final = g[:, 2:]  # [B, 2] - 최종 목적지 방향
+
+        # 각 목적지에 대한 embedding
+        e_near = self.near_mlp(g_near) / (self.c ** 0.5)   # [B, C]
+        e_final = self.final_mlp(g_final) / (self.c ** 0.5)  # [B, C]
+
+        # 각각 독립적인 내적 계산
+        p_near = z * e_near.view(B, C, 1, 1)   # [B, C, H, W]
+        p_final = z * e_final.view(B, C, 1, 1)  # [B, C, H, W]
+
+        s_near = p_near.sum(dim=1)   # [B, H, W]
+        s_final = p_final.sum(dim=1)  # [B, H, W]
+
+        # 독립적인 시그모이드 마스크
+        m_near = torch.sigmoid(s_near)   # [B, H, W]
+        m_final = torch.sigmoid(s_final)  # [B, H, W]
+
+        # 독립적인 alpha 값
+        alpha_near = self.softplus(self.alpha_near_raw)
+        alpha_final = self.softplus(self.alpha_final_raw)
+
+        # 비감쇠 게이팅: 두 목적지의 영향을 독립적으로 더함
+        return z * (1 + alpha_near * m_near.unsqueeze(1) + alpha_final * m_final.unsqueeze(1))  # [B, C, H, W]
 
 
 class MuZeroFullyConnectedNetwork(AbstractNetwork):
@@ -354,7 +382,7 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         self.fuse_1x1 = nn.Conv2d(128, 64, kernel_size=1)
         
         # Directional Gating
-        self.dir_gate = DirectionalGating(c=64, gdim=4, alpha_init=alpha_init)
+        self.dir_gate = DirectionalGating(c=64, alpha_init=alpha_init)
         
         # FiLM for Action Conditioning
         self.action_film = FiLM(
@@ -502,6 +530,8 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         z_fuse = self.fuse_1x1(torch.cat([z_rep, z_att], dim=1))  # (B, 64, 25, 25)
         
         # 8. Directional Gating (단일, Fusion 뒤 1회)
+        # z_fuse: 99x99 를 압축표현한 텐서
+        # goal_vec: 목표 방향벡터 (B, 4)
         z0 = self.dir_gate(z_fuse, goal_vec)  # (B, 64, 25, 25)
         
         return z0
