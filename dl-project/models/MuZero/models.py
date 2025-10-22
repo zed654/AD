@@ -131,10 +131,12 @@ class CNNLiteBackbone(nn.Module):
         if use_coordconv:
             in_channels += 2
         
+        # kernel_size 는 명시되지 않으면 기본값 3
         # Stem: 99x99 -> 99x99
         self.stem = DepthwiseSeparableConv2d(in_channels, 32, stride=1)
         
         # Block0: 99x99 -> 99x99 (stride=1) ... Depth 늘려 수용력 향상
+        # 참고) 해상도? 높히려면 dilation 을 1로 해야함. 다만 Receptive Field 가 줄어듦. 따라서, 보완을 위해 Depth 늘려야함 야Ga
         self.block0_0 = DepthwiseSeparableConv2d(32, 32, stride=1, padding=2, dilation=2)  # 조밀한 정보
         self.block0_1 = DepthwiseSeparableConv2d(32, 32, stride=1, padding=2, dilation=2)  # 넓은 수용 영역
         self.block0_2 = DepthwiseSeparableConv2d(32, 32, stride=1, padding=2, dilation=2)  # 넓은 수용 영역
