@@ -610,10 +610,10 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             loss_history['reward_loss'].append(loss_dict['reward_loss'])
             loss_history['latest_loss'] = loss_dict
             
-            print(f"  📊 Loss: Total={loss_dict['total_loss']:.4f}, "
-                f"Value={loss_dict['value_loss']:.4f}, "
-                f"Policy={loss_dict['policy_loss']:.4f}, "
-                f"Reward={loss_dict['reward_loss']:.4f}")
+            # print(f"  📊 Loss: Total={loss_dict['total_loss']:.4f}, "
+            #     f"Value={loss_dict['value_loss']:.4f}, "
+            #     f"Policy={loss_dict['policy_loss']:.4f}, "
+            #     f"Reward={loss_dict['reward_loss']:.4f}")
         
         # 2.5 학습 진행 상황 시각화 (선택적) ... iteration_num
         # if (step + 1) % config.visualization_interval_step == 0 and config.enable_training_visualization:
@@ -657,8 +657,10 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
 def visualize_training_progress(network, replay_buffer, step, config, device, loss_history=None, iteration_num=1):
     """학습 중 모델의 예측 성능과 Loss를 시각화
     
-    replay_buffer에서 Episode를 샘플링하여 현재 네트워크로 다시 추론
-    loss_history가 있으면 Loss 그래프도 함께 표시
+    1. replay_buffer에서 Episode를 config 에 선언된 visualization num episodes 개수만큼 샘플링
+    2. training 으로 학습된 network 를 사용하여 MCTS enrichment 수행(enrich_episodes_with_mcts())
+    3. 시각화 수행 (Predicted Path + Loss)
+    
     """
     print(f"\n  📊 step {step} 학습 진행 상황 시각화...")
     
