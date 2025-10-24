@@ -1063,29 +1063,29 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
             # 1. Step별 Action-Reward (처음 30스텝까지)
             action_stats_text += "First 30 Steps:\n"
             max_display_steps = min(30, len(enriched_episode.actions))
-            for step in range(max_display_steps):
-                if step < len(enriched_episode.actions) and step < len(enriched_episode.rewards):
-                    action_obj = Action.from_index(enriched_episode.actions[step])
-                    reward = enriched_episode.rewards[step]
-                    
+            for ep_step in range(max_display_steps):
+                if ep_step < len(enriched_episode.actions) and ep_step < len(enriched_episode.rewards):
+                    action_obj = Action.from_index(enriched_episode.actions[ep_step])
+                    reward = enriched_episode.rewards[ep_step]
+
                     # 해당 스텝의 simulated_ego_pos 가져오기
                     pos_info = ""
-                    if (step < len(enriched_episode.states) and 
-                        isinstance(enriched_episode.states[step], dict) and
-                        'simulated_ego_pos' in enriched_episode.states[step]):
-                        pos = enriched_episode.states[step]['simulated_ego_pos']
+                    if (ep_step < len(enriched_episode.states) and
+                        isinstance(enriched_episode.states[ep_step], dict) and
+                        'simulated_ego_pos' in enriched_episode.states[ep_step]):
+                        pos = enriched_episode.states[ep_step]['simulated_ego_pos']
                         pos_info = f" @{pos}"
-                    
+
                     # Target Value도 함께 표시
                     value_info = ""
-                    if hasattr(enriched_episode, 'target_values') and step < len(enriched_episode.target_values):
-                        target_value = enriched_episode.target_values[step]
+                    if hasattr(enriched_episode, 'target_values') and ep_step < len(enriched_episode.target_values):
+                        target_value = enriched_episode.target_values[ep_step]
                         value_info = f" | Val: {target_value:.3f}"
-                    elif step < len(enriched_episode.values):
-                        value = enriched_episode.values[step]
+                    elif ep_step < len(enriched_episode.values):
+                        value = enriched_episode.values[ep_step]
                         value_info = f" | Val: {value:.3f}"
 
-                    action_stats_text += f"  {step+1}: {action_obj.position.value}{pos_info} → {reward:.3f}{value_info}\n"
+                    action_stats_text += f"  {ep_step+1}: {action_obj.position.value}{pos_info} → {reward:.3f}{value_info}\n"
             if len(enriched_episode.actions) > max_display_steps:
                 action_stats_text += f"  ... (+{len(enriched_episode.actions) - max_display_steps} more)\n"
             
