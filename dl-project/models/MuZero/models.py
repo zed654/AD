@@ -237,17 +237,31 @@ class ConvGRU(nn.Module):
     def __init__(self, input_dim, hidden_dim, kernel_size=3):
         super().__init__()
         self.hidden_dim = hidden_dim
-        
-        # Gates: reset and update
-        self.conv_gates = nn.Conv2d(
-            input_dim + hidden_dim, 2 * hidden_dim, 
-            kernel_size, padding=kernel_size//2
+
+        # Gates: reset and update (3층으로 깊게)
+        # 입력: (B, input_dim + hidden_dim, H, W) = (B, 128, 25, 25)
+        # 출력: (B, 2 * hidden_dim, H, W) = (B, 128, 25, 25)
+        self.conv_gates = nn.Sequential(
+            nn.Conv2d(input_dim + hidden_dim, hidden_dim, kernel_size, padding=kernel_size//2),
+            nn.GroupNorm(8, hidden_dim),
+            nn.ReLU(),
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size, padding=kernel_size//2),
+            nn.GroupNorm(8, hidden_dim),
+            nn.ReLU(),
+            nn.Conv2d(hidden_dim, 2 * hidden_dim, kernel_size, padding=kernel_size//2)
         )
-        
-        # Candidate hidden state
-        self.conv_candidate = nn.Conv2d(
-            input_dim + hidden_dim, hidden_dim,
-            kernel_size, padding=kernel_size//2
+
+        # Candidate hidden state (3층으로 깊게)
+        # 입력: (B, input_dim + hidden_dim, H, W) = (B, 128, 25, 25)
+        # 출력: (B, hidden_dim, H, W) = (B, 64, 25, 25)
+        self.conv_candidate = nn.Sequential(
+            nn.Conv2d(input_dim + hidden_dim, hidden_dim, kernel_size, padding=kernel_size//2),
+            nn.GroupNorm(8, hidden_dim),
+            nn.ReLU(),
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size, padding=kernel_size//2),
+            nn.GroupNorm(8, hidden_dim),
+            nn.ReLU(),
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size, padding=kernel_size//2)
         )
     
     def forward(self, x, h):
@@ -404,6 +418,14 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         self.dynamics_refine = nn.Sequential(
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.GroupNorm(8, 64),  # 8 groups for 64 channels
+            nn.ReLU6(),
+
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.GroupNorm(8, 64),  # 8 groups for 64 channels
+            nn.ReLU6(),
+
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.GroupNorm(8, 64),  # 8 groups for 64 channels
             nn.ReLU6()
         )
         
@@ -429,24 +451,18 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
             *[layer for layer in mlp(2304, fc_policy_layers, self.action_space_size, use_layer_norm=True)]
         )
 
-        # Value: Improved with learned pooling and deeper MLP
+        # Value: Policy와 동일한 구조로 강화 (공간 정보 보존)
         # Input: (B, 64, 25, 25)
         self.prediction_value_network = nn.Sequential(
-            nn.AdaptiveAvgPool2d(3),  # (B, 64, 25, 25) -> (B, 64, 3, 3)
-            nn.Conv2d(self.latent_channels, self.latent_channels, kernel_size=3, bias=False),  # (B, 64, 3, 3) -> (B, 64, 1, 1) learned pooling
-            nn.Flatten(),  # (B, 64, 1, 1) -> (B, 64)
-            nn.LayerNorm(64),
-            # *[layer for layer in mlp(64, fc_value_layers, self.full_support_size, use_layer_norm=True)]
-            nn.Linear(64, 256), # (B, 64) -> (B, 256)
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # (B, 64, 25, 25) -> (B, 128, 13, 13)
             nn.ReLU(),
-            nn.LayerNorm(256),
-            nn.Linear(256, 256),
+            nn.LayerNorm([128, 13, 13]),
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),  # (B, 128, 13, 13) -> (B, 256, 7, 7)
             nn.ReLU(),
-            nn.Linear(256, self.num_categorical_distribution_atoms)
-
-            # nn.AdaptiveAvgPool2d(1),  # (B, 64, 25, 25) -> (B, 64, 1, 1)
-            # nn.Flatten(),  # (B, 64)
-            # *[layer for layer in mlp(64, fc_value_layers, self.full_support_size, use_layer_norm=True)]
+            nn.LayerNorm([256, 7, 7]),
+            nn.AdaptiveAvgPool2d(3),  # (B, 256, 7, 7) -> (B, 256, 3, 3)
+            nn.Flatten(),  # (B, 2304)
+            *[layer for layer in mlp(2304, fc_value_layers, self.num_categorical_distribution_atoms, use_layer_norm=True)]
         )
 
     def prediction(self, latent):
@@ -585,15 +601,18 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         action_one_hot = self._create_action_one_hot(action, device) # ex. [0,0,0,1,0,0,0,0,0], (B, 9)
         
         # 1단계: FiLM을 통한 안정화된 Action Conditioning
-        # Action이 latent feature를 채널별로 modulate (안정화된 스케일링)
-        action_modulated = self.action_film(latent, action_one_hot)  # (B, 64, 25, 25)
+        # Action 별 Latent 변화 유도 (Action이 latent feature를 채널별로 modulate (안정화된 스케일링)
+        action_modulated = self.action_film(latent, action_one_hot)  # (B, 64, 25, 25) -> (B, 64, 25, 25)
         
         # 2단계: ConvGRU를 통한 Temporal Evolution with Residual
-        # 순수함수 보장: 항상 인자로 받은 latent만 hidden state로 사용
+        # 부모의 상태를 기억(ConvGRU) (순수함수 보장: 항상 인자로 받은 latent만 hidden state로 사용)
+        # 매개변수 latent 가 residual 개념으로 들어가는 것
         next_latent = self.dynamics_gru(action_modulated, latent)  # (B, 64, 25, 25) + residual
+        # (B, 64, 25, 25) -> (B, 64, 25, 25)
         
         # 3단계: Final Refinement
-        next_latent = self.dynamics_refine(next_latent)  # (B, 64, 25, 25)
+        # 특징 추출 강화
+        next_latent = self.dynamics_refine(next_latent)  # (B, 64, 25, 25) -> (B, 64, 25, 25)
         
         # 4단계: Enhanced Reward Prediction with LayerNorm
         # 세 가지 정보 모두 활용: prev + next + action

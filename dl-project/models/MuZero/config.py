@@ -130,6 +130,8 @@ class MuZeroConfig:
         self.n_target_value_bootstrap = 4 # Target Value 생성 시 n-스텝 부트스트랩 길이. (인덱스 0~n-1 까지 Reward 쓰고, n 번째에서 Value 씀. 총 n+1 개임)
         self.batch_size = 128  # 32 -> 128 (GPU 메모리 활용도 최대화)
         self.value_loss_weight = 1
+        self.reward_loss_weight = 1 # 0.5
+        self.policy_loss_weight = 1 # 2.0
         self.train_on_gpu = torch.cuda.is_available()
         
         # 학습 중 시각화 설정

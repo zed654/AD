@@ -503,9 +503,9 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                         policy_count += 1
         
         # 평균 손실 계산
-        value_loss = value_loss / max(1, value_count)
-        reward_loss = reward_loss / max(1, reward_count)
-        policy_loss = policy_loss / max(1, policy_count)
+        value_loss = value_loss / max(1, value_count) * config.value_loss_weight
+        reward_loss = reward_loss / max(1, reward_count) * config.reward_loss_weight
+        policy_loss = policy_loss / max(1, policy_count) * config.policy_loss_weight
         
         # 총 손실 (Gradient Accumulation 정규화 적용)
         # MuZero 이론적 배경:
@@ -711,7 +711,24 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
 
         # expert_ego_pos는 states보다 길 수 있으므로 별도로 모든 위치 복사
         full_episode.expert_ego_pos = episode.expert_ego_pos.copy()
-        
+
+        # 학습 전 Episode의 Predicted Path 추출 (보라색 경로용)
+        old_predicted_rows = []
+        old_predicted_cols = []
+        for i in range(len(episode.states)):
+            state = episode.states[i]
+            if isinstance(state, dict) and 'simulated_ego_pos' in state:
+                pos = state['simulated_ego_pos']
+                old_predicted_rows.append(pos[0])
+                old_predicted_cols.append(pos[1])
+            else:
+                # Fallback: 중앙 위치
+                old_predicted_rows.append(49)
+                old_predicted_cols.append(49)
+
+        if old_predicted_rows:
+            print(f"    📍 Old Predicted path: start({old_predicted_rows[0]}, {old_predicted_cols[0]}) -> end({old_predicted_rows[-1]}, {old_predicted_cols[-1]})")
+
         # 현재 네트워크로 MCTS enrichment 수행
         print(f"    Episode {ep_idx+1}: {visualization_steps} 스텝 처리 중...")
         enriched_episodes = self_play_manager.enrich_episodes_with_mcts([full_episode])
@@ -843,8 +860,33 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
                       c='darkblue', s=50, alpha=1.0, zorder=5)
         else:
             ax.scatter(expert_cols, expert_rows, c='blue', s=50, zorder=5, label='Expert Path')
-        
-        # MCTS로 계산된 simulated 경로 (빨간색)
+
+        # Old Predicted Path (보라색 그라데이션: 학습 전 경로)
+        if old_predicted_rows and len(old_predicted_rows) > 1 and len(set(zip(old_predicted_rows, old_predicted_cols))) > 1:
+            for i in range(len(old_predicted_rows) - 1):
+                # 진행도에 따른 알파값 (0.3 -> 1.0)
+                alpha = 0.3 + 0.7 * (i / (len(old_predicted_rows) - 1))
+                # 진행도에 따른 색상 강도 (연한 보라색 -> 진한 보라색)
+                color_intensity = 0.4 + 0.6 * (i / (len(old_predicted_rows) - 1))
+                color = (color_intensity * 0.5, 0, color_intensity)  # 보라색 (R과 B 혼합)
+
+                # 첫 번째 선분에만 label 추가 (범례용)
+                label = 'Old Predicted (Before Training)' if i == 0 else None
+                ax.plot([old_predicted_cols[i], old_predicted_cols[i+1]],
+                       [old_predicted_rows[i], old_predicted_rows[i+1]],
+                       color=color, linewidth=2, alpha=alpha, linestyle=':', label=label)  # dotted 라인
+                ax.scatter(old_predicted_cols[i], old_predicted_rows[i],
+                          c=[color], s=25 + 15 * (i / max(1, len(old_predicted_rows) - 1)),
+                          alpha=alpha, zorder=4)
+            # 마지막 점
+            ax.scatter(old_predicted_cols[-1], old_predicted_rows[-1],
+                      c='purple', s=45, alpha=1.0, zorder=4)
+        elif old_predicted_rows and len(old_predicted_rows) > 0:
+            # 모든 점이 같은 위치인 경우 점으로만 표시
+            ax.scatter(old_predicted_cols[0], old_predicted_rows[0], c='purple', s=80, marker='x',
+                      label='Old Predicted (No Movement)', zorder=4, alpha=0.7)
+
+        # MCTS로 계산된 simulated 경로 (빨간색: 학습 후 경로)
         # enrich_episodes_with_mcts에서 이미 simulated_ego_pos가 계산되어 states에 저장됨
         sim_rows = []
         sim_cols = []
@@ -881,20 +923,20 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
         if fallback_count > 0:
             print(f"⚠️ {fallback_count}/{len(enriched_episode.states)} 스텝에서 simulated_ego_pos 누락으로 fallback 사용")
         
-        print(f"🔍 Simulated path: start({sim_rows[0]}, {sim_cols[0]}) -> end({sim_rows[-1]}, {sim_cols[-1]})")
-        
-        # 예측 경로 (빨간색 그라데이션: 연한색 -> 진한색)
+        print(f"🔍 New Predicted path: start({sim_rows[0]}, {sim_cols[0]}) -> end({sim_rows[-1]}, {sim_cols[-1]})")
+
+        # New Predicted Path (빨간색 그라데이션: 학습 후 경로)
         if len(set(zip(sim_rows, sim_cols))) > 1:  # 서로 다른 위치가 2개 이상 있을 때만
-            # Predicted Path 그라데이션 그리기
+            # New Predicted Path 그라데이션 그리기
             for i in range(len(sim_rows) - 1):
                 # 진행도에 따른 알파값 (0.3 -> 1.0)
                 alpha = 0.3 + 0.7 * (i / (len(sim_rows) - 1))
                 # 진행도에 따른 색상 강도 (연한 빨간색 -> 진한 빨간색)
                 color_intensity = 0.4 + 0.6 * (i / (len(sim_rows) - 1))
                 color = (color_intensity, 0, 0)
-                
+
                 # 첫 번째 선분에만 label 추가 (범례용)
-                label = 'Predicted Path' if i == 0 else None
+                label = 'New Predicted (After Training)' if i == 0 else None
                 ax.plot([sim_cols[i], sim_cols[i+1]], 
                        [sim_rows[i], sim_rows[i+1]], 
                        color=color, linewidth=2, alpha=alpha, linestyle='--', label=label)
@@ -906,7 +948,7 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
                       c='darkred', s=50, alpha=1.0, zorder=5)
         else:
             # 모든 점이 같은 위치인 경우 점으로만 표시
-            ax.scatter(sim_cols[0], sim_rows[0], c='red', s=100, marker='x', label='Predicted Path (No Movement)', zorder=5)
+            ax.scatter(sim_cols[0], sim_rows[0], c='red', s=100, marker='x', label='New Predicted (No Movement)', zorder=5)
         
         # 시작점과 끝점 표시
         ax.scatter(expert_cols[0], expert_rows[0], c='green', s=100, marker='o', label='Start', zorder=6)
