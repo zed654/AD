@@ -615,8 +615,9 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 f"Policy={loss_dict['policy_loss']:.4f}, "
                 f"Reward={loss_dict['reward_loss']:.4f}")
         
-        # 2.5 학습 진행 상황 시각화 (선택적)
-        if (step + 1) % config.visualization_interval_step == 0 and config.enable_training_visualization:
+        # 2.5 학습 진행 상황 시각화 (선택적) ... iteration_num
+        # if (step + 1) % config.visualization_interval_step == 0 and config.enable_training_visualization:
+        if (step + 1) % config.visualization_interval_step == 0 and (iteration_num + 1) % config.visualization_interval_interation == 0 and config.enable_training_visualization:
             try:
                 visualize_training_progress(network, replay_buffer, step + 1, config, device, loss_history, iteration_num)
             except Exception as e:

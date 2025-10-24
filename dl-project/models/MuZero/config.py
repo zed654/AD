@@ -46,7 +46,7 @@ class MuZeroConfig:
         
         # PUCT 하이퍼 파라미터 설정
         self.pb_c_base = 19652
-        self.pb_c_init = 2.5 # 높을수록 새로운 가지 탐색이 늘어남. Deafult: 1.25
+        self.pb_c_init = 2.5 # 높을수록 Q-Value 보다 Policy 신뢰가 늘어남. Deafult: 1.25
 
         # 네트워크 설정
         self.network = "fullyconnected"  # "resnet" 또는 "fullyconnected" 또는 "fullyconnected_test"
@@ -103,12 +103,12 @@ class MuZeroConfig:
         # TODO: 실제 Inference 할 때, MCTS Sim 이후 Step 선택하는 Action 부에 Temperature 를 0으로 줘야함
         self.num_workers = 1
         self.selfplay_on_gpu = False
-        self.num_simulations = 50  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
+        self.num_simulations = 200  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
         self.value_bootstrap_discount = 0.97
         self.mcts_value_backup_discount = 0.99
         self.puct_discount = 0.997
         self.temperature_threshold = None
-        self.mcts_dirichlet_alpha = 1.2  # dirichlet noise - 탐험도를 높히기 위해 값을 키워야함 (a = 1 이면 정규분포임. 현 코드에서 얘를 기반으로 랜덤확률로 씀. 즉, 탐험항 높히려면 가치 낮은애가 커질 수 있어야함. 그렇기 때문에 alpha 값은 작을수록 탐험도가 강해짐). alpha 가 작으면 값이 큰 인덱스(prior 높은애) 의 변화량이 더 커짐
+        self.mcts_dirichlet_alpha = 1.2  # Dirichlet alpha: **클수록** 균등분포→탐험 강화 (5.0~10.0 권장), 작을수록 특정 action 집중→탐험 약화
         self.mcts_exploration_fraction = 0.25  # dirichlet noise (클 수록 탐험도 커짐) -> 기존 prior 를 얼마나 깎고, noise 로 대체할건지 결정하는 항임. 값이 크면 prior 덜 반영됨 (0~1 사이). 1이면, prior 결과 안쓰고 noise 만 쓴다는거임
         self.num_stochastic_steps = 30  # [지금 얘 안씀] 초기 30스텝 동안 확률적 행동 선택
         self.max_game_length = 500  # Self-play 안전장치 (무한루프 방지)
@@ -122,10 +122,10 @@ class MuZeroConfig:
             self.training_steps = 10
         elif self.test_mode == 2:
             self.num_iterations = 1000 # 100 {Self-Play - 학습} 사이클 반복 횟수
-            self.training_steps = 1000
+            self.training_steps = 10
         elif self.test_mode == 0:
-            self.num_iterations = 100 # 100 {Self-Play - 학습} 사이클 반복 횟수
-            self.training_steps = 1000  # 1000. K-Step Unrolling 반복 횟수
+            self.num_iterations = 10000 # 100 {Self-Play - 학습} 사이클 반복 횟수
+            self.training_steps = 10  # 1000. K-Step Unrolling 반복 횟수
         self.unroll_steps = 5  # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
         self.n_target_value_bootstrap = 4 # Target Value 생성 시 n-스텝 부트스트랩 길이. (인덱스 0~n-1 까지 Reward 쓰고, n 번째에서 Value 씀. 총 n+1 개임)
         self.batch_size = 128  # 32 -> 128 (GPU 메모리 활용도 최대화)
@@ -136,8 +136,10 @@ class MuZeroConfig:
         self.enable_training_visualization = True  # 학습 중 시각화 생성 여부
         if self.test_mode == 1:
             self.visualization_interval_step = 5  # 테스트 모드에서는 더 자주 시각화
+            self.visualization_interval_interation = 1
         elif self.test_mode == 0 or self.test_mode == 2:
-            self.visualization_interval_step = 50  # training_steps 몇 스텝마다 PNG 시각화 할지
+            self.visualization_interval_step = 10  # training_steps 몇 스텝마다 PNG 시각화 할지
+            self.visualization_interval_interation = 5
         self.visualization_num_episodes = 3  # PNG 에 시각화할 Episode 수 (최대)
         # self.visualization_min_episode_length = 10  # 시각화할 Episode 의 Step 최소 길이
         self.visualization_dpi = 150  # 이미지 저장 DPI
