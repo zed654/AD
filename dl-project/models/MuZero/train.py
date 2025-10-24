@@ -619,7 +619,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
         # if (step + 1) % config.visualization_interval_step == 0 and config.enable_training_visualization:
         if (step + 1) % config.visualization_interval_step == 0 and (iteration_num + 1) % config.visualization_interval_interation == 0 and config.enable_training_visualization:
             try:
-                visualize_training_progress(network, replay_buffer, step + 1, config, device, loss_history, iteration_num)
+                visualize_training_progress(network, valid_episodes, step + 1, config, device, loss_history, iteration_num)
             except Exception as e:
                 print(f"    ⚠️ 시각화 중 오류 발생: {e}")
                 logger.info(f"Visualization error at step {step+1}: {e}")
@@ -652,7 +652,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
 
 
 
-def visualize_training_progress(network, replay_buffer, step, config, device, loss_history=None, iteration_num=1):
+def visualize_training_progress(network, valid_episodes, step, config, device, loss_history=None, iteration_num=1):
     """학습 중 모델의 예측 성능과 Loss를 시각화
     
     replay_buffer에서 Episode를 샘플링하여 현재 네트워크로 다시 추론
@@ -661,7 +661,8 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
     print(f"\n  📊 step {step} 학습 진행 상황 시각화...")
     
     # 시각화할 Episode 샘플링 (config에서 설정)
-    episodes = replay_buffer.sample_episodes(min(config.visualization_num_episodes, len(replay_buffer)))
+    episodes = valid_episodes[:min(config.visualization_num_episodes, len(valid_episodes))]
+    # episodes = replay_buffer.sample_episodes(min(config.visualization_num_episodes, len(replay_buffer)))
     
     if not episodes:
         print("    시각화할 Episode가 없습니다.")

@@ -121,7 +121,7 @@ class MuZeroConfig:
             self.num_iterations = 10
             self.training_steps = 10
         elif self.test_mode == 2:
-            self.num_iterations = 1000 # 100 {Self-Play - 학습} 사이클 반복 횟수
+            self.num_iterations = 10000 # 100 {Self-Play - 학습} 사이클 반복 횟수
             self.training_steps = 10
         elif self.test_mode == 0:
             self.num_iterations = 10000 # 100 {Self-Play - 학습} 사이클 반복 횟수
@@ -140,7 +140,7 @@ class MuZeroConfig:
         elif self.test_mode == 0 or self.test_mode == 2:
             self.visualization_interval_step = 10  # training_steps 몇 스텝마다 PNG 시각화 할지
             self.visualization_interval_interation = 5
-        self.visualization_num_episodes = 3  # PNG 에 시각화할 Episode 수 (최대)
+        self.visualization_num_episodes = 3  # PNG 에 시각화할 Episode 수 (최대) ... training_steps 에서 사용된 batch 개수의 episodes 중 선택
         # self.visualization_min_episode_length = 10  # 시각화할 Episode 의 Step 최소 길이
         self.visualization_dpi = 150  # 이미지 저장 DPI
         self.visualization_figsize = (10, 10)  # 그림 크기 (width, height)
