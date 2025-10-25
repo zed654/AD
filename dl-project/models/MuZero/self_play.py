@@ -112,9 +112,9 @@ class SelfPlayManager:
                         (simulated_ego_row, simulated_ego_col)
                     )
 
-                    for legal_mask_idx in range(len(legal_mask)):
-                        if legal_mask[legal_mask_idx] == 0.0:
-                            print(f"    - 스텝 {step_idx}에서 액션 {legal_mask_idx}는 불법입니다.")
+                    # for legal_mask_idx in range(len(legal_mask)):
+                    #     if legal_mask[legal_mask_idx] == 0.0:
+                    #         print(f"    - 스텝 {step_idx}에서 액션 {legal_mask_idx}는 불법입니다.")
 
                     # MCTS 실행
                     # - representation(): observation → latent
@@ -150,9 +150,9 @@ class SelfPlayManager:
                     episode.states[step_idx]['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
 
                     # 디버깅: 데이터 타입 확인 (처음 몇 스텝만)
-                    if step_idx < 2:
-                        obs_type = type(episode.states[step_idx].get('obstacles', None))
-                        print(f"    - 스텝 {step_idx} 후 obstacles 타입: {obs_type}")
+                    # if step_idx < 2:
+                    #     obs_type = type(episode.states[step_idx].get('obstacles', None))
+                    #     print(f"    - 스텝 {step_idx} 후 obstacles 타입: {obs_type}")
                     
                     # GT 학습을 위한 환경 reward 계산 (Step마다)
                     reward = self._calculate_target_reward(
@@ -181,8 +181,8 @@ class SelfPlayManager:
                     #     #     episode.expert_ego_pos = episode.expert_ego_pos[:step_idx + 1]
                     #     break  # MCTS 적용 루프 종료
                 
-                if step_idx % 10 == 0:
-                    print(f"  - 진행률: {step_idx}/{len(episode.states)} 스텝 (각 스텝마다 {self.config.num_simulations}회 시뮬레이션)")
+                # if step_idx % 10 == 0:
+                #     print(f"  - 진행률: {step_idx}/{len(episode.states)} 스텝 (각 스텝마다 {self.config.num_simulations}회 시뮬레이션)")
             
             # n-step bootstrap target value 계산
             # MCTS root values는 보존하고 target_values는 별도로 계산됨

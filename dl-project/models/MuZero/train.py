@@ -631,7 +631,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             save_path = checkpoint_dir / f"iter{iteration_num}.pth"
             torch.save({
-                'step': step + 1,
+                'iteration': iteration_num + 1,
                 'network_state_dict': network.state_dict(),
                 'config': config.__dict__
             }, save_path)

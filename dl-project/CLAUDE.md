@@ -176,8 +176,8 @@ The `models/SSR/` contains template implementations for Structured State Represe
 #### 4. **시각화 및 모니터링 강화**
 학습 진행 상황 실시간 확인:
 - **학습 시각화**: `enable_training_visualization = True`
-- **저장 간격**: `visualization_interval_step = 10`
-- **체크포인트**: `pth_checkpoint_interval_step = 10`
+- **저장 간격**: `visualization_interval_iteration = 10`
+- **체크포인트**: `pth_checkpoint_interval_iteration = 10`
 - **손실 추적**: value_loss, policy_loss, reward_loss 개별 모니터링
 
 #### 5. **성능 설정 최적화**

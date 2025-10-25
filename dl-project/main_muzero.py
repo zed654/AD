@@ -92,7 +92,7 @@ def train_mode(config, checkpoint_path=None):
         print(f"📂 체크포인트 로드: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=device)
         network.load_state_dict(checkpoint['network_state_dict'])
-        start_epoch = checkpoint.get('epoch', 0)
+        start_epoch = checkpoint.get('iteration', 0)
         print(f"   → {start_epoch}번째 에폭부터 재개")
     else:
         start_epoch = 0

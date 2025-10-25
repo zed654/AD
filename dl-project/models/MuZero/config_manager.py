@@ -112,7 +112,7 @@ def print_config(config: MuZeroConfig, title: str = "현재 설정"):
                         "fc_dynamics_layers", "fc_reward_layers", "fc_value_layers", "fc_policy_layers"],
         "📚 학습 설정": ["training_steps", "batch_size", "num_epochs", "num_selfplay_games", 
                      "learning_rate", "optimizer", "weight_decay"],
-        "💾 저장 설정": ["results_path", "pth_checkpoint_interval_step", "checkpoint_save_dir", 
+        "💾 저장 설정": ["results_path", "pth_checkpoint_interval_iteration", "checkpoint_save_dir", 
                      "checkpoint_final_name"],
         "🔧 기타 설정": ["observation_provider_type", "gt_data_path", "num_simulations", 
                      "num_stochastic_steps"]
