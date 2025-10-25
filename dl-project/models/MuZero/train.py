@@ -626,10 +626,10 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 logger.info(f"Visualization error at step {step+1}: {e}")
         
         # 3. 주기적으로 체크포인트 저장
-        if (step + 1) % config.pth_checkpoint_interval_step == 0:
+        if (iteration_num + 1) % config.pth_checkpoint_interval_iteration == 0:
             checkpoint_dir = config.results_path / config.checkpoint_save_dir
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            save_path = checkpoint_dir / f"iter{iteration_num}_{config.checkpoint_training_steps_prefix}{step+1}.pth"
+            save_path = checkpoint_dir / f"iter{iteration_num}.pth"
             torch.save({
                 'step': step + 1,
                 'network_state_dict': network.state_dict(),
