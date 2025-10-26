@@ -129,9 +129,9 @@ class MuZeroConfig:
         self.unroll_steps = 5  # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
         self.n_target_value_bootstrap = 4 # Target Value 생성 시 n-스텝 부트스트랩 길이. (인덱스 0~n-1 까지 Reward 쓰고, n 번째에서 Value 씀. 총 n+1 개임)
         self.batch_size = 128  # 32 -> 128 (GPU 메모리 활용도 최대화)
-        self.value_loss_weight = 0.5
+        self.value_loss_weight = 1
         self.reward_loss_weight = 1
-        self.policy_loss_weight = 2
+        self.policy_loss_weight = 1
         self.train_on_gpu = torch.cuda.is_available()
         
         # 학습 중 시각화 설정
