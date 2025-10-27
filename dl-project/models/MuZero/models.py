@@ -62,41 +62,85 @@ def mlp(
     return torch.nn.Sequential(*layers)
 
 
+class ResidualBlock(nn.Module):
+    """ResNet Residual Block with GroupNorm and ReLU"""
+
+    def __init__(self, channels, num_groups=32):
+        """
+        Args:
+            channels: 입출력 채널 수 (동일)
+            num_groups: GroupNorm의 그룹 수 (기본 32)
+        """
+        super().__init__()
+
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.gn1 = nn.GroupNorm(num_groups, channels)
+        self.relu1 = nn.ReLU(inplace=True)
+
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.gn2 = nn.GroupNorm(num_groups, channels)
+
+        # Residual connection의 최종 ReLU
+        self.relu2 = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, channels, H, W)
+        Returns:
+            out: (B, channels, H, W)
+        """
+        identity = x
+
+        out = self.conv1(x)
+        out = self.gn1(out)
+        out = self.relu1(out)
+
+        out = self.conv2(out)
+        out = self.gn2(out)
+
+        # Residual connection
+        out += identity
+        out = self.relu2(out)
+
+        return out
+
+
 def compute_edt(occupancy_grid):
     """
     Occupancy grid에서 Euclidean Distance Transform 계산
-    
+
     Args:
         occupancy_grid: (B, 1, H, W) 점유 그리드 (0/1 값)
-    
+
     Returns:
         edt: (B, 1, H, W) EDT 결과 (0~1 정규화)
-    
+
     Note:
         현재 구현은 CPU 기반 scipy 사용으로 GPU 병목 가능성 있음
         향후 GPU 기반 EDT 구현 고려 필요
     """
     batch_size, _, height, width = occupancy_grid.shape
     device = occupancy_grid.device
-    
+
     edt_result = torch.zeros_like(occupancy_grid)
-    
+
     # 성능 최적화: 전체 배치를 CPU로 이동 (반복적 이동 방지)
     occupancy_cpu = occupancy_grid.cpu().numpy()
-    
+
     for b in range(batch_size):
         # 점유된 셀(1)을 배경(0)으로, 빈 셀(0)을 전경(1)으로 변환
         binary_mask = (occupancy_cpu[b, 0] == 0).astype(np.float32)
-        
+
         # EDT 계산 (빈 공간에서 가장 가까운 장애물까지의 거리)
         edt = distance_transform_edt(binary_mask)
-        
+
         # 정규화: 최대값이 1이 되도록
         if edt.max() > 0:
             edt = edt / edt.max()
-        
+
         edt_result[b, 0] = torch.tensor(edt, device=device, dtype=torch.float32)
-    
+
     return edt_result
 
 
@@ -148,6 +192,25 @@ class CNNLiteBackbone(nn.Module):
         # Block2: 50x50 -> 25x25 (stride=2로 축소)
         self.block2 = DepthwiseSeparableConv2d(48, 64, stride=2, padding=1)
         
+        # 1. Projection: 64 channels -> 256 channels
+        self.dynamics_resnet_projection = nn.Sequential(
+            nn.Conv2d(32, 256, kernel_size=1, bias=False),
+            nn.GroupNorm(32, 256),
+            nn.ReLU(inplace=True)
+        )
+
+        # 2. ResNet Blocks: 16 blocks with 256 channels
+        self.dynamics_resnet_blocks = nn.Sequential(
+            *[ResidualBlock(256, num_groups=32) for _ in range(16)]
+        )
+
+        # 3. Back-projection: 256 channels -> 64 channels
+        self.dynamics_resnet_backprojection = nn.Sequential(
+            nn.Conv2d(256, 64, kernel_size=1, bias=False),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(inplace=True)
+        )
+
         # 좌표 그리드 생성 (CoordConv용)
         self.register_buffer('coord_grid', None)
     
@@ -175,6 +238,11 @@ class CNNLiteBackbone(nn.Module):
         x = self.block1_0(x)     # 99x99 -> 50x50 (stride=2, dilation=2)
         x = self.block1_1(x)     # 50x50 -> 50x50 (dilation=2) ← 여기 문제!
         x = self.block2(x)       # 50x50 -> 25x25
+
+        # x = self.stem(x)         # 99x99 -> 99x99
+        # x = self.dynamics_resnet_projection(x)      # 99x99 -> 99x99 (dilation=1)
+        # x = self.dynamics_resnet_blocks(x)          # 99x99 -> 99x99 (dilation=2)
+        # x = self.dynamics_resnet_backprojection(x)  # 99x99 -> 99x99 (dilation=2)
 
         return x
 
@@ -368,17 +436,19 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         use_goal_map=False,
         use_film=False,
         alpha_init=0.5,
+        use_resnet_dynamics=False,
     ):
         super().__init__()
         self.action_space_size = action_space_size
         # num_categorical_distribution_atoms 직접 사용
         self.num_categorical_distribution_atoms = num_categorical_distribution_atoms
         self.observation_shape = observation_shape
-        
+
         # 새로운 구조 설정
         self.use_coordconv = use_coordconv
         self.use_goal_map = use_goal_map
         self.use_film = use_film
+        self.use_resnet_dynamics = use_resnet_dynamics
         
         # 2D latent 구조 (고정)
         self.latent_channels = 64
@@ -413,7 +483,7 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
             hidden_dim=self.latent_channels,  # 64
             kernel_size=3
         )
-        
+
         # Final refinement conv (optional)
         self.dynamics_refine = nn.Sequential(
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
@@ -428,6 +498,28 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
             nn.GroupNorm(8, 64),  # 8 groups for 64 channels
             nn.ReLU6()
         )
+
+        # ========== ResNet Alternative for Dynamics (16 blocks, 256 channels) ==========
+        # Dynamics ResNet: 64 -> 256 -> 64 with 16 residual blocks
+        # 1. Projection: 64 channels -> 256 channels
+        self.dynamics_resnet_projection = nn.Sequential(
+            nn.Conv2d(64, 256, kernel_size=1, bias=False),
+            nn.GroupNorm(32, 256),
+            nn.ReLU(inplace=True)
+        )
+
+        # 2. ResNet Blocks: 16 blocks with 256 channels
+        self.dynamics_resnet_blocks = nn.Sequential(
+            *[ResidualBlock(256, num_groups=32) for _ in range(16)]
+        )
+
+        # 3. Back-projection: 256 channels -> 64 channels
+        self.dynamics_resnet_backprojection = nn.Sequential(
+            nn.Conv2d(256, 64, kernel_size=1, bias=False),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(inplace=True)
+        )
+        # ===============================================================================
         
         # Reward 네트워크 (latent + action -> support_size)
         reward_input_size = 64 + 64 + self.action_space_size  # prev_latent + next_latent + action
@@ -578,13 +670,13 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
     
     def dynamics(self, latent, action):
         """
-        Enhanced Dynamics with FiLM + ConvGRU
+        Enhanced Dynamics with FiLM + (ConvGRU or ResNet)
         g(s_t, a_t) -> (r_t, s_{t+1})
-        
+
         Args:
             latent: 현재 latent state (B, 64, 25, 25) 또는 (64, 25, 25)
             action: 수행할 action (B,) or (B, 1) 또는 스칼라
-            
+
         Returns:
             next_latent: 다음 latent state (B, 64, 25, 25)
             reward: 예측된 보상 (categorical distribution)
@@ -592,39 +684,48 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         # Latent 차원 정규화
         if len(latent.shape) == 3:  # (64, 25, 25)
             latent = latent.unsqueeze(0)  # (1, 64, 25, 25)
-            
+
         batch_size = latent.shape[0]
         device = latent.device
-        
+
         # Action 입력 엄격화 및 안전한 one-hot 생성 (B, 9)
         action = self._normalize_action_input(action, batch_size, device)
         action_one_hot = self._create_action_one_hot(action, device) # ex. [0,0,0,1,0,0,0,0,0], (B, 9)
-        
+
         # 1단계: FiLM을 통한 안정화된 Action Conditioning
         # Action 별 Latent 변화 유도 (Action이 latent feature를 채널별로 modulate (안정화된 스케일링)
         action_modulated = self.action_film(latent, action_one_hot)  # (B, 64, 25, 25) -> (B, 64, 25, 25)
-        
-        # 2단계: ConvGRU를 통한 Temporal Evolution with Residual
-        # 부모의 상태를 기억(ConvGRU) (순수함수 보장: 항상 인자로 받은 latent만 hidden state로 사용)
-        # 매개변수 latent 가 residual 개념으로 들어가는 것
-        next_latent = self.dynamics_gru(action_modulated, latent)  # (B, 64, 25, 25) + residual
-        # (B, 64, 25, 25) -> (B, 64, 25, 25)
-        
-        # 3단계: Final Refinement
-        # 특징 추출 강화
-        next_latent = self.dynamics_refine(next_latent)  # (B, 64, 25, 25) -> (B, 64, 25, 25)
-        
+
+        if self.use_resnet_dynamics:
+            # ========== ResNet 경로 (16 blocks, 256 channels) ==========
+            # 2-A: ResNet으로 강력한 특징 추출
+            # 64 -> 256 -> 16 blocks -> 64
+            next_latent = self.dynamics_resnet_projection(action_modulated)  # (B, 64, 25, 25) -> (B, 256, 25, 25)
+            next_latent = self.dynamics_resnet_blocks(next_latent)  # (B, 256, 25, 25) -> (B, 256, 25, 25)
+            next_latent = self.dynamics_resnet_backprojection(next_latent)  # (B, 256, 25, 25) -> (B, 64, 25, 25)
+        else:
+            # ========== ConvGRU 경로 (기존 방식) ==========
+            # 2-B: ConvGRU를 통한 Temporal Evolution with Residual
+            # 부모의 상태를 기억(ConvGRU) (순수함수 보장: 항상 인자로 받은 latent만 hidden state로 사용)
+            # 매개변수 latent 가 residual 개념으로 들어가는 것
+            next_latent = self.dynamics_gru(action_modulated, latent)  # (B, 64, 25, 25) + residual
+            # (B, 64, 25, 25) -> (B, 64, 25, 25)
+
+            # 3단계: Final Refinement
+            # 특징 추출 강화
+            next_latent = self.dynamics_refine(next_latent)  # (B, 64, 25, 25) -> (B, 64, 25, 25)
+
         # 4단계: Enhanced Reward Prediction with LayerNorm
         # 세 가지 정보 모두 활용: prev + next + action
         prev_features = F.adaptive_avg_pool2d(latent, 1).flatten(1)      # (B, 64)
         next_features = F.adaptive_avg_pool2d(next_latent, 1).flatten(1) # (B, 64)
-        
+
         reward_input = torch.cat([
             prev_features,  # 현재 상태 정보
-            next_features,  # 다음 상태 정보  
+            next_features,  # 다음 상태 정보
             action_one_hot  # 수행한 action 정보
         ], dim=1)  # (B, 64+64+9)
-        
+
         # LayerNorm으로 스케일 민감도 완화
         reward_input_normalized = self.reward_input_norm(reward_input)
         reward = self.dynamics_reward_network(reward_input_normalized)  # (B, support_size)
