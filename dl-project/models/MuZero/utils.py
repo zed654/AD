@@ -225,18 +225,18 @@ def build_observation_tensor(state_dict: Dict, observation_shape: Tuple[int, int
         observation_tensor[4, 0, 1] = final_dir.get('y', 0.0)
     
     # Channel 5: Simulated ego position - 최적화된 처리
-    ego_pos = state_dict.get('simulated_ego_pos')
-    if ego_pos is not None and isinstance(ego_pos, tuple) and len(ego_pos) == 2:
-        if isinstance(ego_pos[0], int):  # (row, col) 형태
-            row, col = ego_pos
-            center = observation_shape[1] // 2  # 49
-            ego_x = float(row - center)
-            ego_y = float(center - col)
-        else:  # (x, y) 형태
-            ego_x, ego_y = ego_pos
+    # ego_pos = state_dict.get('simulated_ego_pos')
+    # if ego_pos is not None and isinstance(ego_pos, tuple) and len(ego_pos) == 2:
+    #     if isinstance(ego_pos[0], int):  # (row, col) 형태
+    #         row, col = ego_pos
+    #         center = observation_shape[1] // 2  # 49
+    #         ego_x = float(row - center)
+    #         ego_y = float(center - col)
+    #     else:  # (x, y) 형태
+    #         ego_x, ego_y = ego_pos
         
-        observation_tensor[5, 0, 0] = ego_x
-        observation_tensor[5, 0, 1] = ego_y
+    observation_tensor[5, 0, 0] = 49
+    observation_tensor[5, 0, 1] = 49
     
     return observation_tensor
 

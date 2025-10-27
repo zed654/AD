@@ -6,7 +6,7 @@ import torch
 import numpy as np
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
-from .mcts import MCTS
+from .mcts import MCTS, IllegalStateException
 from .environment import BaseEnvironment
 from .action import Action
 from .replay_buffer import ReplayBuffer, Episode
@@ -83,14 +83,17 @@ class SelfPlayManager:
         for ep_idx, episode in enumerate(episodes):
             # print(f"\nEpisode {ep_idx + 1}/{len(episodes)}에 MCTS 적용 중...")
             # print(f"  - MCTS 시뮬레이션 횟수: {self.config.num_simulations}회")
-            
+
             # Simulated ego position 추적 (그리드 좌표)
             simulated_ego_row, simulated_ego_col = 49, 49  # 그리드 중앙에서 시작. self.observation_shape 의 중앙임
-            
+
             # dones 필드 초기화 (충돌 tracking용)
             if not hasattr(episode, 'dones'):
                 episode.dones = [False] * len(episode.states)
-            
+
+            # Episode 유효성 플래그
+            episode_is_valid = True
+
             # 각 스텝에 대해 MCTS 실행
             for step_idx in range(len(episode.states)):
                 # observation 가져오기 (dict 형태)
@@ -98,18 +101,24 @@ class SelfPlayManager:
                 
                 # observation tensor 추출
                 if isinstance(state_dict, dict):
-                    # 현재 simulated_ego_pos 업데이트
-                    state_dict_copy = state_dict.copy()
-                    state_dict_copy['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
-                    
-                    # 6채널 observation 생성 (공용 함수 사용)
+                    # 현재 simulated_ego_pos 업데이트 후 shift 적용
+                    # import copy
+                    # state_dict_copy = copy.deepcopy(state_dict)
+                    # state_dict_copy['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
+                    episode.states[step_idx]['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
+
+                    # Ego 위치 기준으로 observation shift (처음에는 제자리임)
+                    episode.states[step_idx] = self.shift_observation(episode.states[step_idx], (simulated_ego_row, simulated_ego_col))
+
+                    # 6채널 observation 생성 (공용 함수 사용) -> simulated_ego_pos 가 변해도(=step 이 진행되어도) 환경은 root 시점 그대로 고정됨.
                     device = self.device if hasattr(self, 'device') else 'cpu'
-                    observation_tensor = build_observation_tensor(state_dict_copy, self.config.observation_shape, device, self.config.use_obstacle_channels)
+                    observation_tensor = build_observation_tensor(episode.states[step_idx], self.config.observation_shape, device, self.config.use_obstacle_channels)
 
                     # Legal mask 계산
                     legal_mask = self._calculate_legal_mask(
-                        state_dict_copy,
-                        (simulated_ego_row, simulated_ego_col)
+                        episode.states[step_idx],
+                        (49, 49)
+                        # (simulated_ego_row, simulated_ego_col)
                     )
 
                     # for legal_mask_idx in range(len(legal_mask)):
@@ -120,13 +129,33 @@ class SelfPlayManager:
                     # - representation(): observation → latent
                     # - 시뮬레이션: dynamics()로 미래 예측, prediction()으로 policy/value 계산
                     # - 최적 action 선택 및 root node의 value/π 반환
-                    with torch.no_grad():
-                        mcts_result = self.mcts.run(
-                            observation_tensor,
-                            add_exploration_noise=True,
-                            legal_mask=legal_mask
-                        )
-                    
+                    try:
+                        with torch.no_grad():
+                            mcts_result = self.mcts.run(
+                                observation_tensor,
+                                add_exploration_noise=True,
+                                legal_mask=legal_mask
+                            )
+                    except IllegalStateException as e:
+                        # 모든 액션이 불법인 경우 Episode 즉시 종료
+                        print(f"  [Episode {ep_idx + 1}] 스텝 {step_idx}에서 {str(e)}")
+                        # Episode를 현재 스텝 이전까지만 잘라냄
+                        # episode.states = episode.states[:step_idx]
+                        # episode.actions = episode.actions[:step_idx]
+                        # episode.rewards = episode.rewards[:step_idx]
+                        # episode.pi = episode.pi[:step_idx]
+                        # episode.values = episode.values[:step_idx]
+                        # episode.dones = episode.dones[:step_idx]
+                        # episode.legal_mask = episode.legal_mask[:step_idx]
+                        # if hasattr(episode, 'expert_ego_pos'):
+                        #     episode.expert_ego_pos = episode.expert_ego_pos[:step_idx]
+                        # 이 Episode는 너무 짧으면 버림
+                        # if len(episode.states) < 3:
+                            # print(f"  [Episode {ep_idx + 1}] Episode가 너무 짧아서 버립니다. (길이: {len(episode.states)})")
+                        episode_is_valid = False
+                        # Episode 종료
+                        break
+
                     # Episode에 MCTS 결과 업데이트
                     episode.pi[step_idx] = mcts_result['policy_targets']
                     # MCTS가 계산한 value 저장 (bootstrap에 사용됨)
@@ -184,17 +213,80 @@ class SelfPlayManager:
                 # if step_idx % 10 == 0:
                 #     print(f"  - 진행률: {step_idx}/{len(episode.states)} 스텝 (각 스텝마다 {self.config.num_simulations}회 시뮬레이션)")
             
-            # n-step bootstrap target value 계산
-            # MCTS root values는 보존하고 target_values는 별도로 계산됨
-            episode.target_values = self._calculate_target_value(episode)
-            
-            enriched_episodes.append(episode)
+            # Episode가 유효한 경우만 추가
+            if episode_is_valid:
+                # n-step bootstrap target value 계산
+                # MCTS root values는 보존하고 target_values는 별도로 계산됨
+                episode.target_values = self._calculate_target_value(episode)
+
+                enriched_episodes.append(episode)
             # target_values 출력 (학습에 사용되는 실제 타깃)
             # avg_target_value = np.mean(episode.target_values) if hasattr(episode, 'target_values') else np.mean(episode.values)
             # print(f"  - Episode {ep_idx + 1} 완료: {len(episode.states)} 스텝, "
             #       f"평균 target value: {avg_target_value:.3f}")
         
         return enriched_episodes
+    
+    def shift_observation(self, state_dict: dict, new_pos: Tuple[int, int]) -> dict:
+        """observation 내의 그리드 채널들을 새로운 simulated_ego_pos에 맞게 쉬프트
+
+        Args:
+            state_dict: 원본 observation dictionary
+            new_pos: 새로운 simulated_ego_pos (row, col)
+
+        Returns:
+            shifted_state_dict: 쉬프트된 observation dictionary
+        """
+        import copy
+
+        # Deep copy로 원본 보호
+        state_dict_copy = copy.deepcopy(state_dict)
+
+        # Shift 계산: new_pos를 (49, 49)로 보내려면 얼마나 이동해야 하는지
+        center = 49
+        new_row, new_col = new_pos
+        shift_row = center - new_row  # Ego를 중앙으로 이동시키는 shift
+        shift_col = center - new_col
+
+        # Shift가 0이면 그대로 반환
+        if shift_row == 0 and shift_col == 0:
+            return state_dict_copy
+
+        # Channel별로 shift 적용 (slicing 기반, 경계는 0으로 채움)
+        def apply_shift(data: np.ndarray, shift_r: int, shift_c: int) -> np.ndarray:
+            """2D numpy array를 shift (circular shift 아님)"""
+            H, W = data.shape
+            shifted = np.zeros_like(data)
+
+            # Source region (원본에서 복사할 영역)
+            src_y_start = max(0, -shift_r)
+            src_y_end = min(H, H - shift_r)
+            src_x_start = max(0, -shift_c)
+            src_x_end = min(W, W - shift_c)
+
+            # Destination region (shifted 배열에 붙여넣을 영역)
+            dst_y_start = max(0, shift_r)
+            dst_y_end = dst_y_start + (src_y_end - src_y_start)
+            dst_x_start = max(0, shift_c)
+            dst_x_end = dst_x_start + (src_x_end - src_x_start)
+
+            # Copy (나머지는 0으로 유지)
+            shifted[dst_y_start:dst_y_end, dst_x_start:dst_x_end] = \
+                data[src_y_start:src_y_end, src_x_start:src_x_end]
+
+            return shifted
+
+        # Channels 0, 1, 2 shift 적용
+        for key in ['obstacles', 'static_environment', 'ground_class_id']:
+            if key in state_dict_copy:
+                data = state_dict_copy[key]
+                if isinstance(data, np.ndarray) and data.ndim == 2:
+                    state_dict_copy[key] = apply_shift(data, shift_row, shift_col)
+
+        # simulated_ego_pos 업데이트 (항상 중앙으로)
+        state_dict_copy['simulated_ego_pos'] = (center, center)
+
+        return state_dict_copy
 
     def _calculate_legal_mask(self, state_dict: dict, current_pos: Tuple[int, int]) -> np.ndarray:
         """합법 액션 마스크 계산

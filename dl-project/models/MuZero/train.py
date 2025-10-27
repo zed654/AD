@@ -7,6 +7,7 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import autocast, GradScaler
 from .utils import build_observation_tensor
+from .models import MuZeroFullyConnectedNetwork
 
 # 학습 중 PNG 시각화 관련
 import matplotlib
@@ -700,8 +701,9 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
         # Episode 전체를 복사 (수정하지 않기 위해)
         from models.MuZero.replay_buffer import Episode
         full_episode = Episode()
+        import copy
         for i in range(visualization_steps):
-            full_episode.states.append(episode.states[i])
+            full_episode.states.append(copy.deepcopy(episode.states[i]))
             full_episode.actions.append(0)  # 임시 action
             full_episode.rewards.append(0.0)  # 임시 reward
             full_episode.values.append(0.0)  # 임시 value
@@ -754,9 +756,10 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
                 title += f' (Frames: {episode.start_frame}-{episode.end_frame})'
         ax.set_title(title)
         
-        # 마지막 프레임의 환경 정보 시각화 (배경으로)
+        # 첫 프레임의 환경 정보 시각화 (배경으로)
+        # Shift 적용으로 각 스텝의 observation이 다르므로, 원본 좌표계인 첫 스텝 사용
         if len(enriched_episode.states) > 0:
-            last_state = enriched_episode.states[-1]  # 마지막 프레임 사용
+            last_state = enriched_episode.states[0]  # 첫 프레임 사용 -> 디버깅 목적이면, 마지막인 -1 로 설정
             
             # Channel 0: Dynamic objects (빨간색 계열)
             if 'obstacles' in last_state and last_state['obstacles'] is not None:
@@ -1169,6 +1172,7 @@ def get_network(config, device):
             use_goal_map=config.use_goal_map,
             use_film=config.use_film,
             alpha_init=config.alpha_init,
+            use_resnet_dynamics=config.use_resnet_dynamics,
         ).to(device)
     else:
         raise NotImplementedError(
