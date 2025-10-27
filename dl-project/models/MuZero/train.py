@@ -666,8 +666,9 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
     print(f"\n  📊 step {step} 학습 진행 상황 시각화...")
     
     # 시각화할 Episode 샘플링 (config에서 설정)
+    import copy
     # episodes = candidate_episodes[:min(config.visualization_num_episodes, len(candidate_episodes))]
-    episodes = replay_buffer.sample_episodes(min(config.visualization_num_episodes, len(replay_buffer)))
+    episodes = copy.deepcopy(replay_buffer.sample_episodes(min(config.visualization_num_episodes, len(replay_buffer))))
     
     if not episodes:
         print("    시각화할 Episode가 없습니다.")
@@ -701,9 +702,8 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
         # Episode 전체를 복사 (수정하지 않기 위해)
         from models.MuZero.replay_buffer import Episode
         full_episode = Episode()
-        import copy
         for i in range(visualization_steps):
-            full_episode.states.append(copy.deepcopy(episode.states[i]))
+            full_episode.states.append(episode.states[i])
             full_episode.actions.append(0)  # 임시 action
             full_episode.rewards.append(0.0)  # 임시 reward
             full_episode.values.append(0.0)  # 임시 value

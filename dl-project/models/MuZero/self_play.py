@@ -280,8 +280,15 @@ class SelfPlayManager:
         for key in ['obstacles', 'static_environment', 'ground_class_id']:
             if key in state_dict_copy:
                 data = state_dict_copy[key]
+
+                # Torch Tensor를 numpy array로 변환
+                if isinstance(data, torch.Tensor):
+                    data = data.cpu().numpy()
+
                 if isinstance(data, np.ndarray) and data.ndim == 2:
                     state_dict_copy[key] = apply_shift(data, shift_row, shift_col)
+                elif data is not None:
+                    print(f"    [WARNING] '{key}' shift 실패: type={type(data)}, shape={data.shape if hasattr(data, 'shape') else 'N/A'}")
 
         # simulated_ego_pos 업데이트 (항상 중앙으로)
         state_dict_copy['simulated_ego_pos'] = (center, center)
