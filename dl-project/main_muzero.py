@@ -166,6 +166,7 @@ def train_mode(config, checkpoint_path=None):
         # Episode에 MCTS 결과 추가
         if len(expert_episodes) > 0:
             print("\n🧠 Episode에 MCTS 적용 중...")
+            print(f"  - MCTS 시뮬레이션 횟수: {config.num_simulations}회")
             import copy # enrich_episodes_with_cmts() 에 DeepCopy 위해 임시 추가
             enriched_episodes = self_play_manager.enrich_episodes_with_mcts(copy.deepcopy(expert_episodes))
         else:

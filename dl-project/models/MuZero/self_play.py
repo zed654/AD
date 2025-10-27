@@ -81,8 +81,8 @@ class SelfPlayManager:
         enriched_episodes = []
         
         for ep_idx, episode in enumerate(episodes):
-            print(f"\nEpisode {ep_idx + 1}/{len(episodes)}에 MCTS 적용 중...")
-            print(f"  - MCTS 시뮬레이션 횟수: {self.config.num_simulations}회")
+            # print(f"\nEpisode {ep_idx + 1}/{len(episodes)}에 MCTS 적용 중...")
+            # print(f"  - MCTS 시뮬레이션 횟수: {self.config.num_simulations}회")
             
             # Simulated ego position 추적 (그리드 좌표)
             simulated_ego_row, simulated_ego_col = 49, 49  # 그리드 중앙에서 시작. self.observation_shape 의 중앙임
@@ -190,9 +190,9 @@ class SelfPlayManager:
             
             enriched_episodes.append(episode)
             # target_values 출력 (학습에 사용되는 실제 타깃)
-            avg_target_value = np.mean(episode.target_values) if hasattr(episode, 'target_values') else np.mean(episode.values)
-            print(f"  - Episode {ep_idx + 1} 완료: {len(episode.states)} 스텝, "
-                  f"평균 target value: {avg_target_value:.3f}")
+            # avg_target_value = np.mean(episode.target_values) if hasattr(episode, 'target_values') else np.mean(episode.values)
+            # print(f"  - Episode {ep_idx + 1} 완료: {len(episode.states)} 스텝, "
+            #       f"평균 target value: {avg_target_value:.3f}")
         
         return enriched_episodes
 
