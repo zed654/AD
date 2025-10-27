@@ -9,6 +9,11 @@ from typing import List, Optional, Dict, Tuple
 from .network import AbstractNetwork
 
 
+class IllegalStateException(Exception):
+    """모든 액션이 불법인 상태를 나타내는 예외"""
+    pass
+
+
 class MinMaxStats:
     """Min-Max 정규화를 위한 통계 클래스"""
     
@@ -259,10 +264,8 @@ class MCTS:
                 best_child = child
 
         if best_child is None:
-            # 모든 액션이 불법 - 액션 0 (제자리)를 반환하여 시뮬레이션 계속 진행
-            print(f"[MCTS 경고] 모든 액션이 불법입니다. 액션 0으로 대체합니다.")
-            best_action = 0
-            best_child = node.children[0]
+            # 모든 액션이 불법 - Episode 종료
+            raise IllegalStateException("모든 액션이 불법입니다. Episode를 종료합니다.")
 
         return best_action, best_child
         

@@ -10,7 +10,7 @@ from models.MuZero.action import Action
 # MuZero 설정 클래스
 class MuZeroConfig:
     def __init__(self):
-        self.test_mode = 0  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
+        self.test_mode = 2  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
 
         # 네트워크 설정
         self.seed = 0
@@ -18,9 +18,10 @@ class MuZeroConfig:
         
         # 새로운 Representation 구조 설정
         self.use_coordconv = False  # CoordConv 사용 여부 (기본 OFF)
-        self.use_goal_map = False   # Goal을 2D 가우시안 히트맵으로 투영 여부 (기본 OFF) 
+        self.use_goal_map = False   # Goal을 2D 가우시안 히트맵으로 투영 여부 (기본 OFF)
         self.use_film = False       # FiLM 채널 단위 주입 실험용 (기본 OFF)
         self.alpha_init = 0.5       # DirectionalGating alpha 초기값 (0.3~0.7 권장)
+        self.use_resnet_dynamics = False  # Dynamics에서 ResNet 사용 여부 (True: ResNet 16 blocks, False: ConvGRU)
 
         # 게임 관련 설정
         self.action_space = list(range(Action.get_action_space_size()))  # Position 9개 액션 (POS0~POS8)
