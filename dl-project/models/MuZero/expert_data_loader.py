@@ -117,6 +117,7 @@ class ExpertDataLoader:
         prev_grid_pos = None
         skip_count = 0  # 스킵한 프레임 수
 
+        # Episode.state 의 step 수집 루프 (Self-play 의 정보 빠진 상태)
         while collected_steps < episode_step_length and frame_idx < self.parser.get_frame_count() - 1:
             # 현재 프레임 데이터
             frame_data = self.parser.get_frame_data(frame_idx)
@@ -135,12 +136,14 @@ class ExpertDataLoader:
                 continue
 
             # Episode 시작 위치 설정 (첫 프레임에서만)
+            # 목적은, episode.state 의 첫 step의 위치를 기준으로 나머지 step 들을 변환시키기 위함.
             if collected_steps == 0:
                 self.episode_start_ego = ego_info
                 prev_grid_pos = None  # 첫 스텝은 무조건 포함
             
             # Grid[0]: 동적 장애물 (/obstacles_tracking_msg)
             # Grid[1]: 정적 환경 (/ldm_msg 의 GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, GRID_VALUE_MISSING_POINTS)
+            # 좌표들은 전역좌표계(Odomgyro)이며, episode_start_ego 를 49, 49 위치 기준으로 변환함.
             observation = self.obs_builder.build_observation(
                 ego_info, objects, ldm_points, near_destination_direction, final_destination_direction,
                 episode_start_ego=self.episode_start_ego
@@ -216,7 +219,7 @@ class ExpertDataLoader:
             #     print(f"Expert Action: x={expert_actions[i][0]:.2f}, y={expert_actions[i][1]:.2f}")
             
             # state dict를 Episode에 추가 (obstacles와 static_environment를 tensor로 변환)
-            state_with_tensor = observations[i].copy()
+            state_with_tensor = observations[i].copy() # 얘는 얕은복사여도 문제없음. observations 에 영향 안줌.
             state_with_tensor['obstacles'] = torch.tensor(observations[i]['obstacles'], dtype=torch.float32)
             
             # static_environment가 있으면 tensor로 변환

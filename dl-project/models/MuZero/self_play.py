@@ -108,13 +108,15 @@ class SelfPlayManager:
                     episode.states[step_idx]['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
 
                     # Ego 위치 기준으로 observation shift (처음에는 제자리임)
-                    episode.states[step_idx] = self.shift_observation(episode.states[step_idx], (simulated_ego_row, simulated_ego_col))
+                    # Episode 의 Step 들은 Root Step 의 위치를 공유함. 단, MCTS 시뮬레이션에 의해 선택된 Action 을 기반으로 중심점이 조정되도록 유도.
+                    episode.states[step_idx] = self.shift_observation(episode.states[0], (simulated_ego_row, simulated_ego_col))
 
                     # 6채널 observation 생성 (공용 함수 사용) -> simulated_ego_pos 가 변해도(=step 이 진행되어도) 환경은 root 시점 그대로 고정됨.
                     device = self.device if hasattr(self, 'device') else 'cpu'
                     observation_tensor = build_observation_tensor(episode.states[step_idx], self.config.observation_shape, device, self.config.use_obstacle_channels)
 
                     # Legal mask 계산
+                    # Episode 의 첫 Step 위치가 장애물 위 일 경우, 모든 액션이 불법일 수 있음. 발생사례 있음. (=step_idx 가 0인 사례)
                     legal_mask = self._calculate_legal_mask(
                         episode.states[step_idx],
                         (49, 49)
