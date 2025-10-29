@@ -10,7 +10,7 @@ from models.MuZero.action import Action
 # MuZero 설정 클래스
 class MuZeroConfig:
     def __init__(self):
-        self.test_mode = 2  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
+        self.test_mode = 0  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
 
         # 네트워크 설정
         self.seed = 0
@@ -116,6 +116,7 @@ class MuZeroConfig:
 
         # 학습 설정
         self.selfplay_parallel_workers = 16  # Self-play 의 Episode 생성 병렬 워커 수 (멀티프로세싱)
+        self.use_multiple_gpus = True  # 다중 GPU 사용 여부 (자동 분산 활성화)
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
         if self.test_mode == 1:
