@@ -87,6 +87,9 @@ conda install -c conda-forge tmux
 # pip install -r requirements.txt
 ```
 
+# 진행 바 설치 (rich)
+pip install rich
+
 ## 사용 방법
 
 `main_muzero.py` (또는 `muzero_improved.py`)를 통해 프로젝트의 주요 기능을 실행할 수 있습니다.
