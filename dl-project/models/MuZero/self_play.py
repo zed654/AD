@@ -679,11 +679,12 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
     """
     episode_idx, network_state_dict, config, device, episode = args
 
-    if config.use_multiple_gpus:
-        # GPU 분산: 여러 GPU가 있으면 episode_idx를 기반으로 자동 할당
-        if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-            gpu_id = episode_idx % torch.cuda.device_count()
-            device = f'cuda:{gpu_id}'
+    
+    # GPU 분산: 여러 GPU가 있으면 episode_idx를 기반으로 자동 할당
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        num_gpus = min(torch.cuda.device_count(), config.num_gpus_used) if config.num_gpus_used is not None else torch.cuda.device_count()
+        gpu_id = episode_idx % num_gpus
+        device = f'cuda:{gpu_id}'
 
     # Progress Bar와 충돌하므로 개별 Episode 출력 제거
     # Network 재생성 (utils.get_network() 사용 - main_muzero.py와 동일)

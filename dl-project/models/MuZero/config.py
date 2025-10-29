@@ -116,7 +116,7 @@ class MuZeroConfig:
 
         # 학습 설정
         self.selfplay_parallel_workers = 16  # Self-play 의 Episode 생성 병렬 워커 수 (멀티프로세싱)
-        self.use_multiple_gpus = True  # 다중 GPU 사용 여부 (자동 분산 활성화)
+        self.use_gpu_device_max = 2  # 최대 GPU 사용 개수 (None이면 모든 사용 가능 GPU 사용)
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
         if self.test_mode == 1:
