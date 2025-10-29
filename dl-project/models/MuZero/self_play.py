@@ -682,7 +682,7 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
     
     # GPU 분산: 여러 GPU가 있으면 episode_idx를 기반으로 자동 할당
     if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        num_gpus = min(torch.cuda.device_count(), config.num_gpus_used) if config.num_gpus_used is not None else torch.cuda.device_count()
+        num_gpus = min(torch.cuda.device_count(), config.use_gpu_device_max) if config.use_gpu_device_max is not None else torch.cuda.device_count()
         gpu_id = episode_idx % num_gpus
         device = f'cuda:{gpu_id}'
 
