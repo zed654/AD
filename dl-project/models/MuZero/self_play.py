@@ -690,9 +690,12 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
     # Network 재생성 (utils.get_network() 사용 - main_muzero.py와 동일)
     network = get_network(config, device)
 
-
     # 학습된 파라미터로 교체 (Iteration마다 업데이트된 파라미터)
-    network.load_state_dict(network_state_dict)
+    # state_dict의 텐서를 현재 device로 이동
+    network.load_state_dict({
+        k: v.to(device) if isinstance(v, torch.Tensor) else v
+        for k, v in network_state_dict.items()
+    })
     network.eval()
 
     # MCTS 재생성
