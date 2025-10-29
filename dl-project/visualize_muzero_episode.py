@@ -5,33 +5,19 @@ MuZero Episode 시각화 스크립트 - 프로젝트 루트에서 실행
 
 import sys
 import os
-os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = ''
+
+# matplotlib 백엔드 설정
+# 환경변수 MPLBACKEND를 run_viz.sh에서 설정 (Qt5Agg for GUI, Agg for --save)
+# 환경변수가 없으면 기본값 설정 (폴백)
+if 'MPLBACKEND' not in os.environ:
+    if '--save' in sys.argv:
+        os.environ['MPLBACKEND'] = 'Agg'
+    else:
+        os.environ['MPLBACKEND'] = 'Qt5Agg'  # 기본값
 
 import matplotlib
-
-# 안전한 백엔드 설정
-GUI_AVAILABLE = False
-if 'DISPLAY' in os.environ and os.environ['DISPLAY']:
-    # GUI 환경에서는 안전한 백엔드 시도
-    try:
-        # Qt 백엔드 시도 (가장 안정적)
-        matplotlib.use('Qt5Agg')
-        GUI_AVAILABLE = True
-        print("Using Qt5Agg backend")
-    except:
-        try:
-            # TkAgg 백엔드 시도
-            matplotlib.use('TkAgg')
-            GUI_AVAILABLE = True
-            print("Using TkAgg backend")
-        except:
-            # 모든 GUI 백엔드 실패시 Agg 사용
-            matplotlib.use('Agg')
-            print("GUI backends failed, using Agg (save-only mode)")
-else:
-    # DISPLAY 없으면 Agg 사용
-    matplotlib.use('Agg')
-    print("No DISPLAY detected, using Agg backend")
+GUI_AVAILABLE = (os.environ.get('MPLBACKEND', 'Agg') != 'Agg')
+print(f"Matplotlib backend: {os.environ['MPLBACKEND']}")
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -194,13 +180,11 @@ class EpisodeInteractiveVisualizer:
             for step_idx, state in enumerate(episode.states):
                 cache_key = (ep_idx, step_idx)
                 
-                # 첫 번째 Episode의 첫 번째 스텝에서 state 구조 확인
-                if ep_idx == 0 and step_idx == 0:
-                    print(f"[DEBUG] State type: {type(state)}")
-                    if isinstance(state, dict):
-                        print(f"[DEBUG] State keys: {state.keys()}")
-                    elif hasattr(state, 'shape'):
-                        print(f"[DEBUG] State shape: {state.shape}")
+                # 디버그 정보 (필요시 활성화)
+                # if ep_idx == 0 and step_idx == 0:
+                #     print(f"[DEBUG] State type: {type(state)}")
+                #     if isinstance(state, dict):
+                #         print(f"[DEBUG] State keys: {state.keys()}")
                 
                 # state가 dict인 경우 obstacles와 static_environment 추출
                 if isinstance(state, dict):
@@ -1097,7 +1081,7 @@ class EpisodeInteractiveVisualizer:
         
         # 일시정지 상태로 시작
         self.anim.pause()
-        
+
         try:
             plt.show()
         except Exception as e:
@@ -1338,16 +1322,9 @@ def main():
     for i, ep in enumerate(episodes):
         print(f"  Episode {i+1}: {len(ep)} steps, "
               f"total reward: {sum(ep.rewards):.2f}")
-        # 첫 Episode의 expert_ego_pos 디버그
-        if i == 0 and hasattr(ep, 'expert_ego_pos'):
-            print(f"\n[DEBUG] Episode 1 expert_ego_pos in main:")
-            print(f"  Total positions: {len(ep.expert_ego_pos)}")
-            if len(ep.expert_ego_pos) > 0:
-                print(f"  First: {ep.expert_ego_pos[0]}")
-                print(f"  Last: {ep.expert_ego_pos[-1]}")
-                # 처음 3개 출력
-                for j in range(min(3, len(ep.expert_ego_pos))):
-                    print(f"    Step {j}: {ep.expert_ego_pos[j]}")
+        # 디버그 정보 (필요시 활성화)
+        # if i == 0 and hasattr(ep, 'expert_ego_pos'):
+        #     print(f"[DEBUG] Episode 1: {len(ep.expert_ego_pos)} positions")
     
     # 시각화
     if args.save or not GUI_AVAILABLE:
