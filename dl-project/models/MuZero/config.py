@@ -102,7 +102,6 @@ class MuZeroConfig:
         
         # Self-Play 설정
         # TODO: 실제 Inference 할 때, MCTS Sim 이후 Step 선택하는 Action 부에 Temperature 를 0으로 줘야함
-        self.num_workers = 1
         self.selfplay_on_gpu = False
         self.num_simulations = 200  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
         self.value_bootstrap_discount = 0.97
@@ -116,6 +115,7 @@ class MuZeroConfig:
         self.num_selfplay_games = 5  # Self-play로 실행할 게임 수
 
         # 학습 설정
+        self.selfplay_parallel_workers = 16  # Self-play 의 Episode 생성 병렬 워커 수 (멀티프로세싱)
         self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
         self.save_model = True
         if self.test_mode == 1:
@@ -150,9 +150,9 @@ class MuZeroConfig:
 
         # pth 체크포인트 저장 설정
         if self.test_mode == 1:
-            self.pth_checkpoint_interval_iteration = 100 # iteration 몇 시점마다 체크포인트 저장할지
+            self.pth_checkpoint_interval_iteration = 50 # iteration 몇 시점마다 체크포인트 저장할지
         elif self.test_mode == 0 or self.test_mode == 2:
-            self.pth_checkpoint_interval_iteration = 100
+            self.pth_checkpoint_interval_iteration = 50
         self.checkpoint_save_dir = "checkpoints"  # 체크포인트 저장 디렉토리 이름
         self.checkpoint_final_name = "muzero_final.pth"  # 최종 모델 파일명
         self.checkpoint_training_steps_prefix = "muzero_training_steps_"  # 에폭별 체크포인트 파일명 접두사

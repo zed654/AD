@@ -10,7 +10,7 @@ import argparse
 import json
 
 # MuZero 관련 import
-from models.MuZero.models import MuZeroFullyConnectedNetwork
+from models.MuZero.models import get_network
 from models.MuZero.config import MuZeroConfig
 # MCTS는 SelfPlayManager 내부에서 사용됨
 from models.MuZero.action import Action
@@ -23,32 +23,10 @@ from models.MuZero.utils import build_observation_tensor, calculate_game_statist
 from models.MuZero.config_manager import load_config, save_config, print_config
 from models.MuZero.logger import get_logger
 from models.MuZero.expert_data_loader import ExpertDataLoader
-
-def get_network(config, device):
-    """설정에 따라 적절한 MuZero 네트워크를 생성합니다."""
-    if config.network == "fullyconnected":
-        return MuZeroFullyConnectedNetwork(
-            config.observation_shape,
-            config.stacked_observations,
-            len(config.action_space),
-            config.encoding_size,
-            config.fc_reward_layers,
-            config.fc_value_layers,
-            config.fc_policy_layers,
-            config.fc_representation_layers,
-            config.fc_dynamics_layers,
-            config.num_categorical_distribution_atoms,
-            # 새로운 파라미터들
-            use_coordconv=config.use_coordconv,
-            use_goal_map=config.use_goal_map,
-            use_film=config.use_film,
-            alpha_init=config.alpha_init,
-        ).to(device)
-    else:
-        raise NotImplementedError(
-            '지원되는 네트워크 설정은 "fullyconnected"입니다.'
-        )
-
+from models.MuZero.self_play import enrich_episode_with_mcts_parallel_worker
+import torch.multiprocessing as mp
+import time
+from rich.progress import Progress, TimeElapsedColumn, BarColumn, TextColumn
 
 def create_observation_provider(config, mode="train"):
     """모드에 따라 적절한 ObservationProvider 생성"""
@@ -80,10 +58,16 @@ def train_mode(config, checkpoint_path=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"📱 Device: {device}")
     logger.info(f"Device: {device}")
-    
+
+    # Multiprocessing spawn method 설정 (CUDA 안전성)
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # 이미 설정됨
+
     # 결과 디렉토리 설정 (config.results_path 사용)
     print(f"📁 결과 저장 경로: {config.results_path}")
-    
+
     # 네트워크 생성
     network = get_network(config, device)
     
@@ -165,10 +149,78 @@ def train_mode(config, checkpoint_path=None):
         enriched_episodes = [] # Replay Buffer에 추가할 에피소드 리스트 초기화
         # Episode에 MCTS 결과 추가
         if len(expert_episodes) > 0:
-            print("\n🧠 Episode에 MCTS 적용 중...")
-            print(f"  - MCTS 시뮬레이션 횟수: {config.num_simulations}회")
+            # Progress Bar가 시작 정보를 표시하므로 중복 출력 제거
             import copy # enrich_episodes_with_cmts() 에 DeepCopy 위해 임시 추가
-            enriched_episodes = self_play_manager.enrich_episodes_with_mcts(copy.deepcopy(expert_episodes))
+            expert_episodes_tmp = copy.deepcopy(expert_episodes)
+            start_time = time.time()
+
+            # 1. Network state_dict 추출 (pickle 가능)
+            network_state_dict = network.state_dict()
+
+            # 3. Worker arguments 준비
+            args_list = [
+                (idx, network_state_dict, config, device, episode)
+                for idx, episode in enumerate(expert_episodes_tmp)
+            ]
+
+            # 4. 병렬 처리 (mp.Pool.imap 사용 - 메모리 효율적)
+            # imap 사용 시, 순서 보장 + 하나씩 yield (메모리 절약)
+            # 진행률 표시 -> 🧠 MCTS Self-play (Enrich Episodes) ━━━━━━━━━━━━━━━━━━ 45% (150/330) 0:00:18 성공: 148개
+            enriched_episodes = []
+            pool = mp.Pool(processes=config.selfplay_parallel_workers)
+            try:
+                with Progress(
+                    TextColumn("[bold blue]{task.description}"),
+                    BarColumn(),
+                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                    TextColumn("({task.completed}/{task.total})"),
+                    TimeElapsedColumn(),
+                    TextColumn("[green]성공: [bold yellow]{task.fields[success_count]}개"),
+                ) as progress:
+                    task = progress.add_task(
+                        "[cyan]🧠 Self-play (Enrich Episodes) ",
+                        total=len(args_list),
+                        success_count=0
+                    )
+
+                    for i, ep in enumerate(pool.imap(
+                        enrich_episode_with_mcts_parallel_worker,
+                        args_list
+                    )):
+                        # None이 아닌 Episode만 수집
+                        if ep is not None:
+                            enriched_episodes.append(ep)
+
+                        # Progress bar 업데이트
+                        progress.update(task, advance=1, success_count=len(enriched_episodes))
+
+            except KeyboardInterrupt:
+                print("\n\n⚠️  사용자에 의해 중단되었습니다. Worker 프로세스를 정리하는 중...")
+                pool.terminate()  # 즉시 종료
+                pool.join()       # 종료 대기
+                print("✅ 정리 완료!")
+                raise  # 상위로 전파하여 프로그램 종료
+            finally:
+                pool.close()
+                pool.join()
+
+            elapsed = time.time() - start_time
+
+
+            # # 4. 병렬 처리 (mp.Pool.map 사용)
+            # # map 사용 시, worker 순서 보장됨 (worker 2가 먼저 끝나도, 결과는 1, 2, 3, ... 순으로 반환)
+            # with mp.Pool(processes=config.selfplay_parallel_workers) as pool:
+            #     enriched_episodes = pool.map(
+            #         enrich_episode_with_mcts_parallel_worker,
+            #         args_list
+            #     )
+
+            # # 5. None 제거 (실패한 Episode)
+            # enriched_episodes = [ep for ep in enriched_episodes if ep is not None]
+
+            print(f"Parallel processing completed in {elapsed:.2f} seconds")
+            print(f"Successfully enriched {len(enriched_episodes)}/{len(args_list)} episodes")
+
         else:
             enriched_episodes = []
         
@@ -180,7 +232,7 @@ def train_mode(config, checkpoint_path=None):
         print(f"   전문가 데이터 + MCTS 결과 추가 완료: {len(enriched_episodes)}개 에피소드")
         
         # Replay Buffer 상세 정보 출력
-        replay_buffer.print_buffer_summary()
+        replay_buffer.print_buffer_summary(True if iteration == 0 else False)
 
         # 네트워크 학습
         print("  📖 네트워크 학습...")

@@ -19,6 +19,32 @@ class AgentTypeKinematic(Enum):
     VEHICLE = "vehicle"
 
 
+def get_network(config, device):
+    """설정에 따라 적절한 MuZero 네트워크를 생성합니다."""
+    if config.network == "fullyconnected":
+        return MuZeroFullyConnectedNetwork(
+            config.observation_shape,
+            config.stacked_observations,
+            len(config.action_space),
+            config.encoding_size,
+            config.fc_reward_layers,
+            config.fc_value_layers,
+            config.fc_policy_layers,
+            config.fc_representation_layers,
+            config.fc_dynamics_layers,
+            config.num_categorical_distribution_atoms,
+            # 새로운 파라미터들
+            use_coordconv=config.use_coordconv,
+            use_goal_map=config.use_goal_map,
+            use_film=config.use_film,
+            alpha_init=config.alpha_init,
+        ).to(device)
+    else:
+        raise NotImplementedError(
+            '지원되는 네트워크 설정은 "fullyconnected"입니다.'
+        )
+
+
 def dict_to_cpu(dictionary):
     cpu_dict = {}
     for key, value in dictionary.items():

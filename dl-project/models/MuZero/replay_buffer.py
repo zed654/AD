@@ -108,7 +108,7 @@ class ReplayBuffer:
         """지금까지 저장된 총 에피소드 수"""
         return self.episode_count
     
-    def print_buffer_summary(self):
+    def print_buffer_summary(self, print_file_info: bool = True):
         """Replay Buffer 내용 요약 출력"""
         if not self.buffer:
             print("Replay Buffer가 비어있습니다.")
