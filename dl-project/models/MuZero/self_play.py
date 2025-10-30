@@ -690,24 +690,24 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
     else:
         device = 'cpu'
 
-    print(f"  [Episode {episode_idx}] MCTS Worker 시작 (Device: {device}), pid: {os.getpid()}")
+    # print(f"  [Episode {episode_idx}] MCTS Worker 시작 (Device: {device}), pid: {os.getpid()}")
 
-    # 🔍 디버깅: Worker 입력받자마자 타입 확인
-    if episode_idx == 0:  # 첫 번째 Episode만
-        print(f"\n=== [Worker 진입 직후] Episode {episode_idx} 타입 확인 ===")
-        for step_idx in range(min(2, len(episode.states))):
-            state_dict = episode.states[step_idx]
-            print(f"  Step {step_idx}:")
-            if isinstance(state_dict, dict):
-                for key in ['obstacles', 'static_environment', 'ground_class_id']:
-                    if key in state_dict:
-                        value = state_dict[key]
-                        if isinstance(value, torch.Tensor):
-                            print(f"    ✓ {key}: Tensor(device={value.device})")
-                        elif isinstance(value, np.ndarray):
-                            print(f"    - {key}: ndarray")
-                        else:
-                            print(f"    ? {key}: {type(value).__name__}")
+    # # 🔍 디버깅: Worker 입력받자마자 타입 확인
+    # if episode_idx == 0:  # 첫 번째 Episode만
+    #     print(f"\n=== [Worker 진입 직후] Episode {episode_idx} 타입 확인 ===")
+    #     for step_idx in range(min(2, len(episode.states))):
+    #         state_dict = episode.states[step_idx]
+    #         print(f"  Step {step_idx}:")
+    #         if isinstance(state_dict, dict):
+    #             for key in ['obstacles', 'static_environment', 'ground_class_id']:
+    #                 if key in state_dict:
+    #                     value = state_dict[key]
+    #                     if isinstance(value, torch.Tensor):
+    #                         print(f"    ✓ {key}: Tensor(device={value.device})")
+    #                     elif isinstance(value, np.ndarray):
+    #                         print(f"    - {key}: ndarray")
+    #                     else:
+    #                         print(f"    ? {key}: {type(value).__name__}")
 
     # Progress Bar와 충돌하므로 개별 Episode 출력 제거
     # Network 재생성 (utils.get_network() 사용 - main_muzero.py와 동일)
@@ -855,22 +855,22 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
         # MCTS root values는 보존하고 target_values는 별도로 계산됨
         episode.target_values = calculate_target_value(config, episode)
 
-        # 🔍 디버깅: Worker 반환 직전 타입 확인
-        if episode_idx == 0:  # 첫 번째 Episode만
-            print(f"\n=== [Worker 반환 직전] Episode {episode_idx} 타입 확인 ===")
-            for step_idx in range(min(2, len(episode.states))):
-                state_dict = episode.states[step_idx]
-                print(f"  Step {step_idx}:")
-                if isinstance(state_dict, dict):
-                    for key in ['obstacles', 'static_environment', 'ground_class_id']:
-                        if key in state_dict:
-                            value = state_dict[key]
-                            if isinstance(value, torch.Tensor):
-                                print(f"    ✓ {key}: Tensor(device={value.device})")
-                            elif isinstance(value, np.ndarray):
-                                print(f"    - {key}: ndarray")
-                            else:
-                                print(f"    ? {key}: {type(value).__name__}")
+        # # 🔍 디버깅: Worker 반환 직전 타입 확인
+        # if episode_idx == 0:  # 첫 번째 Episode만
+        #     print(f"\n=== [Worker 반환 직전] Episode {episode_idx} 타입 확인 ===")
+        #     for step_idx in range(min(2, len(episode.states))):
+        #         state_dict = episode.states[step_idx]
+        #         print(f"  Step {step_idx}:")
+        #         if isinstance(state_dict, dict):
+        #             for key in ['obstacles', 'static_environment', 'ground_class_id']:
+        #                 if key in state_dict:
+        #                     value = state_dict[key]
+        #                     if isinstance(value, torch.Tensor):
+        #                         print(f"    ✓ {key}: Tensor(device={value.device})")
+        #                     elif isinstance(value, np.ndarray):
+        #                         print(f"    - {key}: ndarray")
+        #                     else:
+        #                         print(f"    ? {key}: {type(value).__name__}")
 
         return episode
         # enriched_episodes.append(episode)

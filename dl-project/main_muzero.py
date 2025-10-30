@@ -244,6 +244,10 @@ def train_mode(config, checkpoint_path=None):
 
         print(f"   전문가 데이터 + MCTS 결과 추가 완료: {len(enriched_episodes)}개 에피소드")
 
+        # Self-play 후 GPU 메모리 정리
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         # 🔍 Replay Buffer 텐서 분석 (첫 Iteration만)
         if iteration == 0 and len(replay_buffer.buffer) > 0:
             print(f"\n=== [Replay Buffer 분석] 첫 번째 Episode ===")
@@ -277,8 +281,10 @@ def train_mode(config, checkpoint_path=None):
         loss_dict = train_network(network, replay_buffer, config, device, logger, iteration_num=iteration+1, base_step=base_step, loss_history=loss_history, writer=writer)
 
 
-        # GPU 메모리 사용량 출력
+        # GPU 메모리 사용량 출력 (동기화 후 측정)
         if torch.cuda.is_available():
+            torch.cuda.synchronize()  # 모든 GPU 작업 완료 대기
+            torch.cuda.empty_cache()  # 캐시 한번 더 정리
             allocated = torch.cuda.memory_allocated(device) / 1024**3  # GB
             reserved = torch.cuda.memory_reserved(device) / 1024**3   # GB
             print(f"  🎮 GPU Memory 2: {allocated:.3f}GB allocated, {reserved:.3f}GB reserved")
