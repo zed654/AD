@@ -819,13 +819,21 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
             )
             episode.rewards[step_idx] = reward
             
+    # GPU 메모리 명시적 해제
+    del network
+    del mcts
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     # Episode가 유효한 경우만 추가
     if episode_is_valid:
         # n-step bootstrap target value 계산
         # MCTS root values는 보존하고 target_values는 별도로 계산됨
         episode.target_values = calculate_target_value(config, episode)
+
         return episode
         # enriched_episodes.append(episode)
+
     return None
 
 
