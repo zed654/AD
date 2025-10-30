@@ -664,13 +664,13 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
         
         # 2.5 학습 진행 상황 시각화 (선택적) ... iteration_num
         # if (step + 1) % config.visualization_interval_step == 0 and config.enable_training_visualization:
-        # if (step + 1) % config.visualization_interval_step == 0 and (iteration_num + 1) % config.visualization_interval_interation == 0 and config.enable_training_visualization:
-        #     try:
-        #         visualize_training_progress(network, replay_buffer, step + 1, config, device, loss_history, iteration_num)
-        #         # visualize_training_progress(network, step + 1, config, device, loss_history, iteration_num,candidate_episodes=valid_episodes)
-        #     except Exception as e:
-        #         print(f"    ⚠️ 시각화 중 오류 발생: {e}")
-        #         logger.info(f"Visualization error at step {step+1}: {e}")
+        if (step + 1) % config.visualization_interval_step == 0 and (iteration_num + 1) % config.visualization_interval_iteration == 0 and config.enable_training_visualization:
+            try:
+                visualize_training_progress(network, replay_buffer, step + 1, config, device, loss_history, iteration_num)
+                # visualize_training_progress(network, step + 1, config, device, loss_history, iteration_num,candidate_episodes=valid_episodes)
+            except Exception as e:
+                print(f"    ⚠️ 시각화 중 오류 발생: {e}")
+                logger.info(f"Visualization error at step {step+1}: {e}")
         
         # 3. 주기적으로 체크포인트 저장
         if (iteration_num + 1) % config.pth_checkpoint_interval_iteration == 0:
@@ -1203,6 +1203,12 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
         plt.savefig(save_path, dpi=config.visualization_dpi, bbox_inches='tight')
         plt.close()
         print(f"    💾 시각화 저장: {save_path}")
+
+    # 시각화 완료 후 GPU 메모리 정리
+    # enrich_episodes_with_mcts()에서 생성한 GPU Tensor들 해제
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print(f"    🧹 시각화 메모리 정리 완료")
 
 
 def get_network(config, device):

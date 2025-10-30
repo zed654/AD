@@ -140,10 +140,10 @@ class MuZeroConfig:
         self.enable_training_visualization = True  # 학습 중 시각화 생성 여부
         if self.test_mode == 1:
             self.visualization_interval_step = 5  # 테스트 모드에서는 더 자주 시각화
-            self.visualization_interval_interation = 1
+            self.visualization_interval_iteration = 1
         elif self.test_mode == 0 or self.test_mode == 2:
             self.visualization_interval_step = 10  # training_steps 몇 스텝마다 PNG 시각화 할지
-            self.visualization_interval_interation = 5
+            self.visualization_interval_iteration = 5
         self.visualization_num_episodes = 3  # PNG 에 시각화할 Episode 수 (최대) ... training_steps 에서 사용된 batch 개수의 episodes 중 선택
         # self.visualization_min_episode_length = 10  # 시각화할 Episode 의 Step 최소 길이
         self.visualization_dpi = 150  # 이미지 저장 DPI
