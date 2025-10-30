@@ -143,24 +143,23 @@ def train_mode(config, checkpoint_path=None):
     # TensorBoard Writer 전역 관리 (연속된 로그를 위해)
     from torch.utils.tensorboard import SummaryWriter
     writer = SummaryWriter(log_dir=config.results_path / "logs")
-
+    # pool = mp.Pool(processes=config.selfplay_parallel_workers)
     for iteration in range(config.num_iterations):
         print(f"\n🔄 Iteration {iteration + 1}/{config.num_iterations}")
         enriched_episodes = [] # Replay Buffer에 추가할 에피소드 리스트 초기화
+
         # Episode에 MCTS 결과 추가
         if len(expert_episodes) > 0:
             # Progress Bar가 시작 정보를 표시하므로 중복 출력 제거
-            import copy # enrich_episodes_with_cmts() 에 DeepCopy 위해 임시 추가
-            expert_episodes_tmp = copy.deepcopy(expert_episodes)
             start_time = time.time()
 
             # 1. Network state_dict 추출 (pickle 가능)
             network_state_dict = network.state_dict()
 
-            # 3. Worker arguments 준비
+            # 3. Worker arguments 준비 (spawn 방식은 자동으로 deepcopy)
             args_list = [
                 (idx, network_state_dict, config, device, episode)
-                for idx, episode in enumerate(expert_episodes_tmp)
+                for idx, episode in enumerate(expert_episodes)
             ]
 
             # 4. 병렬 처리 (mp.Pool.imap 사용 - 메모리 효율적)
@@ -201,12 +200,25 @@ def train_mode(config, checkpoint_path=None):
                 print("✅ 정리 완료!")
                 raise  # 상위로 전파하여 프로그램 종료
             finally:
+                # pool.terminate()  # 즉시 종료
+                print("   모든 Worker 프로세스 정리 중...")
                 pool.close()
                 pool.join()
+                # print("   worker 작업 완료. 모든 Worker 프로세스 유지")
 
             elapsed = time.time() - start_time
 
-
+            # Iteration 종료 후 GPU 메모리 정리
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()  # GPU 연산 완료 대기
+                time.sleep(0.1)
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+                 # 메모리 사용량 출력
+                for i in range(torch.cuda.device_count()):
+                    allocated = torch.cuda.memory_allocated(i) / 1e9
+                    print(f"  GPU {i} allocated: {allocated:.2f}GB")
             # # 4. 병렬 처리 (mp.Pool.map 사용)
             # # map 사용 시, worker 순서 보장됨 (worker 2가 먼저 끝나도, 결과는 1, 2, 3, ... 순으로 반환)
             # with mp.Pool(processes=config.selfplay_parallel_workers) as pool:
@@ -227,17 +239,50 @@ def train_mode(config, checkpoint_path=None):
         # Enriched Episode를 Replay Buffer에 추가
         for episode in enriched_episodes:
             # ReplayBuffer.save_episode()이 내부적으로 FIFO 방식으로 오래된 episode 제거 처리
+            # Replay_Buffer 저장 시, 내부적으로 GPU 텐서를 CPU 로 이동
             replay_buffer.save_episode(episode)
-        
+
         print(f"   전문가 데이터 + MCTS 결과 추가 완료: {len(enriched_episodes)}개 에피소드")
-        
+
+        # 🔍 Replay Buffer 텐서 분석 (첫 Iteration만)
+        if iteration == 0 and len(replay_buffer.buffer) > 0:
+            print(f"\n=== [Replay Buffer 분석] 첫 번째 Episode ===")
+            first_ep = replay_buffer.buffer[0]
+            for step_idx in range(min(3, len(first_ep.states))):
+                state_dict = first_ep.states[step_idx]
+                print(f"  Step {step_idx}:")
+                if isinstance(state_dict, dict):
+                    for key in ['obstacles', 'static_environment', 'ground_class_id']:
+                        if key in state_dict:
+                            value = state_dict[key]
+                            if isinstance(value, torch.Tensor):
+                                print(f"    ✓ {key}: Tensor(device={value.device}, dtype={value.dtype}, shape={value.shape})")
+                            elif isinstance(value, np.ndarray):
+                                print(f"    - {key}: ndarray(dtype={value.dtype}, shape={value.shape})")
+                            else:
+                                print(f"    ? {key}: {type(value).__name__}")
+
         # Replay Buffer 상세 정보 출력
         replay_buffer.print_buffer_summary(True if iteration == 0 else False)
+
+        # GPU 메모리 사용량 출력
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated(device) / 1024**3  # GB
+            reserved = torch.cuda.memory_reserved(device) / 1024**3   # GB
+            print(f"  🎮 GPU Memory 1: {allocated:.3f}GB allocated, {reserved:.3f}GB reserved")
 
         # 네트워크 학습
         print("  📖 네트워크 학습...")
         base_step = iteration * config.training_steps
         loss_dict = train_network(network, replay_buffer, config, device, logger, iteration_num=iteration+1, base_step=base_step, loss_history=loss_history, writer=writer)
+
+
+        # GPU 메모리 사용량 출력
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated(device) / 1024**3  # GB
+            reserved = torch.cuda.memory_reserved(device) / 1024**3   # GB
+            print(f"  🎮 GPU Memory 2: {allocated:.3f}GB allocated, {reserved:.3f}GB reserved")
+
         
 
 

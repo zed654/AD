@@ -219,8 +219,21 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
     # - GPU Tensor Cores 활용: V100/A100 등에서 FP16 행렬 곱셈이 2-4배 빠름
     # - 메모리 절약: FP16 사용으로 GPU 메모리 사용량 약 50% 감소
     # - 수치적 안정성: GradScaler로 gradient underflow 방지 (loss scaling)
-    use_amp = getattr(config, 'use_mixed_precision', False) and device != 'cpu'
+    use_amp = getattr(config, 'use_mixed_precision', False) and torch.cuda.is_available()
     scaler = GradScaler() if use_amp else None  # FP16 gradient scaling으로 underflow 방지
+
+    # Support 벡터 미리 생성 (재사용을 위해)
+    support_vector = None
+    if hasattr(config, 'categorical_distribution_min'):
+        support_vector = torch.linspace(
+            config.categorical_distribution_min,
+            config.categorical_distribution_max,
+            21,
+            dtype=torch.float32,
+            device=device
+        )
+    else:
+        support_vector = torch.arange(-10, 11, dtype=torch.float32, device=device)
     
     # Gradient Accumulation 설정
     # 이론적 배경:
@@ -265,10 +278,11 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             print(f"Step {step}: 배치 샘플링 실패 (데이터 부족)")
             continue
 
-        # Episode 통계 수집 (TensorBoard용)
-        episode_rewards = []
-        episode_values = []
-        episode_target_values = []
+        # Episode 통계 수집 (TensorBoard용) - no_grad로 메모리 절약
+        with torch.no_grad():
+            episode_rewards = []
+            episode_values = []
+            episode_target_values = []
 
         def to_python_float(value):
             """모든 타입을 Python float로 안전하게 변환
@@ -317,16 +331,17 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             else:
                 return float(value)
 
-        for episode in batch:
-            if hasattr(episode, 'rewards') and episode.rewards:
-                for r in episode.rewards:
-                    episode_rewards.append(to_python_float(r))
-            if hasattr(episode, 'values') and episode.values:
-                for v in episode.values:
-                    episode_values.append(to_python_float(v))
-            if hasattr(episode, 'target_values') and episode.target_values:
-                for tv in episode.target_values:
-                    episode_target_values.append(to_python_float(tv))
+        with torch.no_grad():
+            for episode in batch:
+                if hasattr(episode, 'rewards') and episode.rewards:
+                    for r in episode.rewards:
+                        episode_rewards.append(to_python_float(r))
+                if hasattr(episode, 'values') and episode.values:
+                    for v in episode.values:
+                        episode_values.append(to_python_float(v))
+                if hasattr(episode, 'target_values') and episode.target_values:
+                    for tv in episode.target_values:
+                        episode_target_values.append(to_python_float(tv))
 
         # 손실 누적 변수
         total_loss = 0
@@ -381,24 +396,50 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
         policy_count = 0
         # 4단계: 배치의 각 항목에 대해 손실 계산
         actual_batch_size = len(valid_episodes)
+
+        # 모든 타겟 값들을 CPU에서 먼저 수집 (GPU 할당 최소화)
+        all_target_values = []
+        all_target_policies = []
+        all_legal_masks = []
+
+        for i in range(actual_batch_size):
+            episode = valid_episodes[i]
+            start_idx = start_indices[i]
+
+            # Target value 수집
+            if hasattr(episode, 'target_values') and episode.target_values is not None:
+                target_value_scalar = episode.target_values[start_idx] if start_idx < len(episode.target_values) else 0.0
+            else:
+                target_value_scalar = episode.values[start_idx] if episode.values[start_idx] is not None else 0.0
+            all_target_values.append(target_value_scalar)
+
+            # Target policy 수집
+            if episode.pi[start_idx] is not None:
+                all_target_policies.append(episode.pi[start_idx])
+            else:
+                all_target_policies.append(None)
+
+            # Legal mask 수집
+            if hasattr(episode, 'legal_mask') and episode.legal_mask[start_idx] is not None:
+                all_legal_masks.append(episode.legal_mask[start_idx])
+            else:
+                all_legal_masks.append(None)
+
+        # CPU에서 수집한 데이터를 한 번에 GPU로 전송
+        target_values_tensor = torch.tensor(all_target_values, dtype=torch.float32).to(device, non_blocking=True)
+
+        # 배치 전체 처리
         for i in range(actual_batch_size):
             episode = valid_episodes[i]
             start_idx = start_indices[i]
             value = batch_values[i:i+1]  # 개별 항목 추출 (배치 차원 유지)
             policy_logits = batch_policy_logits[i:i+1]
             hidden_state = batch_hidden_states[i:i+1] if batch_hidden_states is not None else None
-            
+
             # 첫 스텝의 손실 계산 (k=0)
-            # Value loss
-            # target_values 사용 (n-step bootstrap으로 계산된 학습 타깃)
-            if hasattr(episode, 'target_values') and episode.target_values is not None:
-                target_value_scalar = episode.target_values[start_idx] if start_idx < len(episode.target_values) else 0.0
-            else:
-                # Fallback: target_values가 없으면 values 사용
-                target_value_scalar = episode.values[start_idx] if episode.values[start_idx] is not None else 0.0
-            # Two-hot categorical distribution
+            # Value loss - 미리 전송된 텐서 사용
             target_value_dist = scalar_to_support(
-                torch.tensor([target_value_scalar], device=device),
+                target_values_tensor[i:i+1],
                 config
             )
             # Categorical cross-entropy loss
@@ -407,8 +448,9 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
 
             # Policy loss
             # [참고] MuZero 논문: MCTS pi가 이미 합법 액션만 포함하므로 추가 masking 불필요
-            if episode.pi[start_idx] is not None:
-                target_policy = torch.tensor(episode.pi[start_idx], device=device).unsqueeze(0)
+            if all_target_policies[i] is not None:
+                # CPU에서 GPU로 한 번에 전송
+                target_policy = torch.tensor(all_target_policies[i], dtype=torch.float32).to(device, non_blocking=True).unsqueeze(0)
 
                 # KL divergence loss (target_policy는 확률 분포)
                 log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
@@ -417,11 +459,13 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             else:
                 # GT 데이터의 경우 policy가 없으므로 합법 액션에 대해 uniform distribution 사용
                 num_actions = policy_logits.shape[1]
-                target_policy = torch.ones(1, num_actions, device=device) / num_actions
+                # CPU에서 생성 후 GPU로 전송
+                target_policy = torch.ones(1, num_actions, dtype=torch.float32) / num_actions
+                target_policy = target_policy.to(device, non_blocking=True)
 
                 # Legal mask 적용 (GT는 MCTS를 거치지 않으므로 여기서만 필요)
-                if hasattr(episode, 'legal_mask') and episode.legal_mask[start_idx] is not None:
-                    legal_mask = torch.tensor(episode.legal_mask[start_idx], device=device).unsqueeze(0)
+                if all_legal_masks[i] is not None:
+                    legal_mask = torch.tensor(all_legal_masks[i], dtype=torch.float32).to(device, non_blocking=True).unsqueeze(0)
                     target_policy = target_policy * legal_mask
                     policy_sum = target_policy.sum(dim=1, keepdim=True)
                     if policy_sum > 0:
@@ -436,23 +480,24 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             for k in range(0, K):
                 if start_idx + k + 1 >= len(episode):
                     break
-                    
-                # 액션 (k번째 액션으로 dynamics 수행)
-                action = torch.tensor([episode.actions[start_idx + k]], device=device)
+
+                # 액션 (k번째 액션으로 dynamics 수행) - CPU에서 생성 후 GPU로
+                action = torch.tensor([episode.actions[start_idx + k]], dtype=torch.long).to(device, non_blocking=True)
                 
                 # Recurrent inference (dynamics + prediction) - Mixed Precision 적용
                 # reward_k, latent_{k+1} = dynamics(latent_k, action_k)
                 # policy_{k+1}, value_{k+1} = prediction(latent_{k+1})
+                # IMPORTANT: hidden_state.detach()로 computational graph 끊기 (메모리 누수 방지)
                 with autocast(enabled=use_amp):
                     value, reward, policy_logits, hidden_state = network.recurrent_inference(
-                        hidden_state, action
+                        hidden_state.detach() if hidden_state is not None else hidden_state, action
                     )
                 
                 # Reward loss (k번째 액션의 reward)
                 target_reward_scalar = episode.rewards[start_idx + k]
-                # Two-hot categorical distribution
+                # Two-hot categorical distribution - CPU에서 생성 후 GPU로
                 target_reward_dist = scalar_to_support(
-                    torch.tensor([target_reward_scalar], device=device),
+                    torch.tensor([target_reward_scalar], dtype=torch.float32).to(device, non_blocking=True),
                     config
                 )
                 # Categorical cross-entropy loss
@@ -468,9 +513,9 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                     # Fallback: target_values가 없으면 values 사용
                     if start_idx + k + 1 < len(episode.values):
                         target_value_scalar = episode.values[start_idx + k + 1] if episode.values[start_idx + k + 1] is not None else target_value_scalar
-                # Two-hot categorical distribution
+                # Two-hot categorical distribution - CPU에서 생성 후 GPU로
                 target_value_dist = scalar_to_support(
-                    torch.tensor([target_value_scalar], device=device),
+                    torch.tensor([target_value_scalar], dtype=torch.float32).to(device, non_blocking=True),
                     config
                 )
                 # Categorical cross-entropy loss
@@ -480,7 +525,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 # Policy loss (k+1번째 상태의 policy)
                 if start_idx + k + 1 < len(episode):
                     if episode.pi[start_idx + k + 1] is not None:
-                        target_policy = torch.tensor(episode.pi[start_idx + k + 1], device=device).unsqueeze(0)
+                        target_policy = torch.tensor(episode.pi[start_idx + k + 1], dtype=torch.float32).to(device, non_blocking=True).unsqueeze(0)
 
                         # KL divergence loss (MCTS pi가 이미 합법 액션만 포함)
                         log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
@@ -489,11 +534,12 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                     else:
                         # GT 데이터의 경우 policy가 없으므로 합법 액션에 대해 uniform distribution 사용
                         num_actions = policy_logits.shape[1]
-                        target_policy = torch.ones(1, num_actions, device=device) / num_actions
+                        target_policy = torch.ones(1, num_actions, dtype=torch.float32) / num_actions
+                        target_policy = target_policy.to(device, non_blocking=True)
 
                         # Legal mask 적용 (GT는 MCTS를 거치지 않으므로 여기서만 필요)
                         if hasattr(episode, 'legal_mask') and start_idx + k + 1 < len(episode.legal_mask) and episode.legal_mask[start_idx + k + 1] is not None:
-                            legal_mask = torch.tensor(episode.legal_mask[start_idx + k + 1], device=device).unsqueeze(0)
+                            legal_mask = torch.tensor(episode.legal_mask[start_idx + k + 1], dtype=torch.float32).to(device, non_blocking=True).unsqueeze(0)
                             target_policy = target_policy * legal_mask
                             policy_sum = target_policy.sum(dim=1, keepdim=True)
                             if policy_sum > 0:
@@ -544,13 +590,13 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 torch.nn.utils.clip_grad_norm_(network.parameters(), max_norm=5.0)
                 scaler.step(optimizer)
                 scaler.update()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)  # 메모리 효율적인 gradient 초기화
             else:
-                # Standard Precision Gradient Processing  
+                # Standard Precision Gradient Processing
                 # gradient clipping으로 훈련 안정성 확보 후 가중치 업데이트
                 torch.nn.utils.clip_grad_norm_(network.parameters(), max_norm=5.0)
                 optimizer.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)  # 메모리 효율적인 gradient 초기화
         
         # 로깅
         if step % 10 == 0:
@@ -618,13 +664,13 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
         
         # 2.5 학습 진행 상황 시각화 (선택적) ... iteration_num
         # if (step + 1) % config.visualization_interval_step == 0 and config.enable_training_visualization:
-        if (step + 1) % config.visualization_interval_step == 0 and (iteration_num + 1) % config.visualization_interval_interation == 0 and config.enable_training_visualization:
-            try:
-                visualize_training_progress(network, replay_buffer, step + 1, config, device, loss_history, iteration_num)
-                # visualize_training_progress(network, step + 1, config, device, loss_history, iteration_num,candidate_episodes=valid_episodes)
-            except Exception as e:
-                print(f"    ⚠️ 시각화 중 오류 발생: {e}")
-                logger.info(f"Visualization error at step {step+1}: {e}")
+        # if (step + 1) % config.visualization_interval_step == 0 and (iteration_num + 1) % config.visualization_interval_interation == 0 and config.enable_training_visualization:
+        #     try:
+        #         visualize_training_progress(network, replay_buffer, step + 1, config, device, loss_history, iteration_num)
+        #         # visualize_training_progress(network, step + 1, config, device, loss_history, iteration_num,candidate_episodes=valid_episodes)
+        #     except Exception as e:
+        #         print(f"    ⚠️ 시각화 중 오류 발생: {e}")
+        #         logger.info(f"Visualization error at step {step+1}: {e}")
         
         # 3. 주기적으로 체크포인트 저장
         if (iteration_num + 1) % config.pth_checkpoint_interval_iteration == 0:
@@ -642,8 +688,14 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
     # Writer 종료 (이 함수에서 생성한 경우만)
     if close_writer:
         writer.close()
+
+    # GPU 메모리 정리
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
     print("\n학습 완료!")
-    
+
     # 마지막 loss 값들 반환
     return {
         'total_loss': total_loss.item() if total_loss != 0 else 0.0,

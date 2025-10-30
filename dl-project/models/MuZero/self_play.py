@@ -680,13 +680,34 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
     episode_idx, network_state_dict, config, device, episode = args
 
     import os
+    gpu_id = None
     # GPU 분산: Worker 프로세스마다 고정된 GPU 할당 (episode_idx 대신 PID 사용)
-    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
         num_gpus = min(torch.cuda.device_count(), config.use_gpu_device_max) if config.use_gpu_device_max is not None else torch.cuda.device_count()
-        gpu_id = os.getpid() % num_gpus  # Worker마다 고정 GPU (같은 Worker는 항상 같은 GPU 사용)
-        # gpu_id = episode_idx % num_gpus
+        # gpu_id = os.getpid() % num_gpus  # Worker마다 고정 GPU (같은 Worker는 항상 같은 GPU 사용)
+        gpu_id = episode_idx % num_gpus
         device = f'cuda:{gpu_id}'
-        
+    else:
+        device = 'cpu'
+
+    print(f"  [Episode {episode_idx}] MCTS Worker 시작 (Device: {device}), pid: {os.getpid()}")
+
+    # 🔍 디버깅: Worker 입력받자마자 타입 확인
+    if episode_idx == 0:  # 첫 번째 Episode만
+        print(f"\n=== [Worker 진입 직후] Episode {episode_idx} 타입 확인 ===")
+        for step_idx in range(min(2, len(episode.states))):
+            state_dict = episode.states[step_idx]
+            print(f"  Step {step_idx}:")
+            if isinstance(state_dict, dict):
+                for key in ['obstacles', 'static_environment', 'ground_class_id']:
+                    if key in state_dict:
+                        value = state_dict[key]
+                        if isinstance(value, torch.Tensor):
+                            print(f"    ✓ {key}: Tensor(device={value.device})")
+                        elif isinstance(value, np.ndarray):
+                            print(f"    - {key}: ndarray")
+                        else:
+                            print(f"    ? {key}: {type(value).__name__}")
 
     # Progress Bar와 충돌하므로 개별 Episode 출력 제거
     # Network 재생성 (utils.get_network() 사용 - main_muzero.py와 동일)
@@ -741,14 +762,15 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
             episode.states[step_idx] = shift_observation(episode.states[0], (simulated_ego_row, simulated_ego_col))
 
             # 6채널 observation 생성 (공용 함수 사용) -> simulated_ego_pos 가 변해도(=step 이 진행되어도) 환경은 root 시점 그대로 고정됨.
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            # device = 'cuda' if torch.cuda.is_available() else 'cpu'
             observation_tensor = build_observation_tensor(episode.states[step_idx], config.observation_shape, device, config.use_obstacle_channels)
 
             # Legal mask 계산
             # Episode 의 첫 Step 위치가 장애물 위 일 경우, 모든 액션이 불법일 수 있음. 발생사례 있음. (=step_idx 가 0인 사례)
             legal_mask = calculate_legal_mask(
                 episode.states[step_idx],
-                (49, 49)
+                (49, 49),
+                config
                 # (simulated_ego_row, simulated_ego_col)
             )
 
@@ -833,6 +855,23 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
         # MCTS root values는 보존하고 target_values는 별도로 계산됨
         episode.target_values = calculate_target_value(config, episode)
 
+        # 🔍 디버깅: Worker 반환 직전 타입 확인
+        if episode_idx == 0:  # 첫 번째 Episode만
+            print(f"\n=== [Worker 반환 직전] Episode {episode_idx} 타입 확인 ===")
+            for step_idx in range(min(2, len(episode.states))):
+                state_dict = episode.states[step_idx]
+                print(f"  Step {step_idx}:")
+                if isinstance(state_dict, dict):
+                    for key in ['obstacles', 'static_environment', 'ground_class_id']:
+                        if key in state_dict:
+                            value = state_dict[key]
+                            if isinstance(value, torch.Tensor):
+                                print(f"    ✓ {key}: Tensor(device={value.device})")
+                            elif isinstance(value, np.ndarray):
+                                print(f"    - {key}: ndarray")
+                            else:
+                                print(f"    ? {key}: {type(value).__name__}")
+
         return episode
         # enriched_episodes.append(episode)
 
@@ -909,7 +948,7 @@ def shift_observation(state_dict: dict, new_pos: Tuple[int, int]) -> dict:
 
 
 
-def calculate_legal_mask(state_dict: dict, current_pos: Tuple[int, int]) -> np.ndarray:
+def calculate_legal_mask(state_dict: dict, current_pos: Tuple[int, int], config) -> np.ndarray:
     """합법 액션 마스크 계산
 
     현재 위치에서 각 action을 취했을 때 충돌 여부를 체크하여
@@ -922,7 +961,6 @@ def calculate_legal_mask(state_dict: dict, current_pos: Tuple[int, int]) -> np.n
     Returns:
         legal_mask: 9개 원소의 0/1 배열 (Action 개수만큼)
     """
-    config = MuZeroConfig()
     legal_mask = np.ones(Action.get_action_space_size(), dtype=np.float32)
 
     current_row, current_col = current_pos
