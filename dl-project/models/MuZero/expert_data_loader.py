@@ -65,7 +65,7 @@ class ExpertDataLoader:
         ep_idx = 0
 
         while ep_idx < num_episodes and current_start_idx < total_frames - episode_step_length:
-            print(f"Episode {ep_idx + 1}/{num_episodes} 생성 중... (start_idx={current_start_idx})")
+            print(f"Expert Episode {ep_idx + 1}/{num_episodes} 생성 중... (start_idx={current_start_idx})")
 
             episode, last_frame_idx = self._create_single_episode(current_start_idx, episode_step_length, ep_idx)
 
