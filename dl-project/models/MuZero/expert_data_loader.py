@@ -71,13 +71,13 @@ class ExpertDataLoader:
 
             # Episode 품질 검증 - 마지막 jsonl 의 Frame 만 누락됨
             if episode and self._validate_episode_quality(episode, episode_step_length):
+                # 데이터 증강: 0°, 90°, 180°, 270° 회전
                 for rot_idx in range(4):
                     if rot_idx == 0:
-                        episodes.append(episode)
+                        episodes.append(episode)  # 원본 (0°)
                     else:
-                        # Deep copy를 사용하여 원본 episode 보존
-                        import copy
-                        rotated_episode = self._rotate_episode(copy.deepcopy(episode), angle=rot_idx * 90)
+                        # 원본 episode를 각 각도로 회전 (누적이 아님!)
+                        rotated_episode = self._rotate_episode(episode, angle=rot_idx * 90)
                         episodes.append(rotated_episode)
                 # episodes.append(episode)
                 print(f"    ✓ Episode {len(episodes)} 추가: {len(episode.states)}개 스텝")
@@ -264,33 +264,60 @@ class ExpertDataLoader:
         cos_a = np.cos(angle_rad)
         sin_a = np.sin(angle_rad)
 
+        rotated_states = []
         for i in range(len(episode.states)):
-            state = episode.states[i]
+            original_state = episode.states[i]
+            # 원본을 수정하지 않도록 새 딕셔너리 생성
+            rotated_state = {}
 
             # 1. 그리드 데이터 회전 (obstacles, static_environment, ground_class_id)
             for key in ['obstacles', 'static_environment', 'ground_class_id']:
-                if key in state and state[key] is not None:
-                    if isinstance(state[key], torch.Tensor):
+                if key in original_state and original_state[key] is not None:
+                    if isinstance(original_state[key], torch.Tensor):
                         # Tensor를 numpy로 변환하여 회전
-                        grid_np = state[key].numpy()
+                        grid_np = original_state[key].numpy()
                         rotated = scipy.ndimage.rotate(grid_np, angle, reshape=False, order=0)
-                        state[key] = torch.tensor(rotated, dtype=state[key].dtype)
-                    elif isinstance(state[key], np.ndarray):
-                        state[key] = scipy.ndimage.rotate(state[key], angle, reshape=False, order=0)
+                        rotated_state[key] = torch.tensor(rotated, dtype=original_state[key].dtype)
+                    elif isinstance(original_state[key], np.ndarray):
+                        rotated_state[key] = scipy.ndimage.rotate(original_state[key], angle, reshape=False, order=0)
 
             # 2. 방향 벡터 회전
             for dir_key in ['near_destination_direction', 'final_destination_direction']:
-                if dir_key in state and state[dir_key] is not None:
-                    x = state[dir_key].get('x', 0)
-                    y = state[dir_key].get('y', 0)
+                if dir_key in original_state and original_state[dir_key] is not None:
+                    x = original_state[dir_key].get('x', 0)
+                    y = original_state[dir_key].get('y', 0)
                     # 벡터 회전 변환
                     new_x = x * cos_a - y * sin_a
                     new_y = x * sin_a + y * cos_a
-                    state[dir_key] = {'x': round(new_x, 2), 'y': round(new_y, 2)}
+                    rotated_state[dir_key] = {'x': round(new_x, 2), 'y': round(new_y, 2)}
 
-            # 3. expert_ego_pos 회전 (그리드 좌표)
-            if i < len(episode.expert_ego_pos) and episode.expert_ego_pos[i] is not None:
-                row, col = episode.expert_ego_pos[i]
+            # 3. simulated_ego_pos는 GT에서 항상 (49, 49)이므로 변경 불필요
+            rotated_state['simulated_ego_pos'] = (49, 49)  # 유지
+
+            # 나머지 키들도 복사 (참조 복사 방지, deepcopy 없이)
+            for key in original_state:
+                if key not in rotated_state:
+                    value = original_state[key]
+                    # 딕셔너리는 수동으로 얕은 복사
+                    if isinstance(value, dict):
+                        rotated_state[key] = {k: v for k, v in value.items()}
+                    # 리스트는 얕은 복사
+                    elif isinstance(value, list):
+                        rotated_state[key] = value[:]
+                    else:
+                        rotated_state[key] = value
+
+            rotated_states.append(rotated_state)
+
+        # 새로운 Episode 생성
+        rotated_episode = Episode()
+        rotated_episode.states = rotated_states
+
+        # expert_ego_pos 회전 (그리드 좌표)
+        rotated_ego_pos = []
+        for i, pos in enumerate(episode.expert_ego_pos):
+            if pos is not None:
+                row, col = pos
                 # 중심 기준 상대 좌표
                 rel_row = row - center_row
                 rel_col = col - center_col
@@ -300,12 +327,40 @@ class ExpertDataLoader:
                 # 절대 좌표로 변환
                 new_row = int(center_row + new_rel_row)
                 new_col = int(center_col + new_rel_col)
-                episode.expert_ego_pos[i] = (new_row, new_col)
+                rotated_ego_pos.append((new_row, new_col))
+            else:
+                rotated_ego_pos.append(None)
 
-            # 4. simulated_ego_pos는 GT에서 항상 (49, 49)이므로 변경 불필요
-            # state['simulated_ego_pos'] = (49, 49)  # 유지
+        rotated_episode.expert_ego_pos = rotated_ego_pos
 
-        return episode
+        # # 나머지 Episode 속성들 복사 (중첩 리스트 처리)
+        # rotated_episode.actions = episode.actions[:]  # 얕은 복사 (숫자 리스트라 OK)
+
+        # # pi가 중첩 리스트일 수 있음 [[0.1, 0.2], [0.3, 0.4]]
+        # if episode.pi and episode.pi[0] is not None and isinstance(episode.pi[0], list):
+        #     rotated_episode.pi = [p[:] if p is not None else None for p in episode.pi]  # 각 내부 리스트도 복사
+        # else:
+        #     rotated_episode.pi = episode.pi[:]
+
+        # rotated_episode.values = episode.values[:]  # 숫자 리스트
+        # rotated_episode.rewards = episode.rewards[:]  # 숫자 리스트
+
+        # # target_values는 Episode 클래스에 없으므로 체크하고 처리
+        # if hasattr(episode, 'target_values'):
+        #     rotated_episode.target_values = episode.target_values[:] if episode.target_values else None
+
+        # rotated_episode.dones = episode.dones[:]  # bool 리스트
+
+        # # legal_mask도 복사
+        # if hasattr(episode, 'legal_mask'):
+        #     rotated_episode.legal_mask = episode.legal_mask[:]
+
+        # Episode 출처 정보 복사
+        rotated_episode.source_file = episode.source_file
+        rotated_episode.start_frame = episode.start_frame
+        rotated_episode.end_frame = episode.end_frame
+
+        return rotated_episode
 
     def _global_to_grid_coords(self, global_x: float, global_y: float, 
                               ego_start_x: float, ego_start_y: float, ego_start_yaw: float) -> Tuple[int, int]:
