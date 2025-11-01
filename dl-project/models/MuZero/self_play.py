@@ -754,6 +754,41 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
     if not hasattr(episode, 'dones'):
         episode.dones = [False] * len(episode.states)
 
+    # pi, values, legal_mask 필드 초기화 확인
+    # Expert data loader에서 None으로 채워진 리스트를 생성해야 하는데
+    # 병렬 처리 중 리스트가 제대로 전달되지 않을 수 있음
+    num_steps = len(episode.states)
+
+    # pi 필드 확인 및 초기화
+    if not hasattr(episode, 'pi') or not episode.pi:
+        episode.pi = [None] * num_steps
+    elif len(episode.pi) < num_steps:
+        episode.pi.extend([None] * (num_steps - len(episode.pi)))
+
+    # actions 필드 확인 및 초기화
+    if not hasattr(episode, 'actions') or not episode.actions:
+        episode.actions = [0] * num_steps  # 기본값 0 (현재 위치)
+    elif len(episode.actions) < num_steps:
+        episode.actions.extend([0] * (num_steps - len(episode.actions)))
+
+    # rewards 필드 확인 및 초기화
+    if not hasattr(episode, 'rewards') or not episode.rewards:
+        episode.rewards = [0.0] * num_steps
+    elif len(episode.rewards) < num_steps:
+        episode.rewards.extend([0.0] * (num_steps - len(episode.rewards)))
+
+    # values 필드 확인 및 초기화
+    if not hasattr(episode, 'values') or not episode.values:
+        episode.values = [0.0] * num_steps
+    elif len(episode.values) < num_steps:
+        episode.values.extend([0.0] * (num_steps - len(episode.values)))
+
+    # legal_mask 필드 확인 및 초기화
+    if not hasattr(episode, 'legal_mask') or not episode.legal_mask:
+        episode.legal_mask = [None] * num_steps
+    elif len(episode.legal_mask) < num_steps:
+        episode.legal_mask.extend([None] * (num_steps - len(episode.legal_mask)))
+
     # Episode 유효성 플래그
     episode_is_valid = True
 
