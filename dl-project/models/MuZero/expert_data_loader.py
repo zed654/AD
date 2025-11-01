@@ -71,7 +71,15 @@ class ExpertDataLoader:
 
             # Episode 품질 검증 - 마지막 jsonl 의 Frame 만 누락됨
             if episode and self._validate_episode_quality(episode, episode_step_length):
-                episodes.append(episode)
+                for rot_idx in range(4):
+                    if rot_idx == 0:
+                        episodes.append(episode)
+                    else:
+                        # Deep copy를 사용하여 원본 episode 보존
+                        import copy
+                        rotated_episode = self._rotate_episode(copy.deepcopy(episode), angle=rot_idx * 90)
+                        episodes.append(rotated_episode)
+                # episodes.append(episode)
                 print(f"    ✓ Episode {len(episodes)} 추가: {len(episode.states)}개 스텝")
                 # 다음 Episode는 마지막 사용 프레임에서 episode_overlap_steps 만큼 뺀 곳부터 시작
                 current_start_idx = max(last_frame_idx - episode_overlap_steps, current_start_idx + 1)
@@ -238,7 +246,66 @@ class ExpertDataLoader:
             )
 
         return episode, frame_idx
-    
+
+    def _rotate_episode(self, episode: Episode, angle: float) -> Episode:
+        """Episode 전체를 회전시켜 data augmentation 수행
+
+        Args:
+            episode: 회전시킬 Episode
+            angle: 회전 각도 (도 단위, 90, 180, 270 등)
+
+        Returns:
+            회전된 Episode
+        """
+        import scipy.ndimage
+
+        center_row = center_col = 49  # 그리드 중심
+        angle_rad = np.radians(angle)
+        cos_a = np.cos(angle_rad)
+        sin_a = np.sin(angle_rad)
+
+        for i in range(len(episode.states)):
+            state = episode.states[i]
+
+            # 1. 그리드 데이터 회전 (obstacles, static_environment, ground_class_id)
+            for key in ['obstacles', 'static_environment', 'ground_class_id']:
+                if key in state and state[key] is not None:
+                    if isinstance(state[key], torch.Tensor):
+                        # Tensor를 numpy로 변환하여 회전
+                        grid_np = state[key].numpy()
+                        rotated = scipy.ndimage.rotate(grid_np, angle, reshape=False, order=0)
+                        state[key] = torch.tensor(rotated, dtype=state[key].dtype)
+                    elif isinstance(state[key], np.ndarray):
+                        state[key] = scipy.ndimage.rotate(state[key], angle, reshape=False, order=0)
+
+            # 2. 방향 벡터 회전
+            for dir_key in ['near_destination_direction', 'final_destination_direction']:
+                if dir_key in state and state[dir_key] is not None:
+                    x = state[dir_key].get('x', 0)
+                    y = state[dir_key].get('y', 0)
+                    # 벡터 회전 변환
+                    new_x = x * cos_a - y * sin_a
+                    new_y = x * sin_a + y * cos_a
+                    state[dir_key] = {'x': round(new_x, 2), 'y': round(new_y, 2)}
+
+            # 3. expert_ego_pos 회전 (그리드 좌표)
+            if i < len(episode.expert_ego_pos) and episode.expert_ego_pos[i] is not None:
+                row, col = episode.expert_ego_pos[i]
+                # 중심 기준 상대 좌표
+                rel_row = row - center_row
+                rel_col = col - center_col
+                # 회전 변환
+                new_rel_row = rel_row * cos_a - rel_col * sin_a
+                new_rel_col = rel_row * sin_a + rel_col * cos_a
+                # 절대 좌표로 변환
+                new_row = int(center_row + new_rel_row)
+                new_col = int(center_col + new_rel_col)
+                episode.expert_ego_pos[i] = (new_row, new_col)
+
+            # 4. simulated_ego_pos는 GT에서 항상 (49, 49)이므로 변경 불필요
+            # state['simulated_ego_pos'] = (49, 49)  # 유지
+
+        return episode
 
     def _global_to_grid_coords(self, global_x: float, global_y: float, 
                               ego_start_x: float, ego_start_y: float, ego_start_yaw: float) -> Tuple[int, int]:
