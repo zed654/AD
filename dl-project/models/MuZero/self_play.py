@@ -102,7 +102,7 @@ class SelfPlayManager:
 
                 # Ego 위치 기준으로 observation shift (처음에는 제자리임)
                 # Episode 의 Step 들은 Root Step 의 위치를 공유함. 단, MCTS 시뮬레이션에 의해 선택된 Action 을 기반으로 중심점이 조정되도록 유도.
-                episode.states[step_idx] = self.shift_observation(episode.states[0], (simulated_ego_row, simulated_ego_col))
+                episode.states[step_idx] = self.shift_observation(step_idx, episode, (simulated_ego_row, simulated_ego_col))
 
                 # 6채널 observation 생성 (공용 함수 사용) -> simulated_ego_pos 가 변해도(=step 이 진행되어도) 환경은 root 시점 그대로 고정됨.
                 device = self.device if hasattr(self, 'device') else 'cpu'
@@ -235,7 +235,7 @@ class SelfPlayManager:
         return enriched_episodes
     
     # FIXME: 추후 삭제
-    def shift_observation(self, state_dict: dict, new_pos: Tuple[int, int]) -> dict:
+    def shift_observation(self, step_idx, episode, new_pos: Tuple[int, int]) -> dict:
         """observation 내의 그리드 채널들을 새로운 simulated_ego_pos에 맞게 쉬프트
 
         Args:
@@ -245,10 +245,11 @@ class SelfPlayManager:
         Returns:
             shifted_state_dict: 쉬프트된 observation dictionary
         """
-        import copy
+        # import copy
 
         # Deep copy로 원본 보호
-        state_dict_copy = copy.deepcopy(state_dict)
+        # state_dict_copy = copy.deepcopy(state_dict)
+        state_first_step = episode.states[0]
 
         # Shift 계산: new_pos를 (49, 49)로 보내려면 얼마나 이동해야 하는지
         center = 49
@@ -256,9 +257,13 @@ class SelfPlayManager:
         shift_row = center - new_row  # Ego를 중앙으로 이동시키는 shift
         shift_col = center - new_col
 
-        # Shift가 0이면 그대로 반환
+        # Shift가 0이면 얕은 복사 후 반환
         if shift_row == 0 and shift_col == 0:
-            return state_dict_copy
+            # 새 딕셔너리 생성 (얕은 복사로 메모리 절약)
+            result = {key: value for key, value in state_first_step.items()}
+            result['simulated_ego_pos'] = (center, center)
+            episode.states[step_idx] = result
+            return result
 
         # Channel별로 shift 적용 (slicing 기반, 경계는 0으로 채움)
         def apply_shift(data: np.ndarray, shift_r: int, shift_c: int) -> np.ndarray:
@@ -285,23 +290,31 @@ class SelfPlayManager:
             return shifted
 
         # Channels 0, 1, 2 shift 적용
+        result = {}
         for key in ['obstacles', 'static_environment', 'ground_class_id']:
-            if key in state_dict_copy:
-                data = state_dict_copy[key]
+            if key in state_first_step:
+                data = state_first_step[key]
 
                 # Torch Tensor를 numpy array로 변환
                 if isinstance(data, torch.Tensor):
                     data = data.cpu().numpy()
 
                 if isinstance(data, np.ndarray) and data.ndim == 2:
-                    state_dict_copy[key] = apply_shift(data, shift_row, shift_col)
+                    result[key] = apply_shift(data, shift_row, shift_col)
                 elif data is not None:
                     print(f"    [WARNING] '{key}' shift 실패: type={type(data)}, shape={data.shape if hasattr(data, 'shape') else 'N/A'}")
 
-        # simulated_ego_pos 업데이트 (항상 중앙으로)
-        state_dict_copy['simulated_ego_pos'] = (center, center)
+        # 나머지 키들도 복사 (near/final_destination_direction 등)
+        for key in state_first_step:
+            if key not in result and key != 'simulated_ego_pos':
+                result[key] = state_first_step[key]
 
-        return state_dict_copy
+        # simulated_ego_pos 업데이트 (항상 중앙으로)
+        result['simulated_ego_pos'] = (center, center)
+
+        episode.states[step_idx] = result
+        return episode.states[step_idx]
+
 
     # FIXME: 추후 삭제
     def _calculate_legal_mask(self, state_dict: dict, current_pos: Tuple[int, int]) -> np.ndarray:
