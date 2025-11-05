@@ -112,7 +112,6 @@ class MuZeroConfig:
         self.mcts_exploration_fraction = 0.25  # dirichlet noise (클 수록 탐험도 커짐) -> 기존 prior 를 얼마나 깎고, noise 로 대체할건지 결정하는 항임. 값이 크면 prior 덜 반영됨 (0~1 사이). 1이면, prior 결과 안쓰고 noise 만 쓴다는거임
         self.num_stochastic_steps = 30  # [지금 얘 안씀] 초기 30스텝 동안 확률적 행동 선택
         self.max_game_length = 500  # Self-play 안전장치 (무한루프 방지)
-        self.num_selfplay_games = 5  # Self-play로 실행할 게임 수
 
         # 학습 설정
         self.selfplay_parallel_workers = 16  # Self-play 의 Episode 생성 병렬 워커 수 (멀티프로세싱)

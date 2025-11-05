@@ -110,7 +110,7 @@ def print_config(config: MuZeroConfig, title: str = "현재 설정"):
         "🎮 게임 설정": ["observation_shape", "action_space", "max_game_length", "discount"],
         "🧠 네트워크 설정": ["network", "encoding_size", "support_size", "fc_representation_layers", 
                         "fc_dynamics_layers", "fc_reward_layers", "fc_value_layers", "fc_policy_layers"],
-        "📚 학습 설정": ["training_steps", "batch_size", "num_epochs", "num_selfplay_games", 
+        "📚 학습 설정": ["training_steps", "batch_size", "num_epochs", 
                      "learning_rate", "optimizer", "weight_decay"],
         "💾 저장 설정": ["results_path", "pth_checkpoint_interval_iteration", "checkpoint_save_dir", 
                      "checkpoint_final_name"],
