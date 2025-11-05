@@ -720,12 +720,13 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
             ax_loss.grid(True, alpha=0.3)
             
         # 저장
-        save_dir = config.results_path / "visualizations"
-        save_dir.mkdir(exist_ok=True)
-        save_path = save_dir / f"iter{iteration_num}_episode_{ep_idx+1}.png"
-        plt.savefig(save_path, dpi=config.visualization_dpi, bbox_inches='tight')
-        plt.close()
-        print(f"    💾 시각화 저장: {save_path}")
+        if ep_idx < config.visualization_num_episodes:
+            save_dir = config.results_path / "visualizations"
+            save_dir.mkdir(exist_ok=True)
+            save_path = save_dir / f"iter{iteration_num}_episode_{ep_idx+1}.png"
+            plt.savefig(save_path, dpi=config.visualization_dpi, bbox_inches='tight')
+            plt.close()
+            print(f"    💾 시각화 저장: {save_path}")
 
     # 시각화 완료 후 GPU 메모리 정리
     # enrich_episodes_with_mcts()에서 생성한 GPU Tensor들 해제
