@@ -12,6 +12,12 @@ class MuZeroConfig:
     def __init__(self):
         self.test_mode = 0  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
 
+        # 체크포인트 재개 설정
+        self.resume_checkpoint_path = None  # 재개할 체크포인트 경로 (None이면 새로 시작)
+        # self.resume_checkpoint_path = "models/MuZero/results/2025-11-03--13-27-04/checkpoints/iter2449.pth"
+        # "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-02--10-03-53/checkpoints/muzero_epoch_15.pth"
+        # 예: "models/MuZero/results/2025-09-02--00-11-57/checkpoints/muzero_epoch_5.pth"
+        
         # 네트워크 설정
         self.seed = 0
         self.max_num_gpus = None
@@ -103,7 +109,7 @@ class MuZeroConfig:
         # Self-Play 설정
         # TODO: 실제 Inference 할 때, MCTS Sim 이후 Step 선택하는 Action 부에 Temperature 를 0으로 줘야함
         self.selfplay_on_gpu = False
-        self.num_simulations = 200  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
+        self.num_simulations = 15  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
         self.value_bootstrap_discount = 0.97
         self.mcts_value_backup_discount = 0.99
         self.puct_discount = 0.997
@@ -157,12 +163,6 @@ class MuZeroConfig:
         self.checkpoint_final_name = "muzero_final.pth"  # 최종 모델 파일명
         self.checkpoint_training_steps_prefix = "muzero_training_steps_"  # 에폭별 체크포인트 파일명 접두사
 
-        # 체크포인트 재개 설정
-        self.resume_checkpoint_path = None  # 재개할 체크포인트 경로 (None이면 새로 시작)
-        # self.resume_checkpoint_path = "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-19--18-34-07/checkpoints/muzero_epoch_1000.pth"
-        # "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-02--10-03-53/checkpoints/muzero_epoch_15.pth"
-        # 예: "models/MuZero/results/2025-09-02--00-11-57/checkpoints/muzero_epoch_5.pth"
-        
         # 성능 최적화 설정
         self.use_mixed_precision = True  # Mixed Precision Training (AMP) 활성화
         self.gradient_accumulation_steps = 4  # Gradient Accumulation으로 대용량 배치 시뮬레이션

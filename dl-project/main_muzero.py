@@ -23,6 +23,8 @@ from models.MuZero.config_manager import load_config, save_config, print_config
 from models.MuZero.logger import get_logger
 from models.MuZero.expert_data_loader import ExpertDataLoader
 from models.MuZero.self_play import enrich_episode_with_mcts_parallel_worker
+from models.MuZero.utils import visualize_training_progress
+
 import torch.multiprocessing as mp
 import time
 from rich.progress import Progress, TimeElapsedColumn, BarColumn, TextColumn
@@ -227,6 +229,14 @@ def train_mode(config, checkpoint_path=None):
         else:
             enriched_episodes = []
         
+
+        if (iteration + 1) % config.visualization_interval_iteration == 0 and config.enable_training_visualization:
+            try:
+                visualize_training_progress(network, enriched_episodes, config, device, loss_history, iteration)
+            except Exception as e:
+                print(f"    ⚠️ 시각화 중 오류 발생: {e}")
+                logger.info(f"Visualization error at Iteration {iteration+1}: {e}")
+
         # Enriched Episode를 Replay Buffer에 추가
         for episode in enriched_episodes:
             # ReplayBuffer.save_episode()이 내부적으로 FIFO 방식으로 오래된 episode 제거 처리
@@ -304,7 +314,7 @@ def train_mode(config, checkpoint_path=None):
     print(f"\n📊 TensorBoard 확인: tensorboard --logdir {config.results_path / 'logs'}")
 
 
-def inference_mode(config, checkpoint_path, num_episodes=1, render=True):
+def inference_mode(config, checkpoint_path=None):
     """추론 모드 실행"""
     # TODO: 학습 설계 완료 이후 구현하기
 
@@ -314,42 +324,91 @@ def evaluate_mode(config, checkpoint_path=None):
     
     GT 데이터의 observation에 대해 MCTS를 실행하여 선택한 action과
     expert action을 비교하여 모델의 성능을 평가합니다.
+
+    실제 추론 모드로 전환하여 성능 확인. (여기선 GT로, inference_mode 에서 ROS2 Topic 수신받아 수행)
     """
     # TODO: 학습 설계 완료 이후 구현하기
+    """학습 모드 실행"""
+    logger = get_logger("MuZero.Train", config.results_path / "logs")
+    
+    print("\n" + "="*60)
+    print("🎓 MuZero 학습 모드")
+    print("="*60)
+    
+    # 디바이스 설정
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"📱 Device: {device}")
+    logger.info(f"Device: {device}")
 
-# def find_latest_checkpoint(config):
-#     """가장 최근의 체크포인트 파일 경로를 찾아 반환"""
-#     results_dir = Path("models/MuZero/results")
+    # Multiprocessing spawn method 설정 (CUDA 안전성)
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # 이미 설정됨
+
+    # 결과 디렉토리 설정 (config.results_path 사용)
+    print(f"📁 결과 저장 경로: {config.results_path}")
+
+    # 네트워크 생성
+    network = get_network(config, device)
     
-#     if not results_dir.exists():
-#         return None, "❌ results 디렉토리가 없습니다. 먼저 학습을 실행하세요."
+    # 체크포인트 로드 (있는 경우)
+    if checkpoint_path and Path(checkpoint_path).exists():
+        print(f"📂 체크포인트 로드: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        network.load_state_dict(checkpoint['network_state_dict'])
+        start_epoch = checkpoint.get('iteration', 0)
+        print(f"   → {start_epoch}번째 에폭부터 재개")
+    else:
+        start_epoch = 0
     
-#     # 가장 최근 날짜 폴더 찾기
-#     dirs = [d for d in results_dir.iterdir() if d.is_dir()]
-#     if not dirs:
-#         return None, "❌ 학습된 모델이 없습니다. 먼저 학습을 실행하세요."
+    # Observation Provider 생성 (학습용)
+    # GT 인지, Mock 인지, ROS2 인지 설정에 따라 다름
+    observation_provider = create_observation_provider(config, mode="train")
+    # parsing_result = observation_provider.get_observation()  # 디버깅용 - 불필요
     
-#     latest_dir = max(dirs, key=lambda x: x.stat().st_mtime)
+    # 파싱한 Json 을 활용하여 Episode 구성 단계
+    if config.observation_provider_type == "gt":
+        print("\n📚 전문가 데이터 로드 중...")
+        expert_loader = ExpertDataLoader(config, observation_provider)
+        expert_episodes = expert_loader.create_episodes_from_json(
+            num_episodes=config.gt_num_episodes,  # config에서 읽기
+            episode_step_length=config.max_episode_step_length,  # config에서 읽기
+            episode_overlap_steps=config.gt_episode_overlap  # config에서 읽기
+        )
+    elif config.observation_provider_type == "ros2":
+        print("\n🤖 ROS2 실시간 데이터 로드 중...")
+        expert_episodes = []
+    elif config.observation_provider_type == "mock":
+        print("\n⚠️  Mock 데이터 사용 (학습용 실제 데이터가 준비되지 않음)")
+        expert_episodes = []
+    else:
+        raise ValueError(f"지원하지 않는 observation_provider_type: {config.observation_provider_type}")
     
-#     # config에서 체크포인트 설정 가져오기
-#     config_path = latest_dir / "config.json"
-#     if config_path.exists():
-#         with open(config_path, 'r') as f:
-#             saved_config = json.load(f)
-#             checkpoint_save_dir = saved_config.get('checkpoint_save_dir', 'checkpoints')
-#             checkpoint_final_name = saved_config.get('checkpoint_final_name', 'muzero_final.pth')
-#     else:
-#         # config.json이 없으면 현재 config 사용
-#         checkpoint_save_dir = config.checkpoint_save_dir
-#         checkpoint_final_name = config.checkpoint_final_name
+    print(f"   Episode 생성 완료: {len(expert_episodes)}개")
+        
     
-#     checkpoint_path = latest_dir / checkpoint_save_dir / checkpoint_final_name
     
-#     if not checkpoint_path.exists():
-#         return None, f"❌ 체크포인트를 찾을 수 없습니다: {checkpoint_path}"
+    # 기존 코드 (무한 루프로 추론 시간 측정)
+    episode_idx = 0
+    while True:
+        # import random
+        # rand_num = random.randint(0, len(expert_episodes)-1)
+        # episode = expert_episodes[rand_num]
     
-#     print(f"✅ 체크포인트 발견: {checkpoint_path}")
-#     return checkpoint_path, None
+        episode = expert_episodes[episode_idx]
+        args = (0, network.state_dict(), config, device, episode)
+        start_time = time.time()
+        enriched_episode = enrich_episode_with_mcts_parallel_worker(args)
+        elapsed = time.time() - start_time
+        print(f"Episode {episode_idx} enriched in {elapsed:.2f} seconds")
+    
+        episode_idx = (episode_idx+1) % len(expert_episodes)
+        time.sleep(0.1)
+
+    # # TODO: 여기서 시각화...?
+    # print(f"Parallel processing completed in {elapsed:.2f} seconds")
+
 
 
 def main():
@@ -430,24 +489,33 @@ def main():
         inference_mode(config, checkpoint_path, args.episodes, not args.no_render)
     
     elif args.mode == "evaluate":
-        # checkpoint 경로 확인
-        checkpoint_path = args.checkpoint
-        # if checkpoint_path is None:
-        #     checkpoint_path, error = find_latest_checkpoint(config)
-        #     if error:
-        #         print(error)
-                # return
+        # # checkpoint 경로 확인
+        # checkpoint_path = args.checkpoint
+        # # if checkpoint_path is None:
+        # #     checkpoint_path, error = find_latest_checkpoint(config)
+        # #     if error:
+        # #         print(error)
+        #         # return
                 
-        # CLI 옵션으로 config 설정 덮어쓰기
-        if args.episodes is not None:
-            config.eval_num_episodes = args.episodes
-        if args.no_mcts:
-            config.eval_use_mcts = False
-        if args.dataset:
-            config.eval_dataset_type = args.dataset
-        if args.save:
-            config.eval_save_results = True
-            
+        # # CLI 옵션으로 config 설정 덮어쓰기
+        # if args.episodes is not None:
+        #     config.eval_num_episodes = args.episodes
+        # if args.no_mcts:
+        #     config.eval_use_mcts = False
+        # if args.dataset:
+        #     config.eval_dataset_type = args.dataset
+        # if args.save:
+        #     config.eval_save_results = True
+
+        # 체크포인트 경로 결정: config에 설정되어 있으면 자동 재개
+        checkpoint_path = None
+        if args.resume:
+            # --resume 플래그가 있으면 우선적으로 명령줄 체크포인트 사용
+            checkpoint_path = args.checkpoint or config.resume_checkpoint_path
+        elif config.resume_checkpoint_path:
+            # config에 체크포인트가 설정되어 있으면 자동으로 재개
+            checkpoint_path = config.resume_checkpoint_path
+            print(f"🔄 config.py에서 체크포인트 자동 재개: {checkpoint_path}")
         evaluate_mode(config, checkpoint_path)
 
 
