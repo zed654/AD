@@ -14,12 +14,11 @@ from models.MuZero.models import get_network
 from models.MuZero.config import MuZeroConfig
 # MCTS는 SelfPlayManager 내부에서 사용됨
 from models.MuZero.action import Action
-from models.MuZero.environment import DrivingEnvironment
+# from models.MuZero.environment import DrivingEnvironment
 from models.MuZero.observation_provider import GTObservationProvider, ROS2ObservationProvider, MockObservationProvider
-from models.MuZero.self_play import SelfPlayManager
 from models.MuZero.replay_buffer import ReplayBuffer
 from models.MuZero.train import train_network
-from models.MuZero.utils import build_observation_tensor, calculate_game_statistics, print_game_statistics, print_episode_summary
+from models.MuZero.utils import build_observation_tensor, calculate_game_statistics, print_game_statistics
 from models.MuZero.config_manager import load_config, save_config, print_config
 from models.MuZero.logger import get_logger
 from models.MuZero.expert_data_loader import ExpertDataLoader
@@ -87,16 +86,8 @@ def train_mode(config, checkpoint_path=None):
     # parsing_result = observation_provider.get_observation()  # 디버깅용 - 불필요
 
     # 환경 생성
-    environment = DrivingEnvironment(config, observation_provider)
+    # environment = DrivingEnvironment(config, observation_provider)
 
-    # Self-play 매니저 생성
-    self_play_manager = SelfPlayManager(
-        network=network,
-        environment=environment,
-        config=config,
-        device=device
-    )
-    
     # Replay Buffer 생성
     replay_buffer = ReplayBuffer(capacity=config.replay_buffer_size)
     

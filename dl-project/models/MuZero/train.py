@@ -8,6 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import autocast, GradScaler
 from .utils import build_observation_tensor
 from .models import MuZeroFullyConnectedNetwork
+from .self_play import enrich_episode_with_mcts_parallel_worker
 
 # 학습 중 PNG 시각화 관련
 import matplotlib
@@ -727,21 +728,14 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
         return
     
     # Self-play 매니저 생성 (MCTS enrichment를 위해)
-    from models.MuZero.self_play import SelfPlayManager
-    from models.MuZero.environment import DrivingEnvironment
     
     # Mock environment와 provider (시각화용이므로 실제 환경 불필요)
     class MockObservationProvider:
         def get_observation(self):
             return None
     
-    env = DrivingEnvironment(config, MockObservationProvider())
-    self_play_manager = SelfPlayManager(
-        network=network,
-        environment=env,
-        config=config,
-        device=device
-    )
+    # 1. Network state_dict 추출 (pickle 가능)
+    network_state_dict = network.state_dict()
     
     # 각 Episode에 대해 시각화
     for ep_idx, episode in enumerate(episodes):
@@ -785,8 +779,10 @@ def visualize_training_progress(network, replay_buffer, step, config, device, lo
 
         # 현재 네트워크로 MCTS enrichment 수행
         print(f"    Episode {ep_idx+1}: {visualization_steps} 스텝 처리 중...")
-        enriched_episodes = self_play_manager.enrich_episodes_with_mcts([full_episode])
-        enriched_episode = enriched_episodes[0]
+        # enriched_episodes = self_play_manager.enrich_episodes_with_mcts([full_episode])
+        # enriched_episode = enriched_episodes[0]
+        args = (ep_idx, network_state_dict, config, device, episode)
+        enriched_episode = enrich_episode_with_mcts_parallel_worker(args)
         
         # 시각화 - Loss 정보가 있으면 2개 subplot, 없으면 1개
         if loss_history and len(loss_history['steps']) > 0:

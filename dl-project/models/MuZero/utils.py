@@ -57,30 +57,6 @@ def print_game_statistics(stats: Dict[str, float], title: str = "게임 통계")
     print(f"- 최소 보상: {stats['min_reward']:.2f}")
     
     
-def print_episode_summary(episode_idx: int, game: 'GameHistory', show_actions: bool = True):
-    """에피소드 요약 출력
-    
-    Args:
-        episode_idx: 에피소드 번호 (0-based)
-        game: GameHistory 객체
-        show_actions: 액션 분포 출력 여부
-    """
-    from .action import Action
-    import json
-    
-    print(f"\n📊 Episode {episode_idx + 1} 결과:")
-    print(f"   - 총 스텝: {game.get_length()}")
-    print(f"   - 총 보상: {sum(game.rewards):.2f}")
-    
-    if show_actions:
-        # 액션 통계
-        action_counts = {}
-        for action_idx in game.actions:
-            action = Action.from_index(action_idx)
-            key = str(action)
-            action_counts[key] = action_counts.get(key, 0) + 1
-        print(f"   - 액션 분포: {json.dumps(action_counts, indent=6)}")
-
 
 # 글로벌 텐서 풀 (메모리 풀링 기법을 통한 성능 최적화)
 # 이론적 배경: 
