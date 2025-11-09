@@ -72,9 +72,16 @@ class ExpertDataLoader:
             # Episode 품질 검증 - 마지막 jsonl 의 Frame 만 누락됨
             if episode and self._validate_episode_quality(episode, episode_step_length):
                 # 데이터 증강: 0°, 90°, 180°, 270° 회전
+                # for rot_idx in range(4):
+                #     if rot_idx == 0:
+                #         episodes.append(episode)  # 원본 (0°)
+                #     else:
+                #         # 원본 episode를 각 각도로 회전 (누적이 아님!)
+                #         rotated_episode = self._rotate_episode(episode, angle=rot_idx * 90)
+                #         episodes.append(rotated_episode)
                 if self.config.rotation_augmentation:
                     for rot_idx in range(4):
-                        if rot_idx:
+                        if rot_idx == 0:
                             episodes.append(episode)  # 원본 (0°)
                         else:
                             # 원본 episode를 각 각도로 회전 (누적이 아님!)
