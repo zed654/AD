@@ -72,14 +72,17 @@ class ExpertDataLoader:
             # Episode 품질 검증 - 마지막 jsonl 의 Frame 만 누락됨
             if episode and self._validate_episode_quality(episode, episode_step_length):
                 # 데이터 증강: 0°, 90°, 180°, 270° 회전
-                for rot_idx in range(4):
-                    if rot_idx or self.config.rotation_augmentation == False:
-                        episodes.append(episode)  # 원본 (0°)
-                    else:
-                        # 원본 episode를 각 각도로 회전 (누적이 아님!)
-                        rotated_episode = self._rotate_episode(episode, angle=rot_idx * 90)
-                        episodes.append(rotated_episode)
-                # episodes.append(episode)
+                if self.config.rotation_augmentation:
+                    for rot_idx in range(4):
+                        if rot_idx:
+                            episodes.append(episode)  # 원본 (0°)
+                        else:
+                            # 원본 episode를 각 각도로 회전 (누적이 아님!)
+                            rotated_episode = self._rotate_episode(episode, angle=rot_idx * 90)
+                            episodes.append(rotated_episode)
+                else:
+                    episodes.append(episode)
+                    
                 print(f"    ✓ Episode {len(episodes)} 추가: {len(episode.states)}개 스텝")
                 # 다음 Episode는 마지막 사용 프레임에서 episode_overlap_steps 만큼 뺀 곳부터 시작
                 current_start_idx = max(last_frame_idx - episode_overlap_steps, current_start_idx + 1)
