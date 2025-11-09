@@ -245,15 +245,22 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # CPU 메모리 및 shared memory 정리
-    import gc
-    gc.collect()  # 강제 가비지 컬렉션으로 shared memory 해제 유도
-
     # Episode가 유효한 경우만 추가
     if episode_is_valid:
         # n-step bootstrap target value 계산
         # MCTS root values는 보존하고 target_values는 별도로 계산됨
         episode.target_values = calculate_target_value(config, episode)
+
+        # 🔧 GPU/CPU Tensor → numpy 변환 (BrokenPipeError 방지)
+        # Multiprocessing pipe는 GPU Tensor 직렬화 불가
+        # 후처리에서 build_observation_batch()가 numpy도 처리 가능하므로 문제 없음
+        for step_idx in range(len(episode.states)):
+            state_dict = episode.states[step_idx]
+            if isinstance(state_dict, dict):
+                for key in state_dict:
+                    if isinstance(state_dict[key], torch.Tensor):
+                        # GPU/CPU Tensor를 numpy로 변환 (pickle 직렬화 가능)
+                        state_dict[key] = state_dict[key].cpu().numpy()
 
         # # 🔍 디버깅: Worker 반환 직전 타입 확인
         # if episode_idx == 0:  # 첫 번째 Episode만
@@ -272,8 +279,17 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
         #                     else:
         #                         print(f"    ? {key}: {type(value).__name__}")
 
+        # CPU 메모리 및 shared memory 정리 (성공 케이스)
+        # Worker는 재사용되므로 반환 전 명시적 정리 필요
+        import gc
+        gc.collect()  # 강제 가비지 컬렉션으로 shared memory 해제 유도
+
         return episode
         # enriched_episodes.append(episode)
+
+    # CPU 메모리 및 shared memory 정리 (실패 케이스)
+    import gc
+    gc.collect()  # 강제 가비지 컬렉션으로 shared memory 해제 유도
 
     return None
 

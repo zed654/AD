@@ -67,8 +67,8 @@ class ReplayBuffer:
         self.episode_count += 1
         
         # Episode 출처 정보 표시
-        if hasattr(episode, 'source_file') and episode.source_file:
-            print(f"Episode 추가: {episode.source_file} (프레임 {episode.start_frame}-{episode.end_frame}, 길이: {len(episode)})")
+        # if print_log and hasattr(episode, 'source_file') and episode.source_file:
+            # print(f"Episode 추가: {episode.source_file} (프레임 {episode.start_frame}-{episode.end_frame}, 길이: {len(episode)})")
         
     # def save_game(self, game_history):
     #     """GameHistory를 Episode로 변환하여 저장

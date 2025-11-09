@@ -29,6 +29,80 @@ import torch.multiprocessing as mp
 import time
 from rich.progress import Progress, TimeElapsedColumn, BarColumn, TextColumn
 
+
+def print_system_resources(iteration_num=None):
+    """시스템 리소스 사용량을 상세히 출력하는 함수
+
+    Args:
+        iteration_num: Iteration 번호 (None이면 표시 안함)
+    """
+    title = f"  💾 시스템 리소스 사용량"
+    if iteration_num is not None:
+        title += f" (Iteration {iteration_num})"
+
+    print(f"\n{'='*60}")
+    print(title)
+    print(f"{'='*60}")
+
+    # GPU 메모리 상세 정보
+    if torch.cuda.is_available():
+        print("  🎮 GPU 메모리:")
+        for i in range(torch.cuda.device_count()):
+            allocated = torch.cuda.memory_allocated(i) / 1e9
+            reserved = torch.cuda.memory_reserved(i) / 1e9
+            max_allocated = torch.cuda.max_memory_allocated(i) / 1e9
+            total = torch.cuda.get_device_properties(i).total_memory / 1e9
+            free = total - reserved
+            utilization = (reserved / total) * 100 if total > 0 else 0
+
+            print(f"    GPU {i} ({torch.cuda.get_device_name(i)}):")
+            print(f"      - Allocated:     {allocated:6.2f}GB / {total:.2f}GB")
+            print(f"      - Reserved:      {reserved:6.2f}GB ({utilization:5.1f}%)")
+            print(f"      - Free:          {free:6.2f}GB")
+            print(f"      - Max Allocated: {max_allocated:6.2f}GB")
+
+    # CPU 메모리 정보
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        print(f"\n  🖥️  CPU 메모리:")
+        print(f"      - Used:      {mem.used / 1e9:6.2f}GB / {mem.total / 1e9:.2f}GB ({mem.percent:5.1f}%)")
+        print(f"      - Available: {mem.available / 1e9:6.2f}GB")
+
+        # Swap 메모리 정보
+        swap = psutil.swap_memory()
+        if swap.total > 0:
+            print(f"      - Swap Used: {swap.used / 1e9:6.2f}GB / {swap.total / 1e9:.2f}GB ({swap.percent:5.1f}%)")
+
+        # Shared Memory (/dev/shm) 정보
+        try:
+            shm = psutil.disk_usage('/dev/shm')
+            print(f"      - Shared Mem:{shm.used / 1e9:6.2f}GB / {shm.total / 1e9:.2f}GB ({shm.percent:5.1f}%)")
+        except:
+            pass
+
+        # CPU 사용률
+        cpu_percent = psutil.cpu_percent(interval=0.1, percpu=False)
+        cpu_count = psutil.cpu_count()
+        print(f"\n  ⚙️  CPU:")
+        print(f"      - Usage: {cpu_percent:5.1f}% (Cores: {cpu_count})")
+
+        # 프로세스 개수 (multiprocessing workers)
+        import subprocess
+        try:
+            result = subprocess.run(['pgrep', '-c', 'python'], capture_output=True, text=True)
+            python_processes = int(result.stdout.strip()) if result.returncode == 0 else 0
+            print(f"      - Python Processes: {python_processes}")
+        except:
+            pass
+    except ImportError:
+        print("  ⚠️  psutil 라이브러리가 없어 CPU/메모리 정보를 출력할 수 없습니다.")
+    except Exception as e:
+        print(f"  ⚠️  리소스 정보 수집 중 오류: {e}")
+
+    print(f"{'='*60}\n")
+
+
 def create_observation_provider(config, mode="train"):
     """모드에 따라 적절한 ObservationProvider 생성"""
     if mode == "train":
@@ -175,10 +249,10 @@ def train_mode(config, checkpoint_path=None):
                         success_count=0
                     )
 
-                    for i, ep in enumerate(pool.imap(
+                    for ep in pool.imap(
                         enrich_episode_with_mcts_parallel_worker,
                         args_list
-                    )):
+                    ):
                         # None이 아닌 Episode만 수집
                         if ep is not None:
                             enriched_episodes.append(ep)
@@ -208,10 +282,9 @@ def train_mode(config, checkpoint_path=None):
                 torch.cuda.empty_cache()
                 import gc
                 gc.collect()
-                 # 메모리 사용량 출력
-                for i in range(torch.cuda.device_count()):
-                    allocated = torch.cuda.memory_allocated(i) / 1e9
-                    print(f"  GPU {i} allocated: {allocated:.2f}GB")
+
+            # 📊 시스템 리소스 사용량 출력
+            print_system_resources(iteration_num=iteration + 1)
             # # 4. 병렬 처리 (mp.Pool.map 사용)
             # # map 사용 시, worker 순서 보장됨 (worker 2가 먼저 끝나도, 결과는 1, 2, 3, ... 순으로 반환)
             # with mp.Pool(processes=config.selfplay_parallel_workers) as pool:
@@ -238,12 +311,30 @@ def train_mode(config, checkpoint_path=None):
                 logger.info(f"Visualization error at Iteration {iteration+1}: {e}")
 
         # Enriched Episode를 Replay Buffer에 추가
-        for episode in enriched_episodes:
-            # ReplayBuffer.save_episode()이 내부적으로 FIFO 방식으로 오래된 episode 제거 처리
-            # Replay_Buffer 저장 시, 내부적으로 GPU 텐서를 CPU 로 이동
-            replay_buffer.save_episode(episode)
+        print(f"\n💾 Replay Buffer에 Episode 저장 중...")
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("({task.completed}/{task.total})"),
+            TimeElapsedColumn()
+        ) as progress:
+            task = progress.add_task(
+                "[green]저장 중",
+                total=len(enriched_episodes)
+            )
 
-        print(f"   전문가 데이터 + MCTS 결과 추가 완료: {len(enriched_episodes)}개 에피소드")
+            for ep_idx, episode in enumerate(enriched_episodes):
+                # ReplayBuffer.save_episode()이 내부적으로 FIFO 방식으로 오래된 episode 제거 처리
+                # Replay_Buffer 저장 시, 내부적으로 GPU 텐서를 CPU 로 이동
+                # if print_log and hasattr(episode, 'source_file') and episode.source_file:
+                    # print(f"Episode 추가: {episode.source_file} (프레임 {episode.start_frame}-{episode.end_frame}, 길이: {len(episode)})")
+                if ep_idx == 0:
+                    print(f"Episode 추가: {episode.source_file} (프레임 {episode.start_frame}-{episode.end_frame}, 길이: {len(episode)})")
+                replay_buffer.save_episode(episode)
+                progress.update(task, advance=1)
+
+        print(f"✅ Replay Buffer 저장 완료: {len(enriched_episodes)}개 Episode")
 
         # Self-play 후 GPU 메모리 정리
         if torch.cuda.is_available():
