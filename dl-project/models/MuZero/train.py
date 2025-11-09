@@ -116,20 +116,35 @@ def scalar_to_support(scalars, config):
 
 def train_network(network, replay_buffer, config, device, logger, iteration_num=1, base_step=0, loss_history=None, writer=None):
     """MuZero 네트워크 학습
-    
+
     Args:
         network: MuZero 신경망
         replay_buffer: 경험 재생 버퍼
         config: MuZero 설정
         device: 학습 디바이스 (cuda/cpu)
-    
+
     학습 과정:
     1. Replay Buffer에서 에피소드 배치 샘플링
     2. 각 에피소드에서 랜덤 위치 선택하고 K-step unroll
     3. Value, Reward, Policy loss 계산
     4. 역전파 및 가중치 업데이트
     """
-    
+
+    # Multi-GPU 설정
+    is_multi_gpu = False
+    original_network = network  # DataParallel wrapper 제거용
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        num_gpus = torch.cuda.device_count()
+        if config.use_gpu_device_max is not None:
+            num_gpus = min(num_gpus, config.use_gpu_device_max)
+
+        if num_gpus > 1:
+            print(f"Multi-GPU 학습 활성화: {num_gpus}개 GPU 사용")
+            # DataParallel로 모델 래핑 (자동으로 배치를 GPU들에 분산)
+            # device_ids를 명시적으로 지정하여 사용할 GPU 제어
+            device_ids = list(range(num_gpus))
+            network = torch.nn.DataParallel(network, device_ids=device_ids)
+            is_multi_gpu = True
 
     # Loss history 초기화 (전달되지 않은 경우만)
     if loss_history is None:
@@ -607,9 +622,11 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             checkpoint_dir = config.results_path / config.checkpoint_save_dir
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             save_path = checkpoint_dir / f"iter{iteration_num}.pth"
+            # DataParallel 사용 시 원본 모델의 state_dict 저장
+            model_to_save = network.module if is_multi_gpu else network
             torch.save({
                 'iteration': iteration_num + 1,
-                'network_state_dict': network.state_dict(),
+                'network_state_dict': model_to_save.state_dict(),
                 'config': config.__dict__
             }, save_path)
             print(f"  💾 체크포인트 저장: {save_path}")

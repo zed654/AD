@@ -210,6 +210,10 @@ def train_mode(config, checkpoint_path=None):
     # TensorBoard Writer 전역 관리 (연속된 로그를 위해)
     from torch.utils.tensorboard import SummaryWriter
     writer = SummaryWriter(log_dir=config.results_path / "logs")
+
+    # Multi-GPU 학습 감지 (train_network에서 DataParallel 사용 여부 확인)
+    is_multi_gpu_train = False
+
     # pool = mp.Pool(processes=config.selfplay_parallel_workers)
     for iteration in range(config.num_iterations):
         print(f"\n🔄 Iteration {iteration + 1}/{config.num_iterations}")
@@ -221,7 +225,11 @@ def train_mode(config, checkpoint_path=None):
             start_time = time.time()
 
             # 1. Network state_dict 추출 (pickle 가능)
-            network_state_dict = network.state_dict()
+            # DataParallel wrapper가 있으면 제거하고 원본 네트워크의 state_dict 추출
+            if isinstance(network, torch.nn.DataParallel):
+                network_state_dict = network.module.state_dict()
+            else:
+                network_state_dict = network.state_dict()
 
             # 3. Worker arguments 준비 (spawn 방식은 자동으로 deepcopy)
             args_list = [
@@ -389,8 +397,10 @@ def train_mode(config, checkpoint_path=None):
     checkpoint_dir = config.results_path / config.checkpoint_save_dir
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     final_path = checkpoint_dir / config.checkpoint_final_name
+    # DataParallel wrapper 제거하고 원본 모델 저장
+    model_to_save = network.module if isinstance(network, torch.nn.DataParallel) else network
     torch.save({
-        'network_state_dict': network.state_dict(),
+        'network_state_dict': model_to_save.state_dict(),
         'config': config.__dict__
     }, final_path)
     print(f"💾 최종 모델 저장: {final_path}")

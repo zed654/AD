@@ -47,39 +47,26 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
         # gpu_id = os.getpid() % num_gpus  # Worker마다 고정 GPU (같은 Worker는 항상 같은 GPU 사용)
         gpu_id = episode_idx % num_gpus
         device = f'cuda:{gpu_id}'
+        # 현재 Worker가 사용할 GPU만 visible하게 설정 (메모리 격리)
+        torch.cuda.set_device(device)
     else:
         device = 'cpu'
-
-    # print(f"  [Episode {episode_idx}] MCTS Worker 시작 (Device: {device}), pid: {os.getpid()}")
-
-    # # 🔍 디버깅: Worker 입력받자마자 타입 확인
-    # if episode_idx == 0:  # 첫 번째 Episode만
-    #     print(f"\n=== [Worker 진입 직후] Episode {episode_idx} 타입 확인 ===")
-    #     for step_idx in range(min(2, len(episode.states))):
-    #         state_dict = episode.states[step_idx]
-    #         print(f"  Step {step_idx}:")
-    #         if isinstance(state_dict, dict):
-    #             for key in ['obstacles', 'static_environment', 'ground_class_id']:
-    #                 if key in state_dict:
-    #                     value = state_dict[key]
-    #                     if isinstance(value, torch.Tensor):
-    #                         print(f"    ✓ {key}: Tensor(device={value.device})")
-    #                     elif isinstance(value, np.ndarray):
-    #                         print(f"    - {key}: ndarray")
-    #                     else:
-    #                         print(f"    ? {key}: {type(value).__name__}")
 
     # Progress Bar와 충돌하므로 개별 Episode 출력 제거
     # Network 재생성 (utils.get_network() 사용 - main_muzero.py와 동일)
     network = get_network(config, device)
 
     # 학습된 파라미터로 교체 (Iteration마다 업데이트된 파라미터)
-    # state_dict의 텐서를 현재 device로 이동
+    # state_dict의 텐서를 현재 device로 이동 (non_blocking=True로 비동기 복사)
     network.load_state_dict({
-        k: v.to(device) if isinstance(v, torch.Tensor) else v
+        k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v
         for k, v in network_state_dict.items()
     })
     network.eval()
+
+    # Inference only 모드로 메모리 최적화
+    for param in network.parameters():
+        param.requires_grad = False
 
     # MCTS 재생성
     mcts = MCTS(
