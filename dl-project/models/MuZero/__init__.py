@@ -14,7 +14,7 @@ MuZero 강화학습 알고리즘 구현
 from .mcts import MCTS, Node, MinMaxStats
 from .action import Action
 from .network import AbstractNetwork
-from .models import MuZeroFullyConnectedNetwork
+from .models import MuZeroNetwork
 from .config import MuZeroConfig
 from .replay_buffer import Episode, ReplayBuffer
 # train_network는 필요할 때만 직접 import
@@ -26,7 +26,7 @@ __all__ = [
     'MinMaxStats',
     'Action',
     'AbstractNetwork',
-    'MuZeroFullyConnectedNetwork',
+    'MuZeroNetwork',
     'MuZeroConfig',
     'Episode',
     'ReplayBuffer',
