@@ -73,7 +73,7 @@ class ExpertDataLoader:
             if episode and self._validate_episode_quality(episode, episode_step_length):
                 # 데이터 증강: 0°, 90°, 180°, 270° 회전
                 for rot_idx in range(4):
-                    if rot_idx == 0:
+                    if rot_idx or self.config.rotation_augmentation == False:
                         episodes.append(episode)  # 원본 (0°)
                     else:
                         # 원본 episode를 각 각도로 회전 (누적이 아님!)

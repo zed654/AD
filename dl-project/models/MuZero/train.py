@@ -7,7 +7,7 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import autocast, GradScaler
 from .utils import build_observation_tensor
-from .models import MuZeroFullyConnectedNetwork
+from .models import MuZeroNetwork
 from .self_play import enrich_episode_with_mcts_parallel_worker
 
 # 학습 중 PNG 시각화 관련
@@ -294,11 +294,10 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                     for tv in episode.target_values:
                         episode_target_values.append(to_python_float(tv))
 
-        # 손실 누적 변수
-        total_loss = 0
-        value_loss = 0
-        reward_loss = 0
-        policy_loss = 0
+        # 손실 누적 변수 (리스트로 변경 - PyTorch 표준 방법)
+        value_losses = []
+        reward_losses = []
+        policy_losses = []
         
         
         # 1단계: 유효한 에피소드 및 시작점 수집 (배치 준비)
@@ -342,9 +341,6 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             batch_values, _, batch_policy_logits, batch_hidden_states = network.initial_inference(batch_observations)
         
 
-        reward_count = 0 
-        value_count = 0 
-        policy_count = 0
         # 4단계: 배치의 각 항목에 대해 손실 계산
         actual_batch_size = len(valid_episodes)
 
@@ -394,8 +390,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 config
             )
             # Categorical cross-entropy loss
-            value_loss += -(target_value_dist * torch.nn.functional.log_softmax(value, dim=1)).sum(1).mean()
-            value_count += 1
+            value_losses.append(-(target_value_dist * torch.nn.functional.log_softmax(value, dim=1)).sum(1).mean())
 
             # Policy loss
             # [참고] MuZero 논문: MCTS pi가 이미 합법 액션만 포함하므로 추가 masking 불필요
@@ -405,8 +400,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
 
                 # KL divergence loss (target_policy는 확률 분포)
                 log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
-                policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
-                policy_count += 1
+                policy_losses.append(torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean'))
             else:
                 # GT 데이터의 경우 policy가 없으므로 합법 액션에 대해 uniform distribution 사용
                 num_actions = policy_logits.shape[1]
@@ -423,9 +417,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                         target_policy = target_policy / policy_sum
 
                 log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
-                policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
-                policy_count += 1
-            
+                policy_losses.append(torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean'))
 
             # K 스텝 unroll
             for k in range(0, K):
@@ -440,8 +432,9 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 # policy_{k+1}, value_{k+1} = prediction(latent_{k+1})
                 # IMPORTANT: hidden_state.detach()로 computational graph 끊기 (메모리 누수 방지)
                 with autocast(enabled=use_amp):
+                    detached_hidden = hidden_state.detach() if hidden_state is not None else None
                     value, reward, policy_logits, hidden_state = network.recurrent_inference(
-                        hidden_state.detach() if hidden_state is not None else hidden_state, action
+                        detached_hidden, action
                     )
                 
                 # Reward loss (k번째 액션의 reward)
@@ -452,8 +445,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                     config
                 )
                 # Categorical cross-entropy loss
-                reward_loss += -(target_reward_dist * torch.nn.functional.log_softmax(reward, dim=1)).sum(1).mean()
-                reward_count += 1
+                reward_losses.append(-(target_reward_dist * torch.nn.functional.log_softmax(reward, dim=1)).sum(1).mean())
 
                 # Value loss (k+1번째 상태의 value)
                 # target_values 사용 (n-step bootstrap으로 계산된 학습 타깃)
@@ -470,8 +462,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                     config
                 )
                 # Categorical cross-entropy loss
-                value_loss += -(target_value_dist * torch.nn.functional.log_softmax(value, dim=1)).sum(1).mean()
-                value_count += 1
+                value_losses.append(-(target_value_dist * torch.nn.functional.log_softmax(value, dim=1)).sum(1).mean())
 
                 # Policy loss (k+1번째 상태의 policy)
                 if start_idx + k + 1 < len(episode):
@@ -480,8 +471,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
 
                         # KL divergence loss (MCTS pi가 이미 합법 액션만 포함)
                         log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
-                        policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
-                        policy_count += 1
+                        policy_losses.append(torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean'))
                     else:
                         # GT 데이터의 경우 policy가 없으므로 합법 액션에 대해 uniform distribution 사용
                         num_actions = policy_logits.shape[1]
@@ -497,14 +487,13 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                                 target_policy = target_policy / policy_sum
 
                         log_policy = torch.nn.functional.log_softmax(policy_logits, dim=1)
-                        policy_loss += torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean')
-                        policy_count += 1
-        
-        # 평균 손실 계산
-        value_loss = value_loss / max(1, value_count) * config.value_loss_weight
-        reward_loss = reward_loss / max(1, reward_count) * config.reward_loss_weight
-        policy_loss = policy_loss / max(1, policy_count) * config.policy_loss_weight
-        
+                        policy_losses.append(torch.nn.functional.kl_div(log_policy, target_policy, reduction='batchmean'))
+
+        # 평균 손실 계산 (PyTorch 표준 방법: 리스트의 텐서들을 stack하여 평균)
+        value_loss = torch.stack(value_losses).mean() * config.value_loss_weight if value_losses else torch.tensor(0.0, device=device)
+        reward_loss = torch.stack(reward_losses).mean() * config.reward_loss_weight if reward_losses else torch.tensor(0.0, device=device)
+        policy_loss = torch.stack(policy_losses).mean() * config.policy_loss_weight if policy_losses else torch.tensor(0.0, device=device)
+
         # 총 손실 (Gradient Accumulation 정규화 적용)
         # MuZero 이론적 배경:
         # - Value Loss: 상태 가치 함수 V(s) 학습 → representation과 prediction 네트워크 동시 업데이트
@@ -591,12 +580,12 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
             lr_scheduler.step()
 
         
-        # Loss history 업데이트
+        # Loss history 업데이트 (tensor를 item()으로 변환)
         loss_dict = {
-            'total_loss': total_loss.item(),
-            'value_loss': value_loss.item(),
-            'reward_loss': reward_loss.item(),
-            'policy_loss': policy_loss.item()
+            'total_loss': total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss,
+            'value_loss': value_loss.item() if isinstance(value_loss, torch.Tensor) else value_loss,
+            'reward_loss': reward_loss.item() if isinstance(reward_loss, torch.Tensor) else reward_loss,
+            'policy_loss': policy_loss.item() if isinstance(policy_loss, torch.Tensor) else policy_loss
         }
         if loss_dict:
             # 전역 스텝으로 loss_history 업데이트
@@ -648,7 +637,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
 def get_network(config, device):
     """설정에 따라 적절한 MuZero 네트워크를 생성합니다."""
     if config.network == "fullyconnected":
-        return MuZeroFullyConnectedNetwork(
+        return MuZeroNetwork(
             config.observation_shape,
             config.stacked_observations,
             len(config.action_space),
@@ -664,7 +653,7 @@ def get_network(config, device):
             use_goal_map=config.use_goal_map,
             use_film=config.use_film,
             alpha_init=config.alpha_init,
-            use_resnet_dynamics=config.use_resnet_dynamics,
+            use_resnet=config.use_resnet,
         ).to(device)
     else:
         raise NotImplementedError(

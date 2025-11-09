@@ -18,16 +18,35 @@ class MuZeroConfig:
         # "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-02--10-03-53/checkpoints/muzero_epoch_15.pth"
         # 예: "models/MuZero/results/2025-09-02--00-11-57/checkpoints/muzero_epoch_5.pth"
         
-        # 네트워크 설정
-        self.seed = 0
-        self.max_num_gpus = None
-        
         # 새로운 Representation 구조 설정
         self.use_coordconv = False  # CoordConv 사용 여부 (기본 OFF)
         self.use_goal_map = False   # Goal을 2D 가우시안 히트맵으로 투영 여부 (기본 OFF)
         self.use_film = False       # FiLM 채널 단위 주입 실험용 (기본 OFF)
         self.alpha_init = 0.5       # DirectionalGating alpha 초기값 (0.3~0.7 권장)
-        self.use_resnet_dynamics = False  # Dynamics에서 ResNet 사용 여부 (True: ResNet 16 blocks, False: ConvGRU)
+        self.use_resnet = True  # Representation, Dynamics 에서 ResNet 사용 여부 (True: ResNet)
+
+        # 학습 설정
+        self.selfplay_parallel_workers = 8  # Self-play 의 Episode 생성 병렬 워커 수 (멀티프로세싱)
+        self.batch_size = 4  # 32 -> 128 (GPU 메모리 활용도 최대화)
+        self.rotation_augmentation = True # 90도씩 360도 회전 데이터 증강 사용 여부
+        self.use_gpu_device_max = None  # 최대 GPU 사용 개수 (None이면 모든 사용 가능 GPU 사용)
+        self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
+        self.save_model = True
+        if self.test_mode == 1:
+            self.num_iterations = 10
+            self.training_steps = 10
+        elif self.test_mode == 2:
+            self.num_iterations = 10000 # 100 {Self-Play - 학습} 사이클 반복 횟수
+            self.training_steps = 10
+        elif self.test_mode == 0:
+            self.num_iterations = 10000 # 100 {Self-Play - 학습} 사이클 반복 횟수
+            self.training_steps = 10  # 1000. K-Step Unrolling 반복 횟수
+        self.unroll_steps = 5  # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
+        self.n_target_value_bootstrap = 4 # Target Value 생성 시 n-스텝 부트스트랩 길이. (인덱스 0~n-1 까지 Reward 쓰고, n 번째에서 Value 씀. 총 n+1 개임)
+        self.value_loss_weight = 1
+        self.reward_loss_weight = 1
+        self.policy_loss_weight = 1
+        self.train_on_gpu = torch.cuda.is_available()
 
         # 게임 관련 설정
         self.action_space = list(range(Action.get_action_space_size()))  # Position 9개 액션 (POS0~POS8)
@@ -118,28 +137,6 @@ class MuZeroConfig:
         self.mcts_exploration_fraction = 0.25  # dirichlet noise (클 수록 탐험도 커짐) -> 기존 prior 를 얼마나 깎고, noise 로 대체할건지 결정하는 항임. 값이 크면 prior 덜 반영됨 (0~1 사이). 1이면, prior 결과 안쓰고 noise 만 쓴다는거임
         self.num_stochastic_steps = 30  # [지금 얘 안씀] 초기 30스텝 동안 확률적 행동 선택
         self.max_game_length = 500  # Self-play 안전장치 (무한루프 방지)
-
-        # 학습 설정
-        self.selfplay_parallel_workers = 16  # Self-play 의 Episode 생성 병렬 워커 수 (멀티프로세싱)
-        self.use_gpu_device_max = None  # 최대 GPU 사용 개수 (None이면 모든 사용 가능 GPU 사용)
-        self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
-        self.save_model = True
-        if self.test_mode == 1:
-            self.num_iterations = 10
-            self.training_steps = 10
-        elif self.test_mode == 2:
-            self.num_iterations = 10000 # 100 {Self-Play - 학습} 사이클 반복 횟수
-            self.training_steps = 10
-        elif self.test_mode == 0:
-            self.num_iterations = 10000 # 100 {Self-Play - 학습} 사이클 반복 횟수
-            self.training_steps = 10  # 1000. K-Step Unrolling 반복 횟수
-        self.unroll_steps = 5  # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
-        self.n_target_value_bootstrap = 4 # Target Value 생성 시 n-스텝 부트스트랩 길이. (인덱스 0~n-1 까지 Reward 쓰고, n 번째에서 Value 씀. 총 n+1 개임)
-        self.batch_size = 128  # 32 -> 128 (GPU 메모리 활용도 최대화)
-        self.value_loss_weight = 1
-        self.reward_loss_weight = 1
-        self.policy_loss_weight = 1
-        self.train_on_gpu = torch.cuda.is_available()
         
         # 학습 중 시각화 설정
         self.enable_training_visualization = True  # 학습 중 시각화 생성 여부
