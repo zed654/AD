@@ -513,11 +513,11 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
         if fallback_count > 0:
             print(f"⚠️ {fallback_count}/{len(episode.states)} 스텝에서 simulated_ego_pos 누락으로 fallback 사용")
         
-        print(f"🔍 New Predicted path: start({sim_rows[0]}, {sim_cols[0]}) -> end({sim_rows[-1]}, {sim_cols[-1]})")
+        print(f"🔍 simulated_ego_pos: start({sim_rows[0]}, {sim_cols[0]}) -> end({sim_rows[-1]}, {sim_cols[-1]})")
 
-        # New Predicted Path (빨간색 그라데이션: 학습 후 경로)
+        # New Predicted Path (빨간색 그라데이션: 학습 후 경로) (simulated_ego_pos)
         if len(set(zip(sim_rows, sim_cols))) > 1:  # 서로 다른 위치가 2개 이상 있을 때만
-            # New Predicted Path 그라데이션 그리기
+            # New Predicted Path 그라데이션 그리기 (simulated_ego_pos)
             for i in range(len(sim_rows) - 1):
                 # 진행도에 따른 알파값 (0.3 -> 1.0)
                 alpha = 0.3 + 0.7 * (i / (len(sim_rows) - 1))
@@ -526,7 +526,7 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
                 color = (color_intensity, 0, 0)
 
                 # 첫 번째 선분에만 label 추가 (범례용)
-                label = 'New Predicted (After Training)' if i == 0 else None
+                label = 'simulated_ego_pos' if i == 0 else None
                 ax.plot([sim_cols[i], sim_cols[i+1]], 
                        [sim_rows[i], sim_rows[i+1]], 
                        color=color, linewidth=2, alpha=alpha, linestyle='--', label=label)
@@ -538,7 +538,7 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
                       c='darkred', s=50, alpha=1.0, zorder=5)
         else:
             # 모든 점이 같은 위치인 경우 점으로만 표시
-            ax.scatter(sim_cols[0], sim_rows[0], c='red', s=100, marker='x', label='New Predicted (No Movement)', zorder=5)
+            ax.scatter(sim_cols[0], sim_rows[0], c='red', s=100, marker='x', label='simulated_ego_pos', zorder=5)
         
         # 시작점과 끝점 표시
         ax.scatter(expert_cols[0], expert_rows[0], c='green', s=100, marker='o', label='Start', zorder=6)
