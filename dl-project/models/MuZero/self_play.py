@@ -133,11 +133,6 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
         
         # observation tensor 추출
         if isinstance(state_dict, dict):
-            # 현재 simulated_ego_pos 업데이트 후 shift 적용
-            # import copy
-            # state_dict_copy = copy.deepcopy(state_dict)
-            # state_dict_copy['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
-            episode.states[step_idx]['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
 
             # Ego 위치 기준으로 observation shift (처음에는 제자리임)
             # Episode 의 Step 들은 Root Step 의 위치를 공유함. 단, MCTS 시뮬레이션에 의해 선택된 Action 을 기반으로 중심점이 조정되도록 유도.
@@ -154,12 +149,7 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
                 episode.states[step_idx],
                 (49, 49),
                 config
-                # (simulated_ego_row, simulated_ego_col)
             )
-
-            # for legal_mask_idx in range(len(legal_mask)):
-            #     if legal_mask[legal_mask_idx] == 0.0:
-            #         print(f"    - 스텝 {step_idx}에서 액션 {legal_mask_idx}는 불법입니다.")
 
             # MCTS 실행
             # - representation(): observation → latent
@@ -175,19 +165,6 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
             except IllegalStateException as e:
                 # 모든 액션이 불법인 경우 Episode 즉시 종료
                 print(f"  [Episode {episode_idx}] 스텝 {step_idx}에서 {str(e)}")
-                # Episode를 현재 스텝 이전까지만 잘라냄
-                # episode.states = episode.states[:step_idx]
-                # episode.actions = episode.actions[:step_idx]
-                # episode.rewards = episode.rewards[:step_idx]
-                # episode.pi = episode.pi[:step_idx]
-                # episode.values = episode.values[:step_idx]
-                # episode.dones = episode.dones[:step_idx]
-                # episode.legal_mask = episode.legal_mask[:step_idx]
-                # if hasattr(episode, 'expert_ego_pos'):
-                #     episode.expert_ego_pos = episode.expert_ego_pos[:step_idx]
-                # 이 Episode는 너무 짧으면 버림
-                # if len(episode.states) < 3:
-                    # print(f"  [Episode {ep_idx + 1}] Episode가 너무 짧아서 버립니다. (길이: {len(episode.states)})")
                 episode_is_valid = False
                 # Episode 종료
                 break
@@ -212,13 +189,9 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
             simulated_ego_col += dy  # 좌/우 (environment.py와 일치)
             
             # Episode state에도 업데이트 (최종 거리 계산을 위해)
+            # 첫 번째 step 에서 Action 기반으로 예측된 simulated_ego_pos 가 저장됨
             episode.states[step_idx]['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
 
-            # 디버깅: 데이터 타입 확인 (처음 몇 스텝만)
-            # if step_idx < 2:
-            #     obs_type = type(episode.states[step_idx].get('obstacles', None))
-            #     print(f"    - 스텝 {step_idx} 후 obstacles 타입: {obs_type}")
-            
             # GT 학습을 위한 환경 reward 계산 (Step마다)
             reward = calculate_target_reward(
                 config, episode, step_idx, selected_action, 
@@ -248,23 +221,6 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
                     if isinstance(state_dict[key], torch.Tensor):
                         # GPU/CPU Tensor를 numpy로 변환 (pickle 직렬화 가능)
                         state_dict[key] = state_dict[key].cpu().numpy()
-
-        # # 🔍 디버깅: Worker 반환 직전 타입 확인
-        # if episode_idx == 0:  # 첫 번째 Episode만
-        #     print(f"\n=== [Worker 반환 직전] Episode {episode_idx} 타입 확인 ===")
-        #     for step_idx in range(min(2, len(episode.states))):
-        #         state_dict = episode.states[step_idx]
-        #         print(f"  Step {step_idx}:")
-        #         if isinstance(state_dict, dict):
-        #             for key in ['obstacles', 'static_environment', 'ground_class_id']:
-        #                 if key in state_dict:
-        #                     value = state_dict[key]
-        #                     if isinstance(value, torch.Tensor):
-        #                         print(f"    ✓ {key}: Tensor(device={value.device})")
-        #                     elif isinstance(value, np.ndarray):
-        #                         print(f"    - {key}: ndarray")
-        #                     else:
-        #                         print(f"    ? {key}: {type(value).__name__}")
 
         # CPU 메모리 및 shared memory 정리 (성공 케이스)
         # Worker는 재사용되므로 반환 전 명시적 정리 필요
@@ -356,7 +312,7 @@ def shift_observation(step_idx, episode, new_pos: Tuple[int, int]) -> dict:
             result[key] = state_first_step[key]
 
     # simulated_ego_pos 업데이트 (항상 중앙으로)
-    result['simulated_ego_pos'] = (center, center)
+    result['simulated_ego_pos'] = new_pos
 
     episode.states[step_idx] = result
     return episode.states[step_idx]
