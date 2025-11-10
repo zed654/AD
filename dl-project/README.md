@@ -96,26 +96,33 @@ pip install rich
 
 ---
 
+### 0. 시각화 디버깅
+# GT(jsonl) -> Python Episode 정상 파싱 여부 시각화 방법 (python3 visualize_muzero_episode.py 실행됨)
+```bash
+./run_viz.sh
+```
+
 ### 1. 학습 모드 (Train)
 
 #### 기본 학습
+# 학습 중 시각화 결과가 models/MuZero/results 에 png 형태로 저장되고, png 샘플은 training_result_sample.png 와 같음
 ```bash
-python main_muzero.py train
+python3 main_muzero.py train
 ```
 
 #### Ground Truth (GT) 데이터로 학습
 ```bash
-python main_muzero.py train --provider gt --gt-data data/db3_parser/results/matched_data.jsonl
+python3 main_muzero.py train --provider gt --gt-data data/db3_parser/results/matched_data.jsonl
 ```
 
 #### 이전 학습 재개
 ```bash
-python main_muzero.py train --resume --checkpoint checkpoints/muzero_epoch_50.pth
+python3 main_muzero.py train --resume --checkpoint checkpoints/muzero_epoch_50.pth
 ```
 
 #### 커스텀 설정을 이용한 학습
 ```bash
-python main_muzero.py train --epochs 200 --config custom_config.json
+python3 main_muzero.py train --epochs 200 --config custom_config.json
 ```
 
 ---

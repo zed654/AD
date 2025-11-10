@@ -10,7 +10,7 @@ from models.MuZero.action import Action
 # MuZero 설정 클래스
 class MuZeroConfig:
     def __init__(self):
-        self.test_mode = 0  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
+        self.test_mode = 2  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
 
         # 체크포인트 재개 설정
         self.resume_checkpoint_path = None  # 재개할 체크포인트 경로 (None이면 새로 시작)
@@ -23,7 +23,7 @@ class MuZeroConfig:
         self.use_goal_map = False   # Goal을 2D 가우시안 히트맵으로 투영 여부 (기본 OFF)
         self.use_film = False       # FiLM 채널 단위 주입 실험용 (기본 OFF)
         self.alpha_init = 0.5       # DirectionalGating alpha 초기값 (0.3~0.7 권장)
-        self.use_resnet = True  # Representation, Dynamics 에서 ResNet 사용 여부 (True: ResNet)
+        self.use_resnet = False  # Representation, Dynamics 에서 ResNet 사용 여부 (True: ResNet)
 
         # 학습 설정
         self.selfplay_parallel_workers = 8  # Self-play 의 Episode 생성 병렬 워커 수 (멀티프로세싱)
