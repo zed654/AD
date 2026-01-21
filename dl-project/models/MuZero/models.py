@@ -9,6 +9,7 @@ from scipy.ndimage import distance_transform_edt
 import numpy as np
 from .network import AbstractNetwork
 from enum import Enum
+from models.MuZero.action import Action
 
 # 임시로 AgentType 정의 (추후 사용하지 않으면 제거)
 class AgentTypeNeuralNetwork(Enum):
@@ -25,7 +26,7 @@ def get_network(config, device):
         return MuZeroNetwork(
             config.observation_shape,
             config.stacked_observations,
-            len(config.action_space),
+            len(list(range(Action.get_action_space_size()))),
             config.encoding_size,
             config.fc_reward_layers,
             config.fc_value_layers,
@@ -36,9 +37,9 @@ def get_network(config, device):
             # 새로운 파라미터들
             use_coordconv=config.use_coordconv,
             use_goal_map=config.use_goal_map,
-            use_film=config.use_film,
             alpha_init=config.alpha_init,
             use_resnet=config.use_resnet,
+            use_attn_soft_routing_film=config.use_attn_soft_routing_film,
         ).to(device)
     else:
         raise NotImplementedError(
@@ -463,11 +464,11 @@ class DirectionalGating(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden, c)
         )
-        self.final_mlp = nn.Sequential(
-            nn.Linear(2, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, c)
-        )
+        # self.final_mlp = nn.Sequential(
+        #     nn.Linear(2, hidden),
+        #     nn.ReLU(),
+        #     nn.Linear(hidden, c)
+        # )
         # 각각 독립적인 alpha 파라미터
         self.alpha_near_raw = nn.Parameter(torch.tensor(alpha_init).log())
         self.alpha_final_raw = nn.Parameter(torch.tensor(alpha_init).log())
@@ -483,32 +484,34 @@ class DirectionalGating(nn.Module):
             gated feature maps [B, C, H, W]
         """
         B, C, H, W = z.shape
+        # 입력 z는 이미 정규화되어 들어왔음
 
         # 목적지 방향 벡터 분리
         g_near = g[:, :2]   # [B, 2] - 근접 목적지 방향
-        g_final = g[:, 2:]  # [B, 2] - 최종 목적지 방향
+        # g_final = g[:, 2:]  # [B, 2] - 최종 목적지 방향
 
         # 각 목적지에 대한 embedding
-        e_near = self.near_mlp(g_near) / (self.c ** 0.5)   # [B, C]
-        e_final = self.final_mlp(g_final) / (self.c ** 0.5)  # [B, C]
+        e_near = self.near_mlp(g_near) / (self.c ** 0.5)   # [B, C] -> [B, C, 1, 1] ??
+        # e_final = self.final_mlp(g_final) / (self.c ** 0.5)  # [B, C]
 
         # 각각 독립적인 내적 계산
         p_near = z * e_near.view(B, C, 1, 1)   # [B, C, H, W]
-        p_final = z * e_final.view(B, C, 1, 1)  # [B, C, H, W]
+        # p_final = z * e_final.view(B, C, 1, 1)  # [B, C, H, W]
 
         s_near = p_near.sum(dim=1)   # [B, H, W]
-        s_final = p_final.sum(dim=1)  # [B, H, W]
+        # s_final = p_final.sum(dim=1)  # [B, H, W]
 
         # 독립적인 시그모이드 마스크
         m_near = torch.sigmoid(s_near)   # [B, H, W]
-        m_final = torch.sigmoid(s_final)  # [B, H, W]
+        # m_final = torch.sigmoid(s_final)  # [B, H, W]
 
         # 독립적인 alpha 값
         alpha_near = self.softplus(self.alpha_near_raw)
-        alpha_final = self.softplus(self.alpha_final_raw)
+        # alpha_final = self.softplus(self.alpha_final_raw)
 
         # 비감쇠 게이팅: 두 목적지의 영향을 독립적으로 더함
-        return z * (1 + alpha_near * m_near.unsqueeze(1) + alpha_final * m_final.unsqueeze(1))  # [B, C, H, W]
+        # return z * (1 + alpha_near * m_near.unsqueeze(1) + alpha_final * m_final.unsqueeze(1))  # [B, C, H, W]
+        return z * (1 + alpha_near * m_near.unsqueeze(1))  # [B, C, H, W]
 
 
 class MuZeroNetwork(AbstractNetwork):
@@ -529,9 +532,9 @@ class MuZeroNetwork(AbstractNetwork):
         # 새로운 설정들
         use_coordconv=False,
         use_goal_map=False,
-        use_film=False,
         alpha_init=0.5,
         use_resnet=False,
+        use_attn_soft_routing_film=False,
     ):
         super().__init__()
         self.action_space_size = action_space_size
@@ -542,8 +545,8 @@ class MuZeroNetwork(AbstractNetwork):
         # 새로운 구조 설정
         self.use_coordconv = use_coordconv
         self.use_goal_map = use_goal_map
-        self.use_film = use_film
         self.use_resnet = use_resnet
+        self.use_attn_soft_routing_film = use_attn_soft_routing_film
         
         # 2D latent 구조 (고정)
         self.latent_channels = 64
@@ -608,7 +611,38 @@ class MuZeroNetwork(AbstractNetwork):
         # Prediction 네트워크들
         # Policy: Conv layers로 공간 정보 보존하며 압축
         # Input: (B, 64, 25, 25)
-        self.prediction_policy_network = nn.Sequential(
+        # self.prediction_policy_network = nn.Sequential(
+        #     nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # (B, 64, 25, 25) -> (B, 128, 13, 13)
+        #     nn.ReLU(),
+        #     nn.LayerNorm([128, 13, 13]),
+        #     nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),  # (B, 128, 13, 13) -> (B, 256, 7, 7)
+        #     nn.ReLU(),
+        #     nn.LayerNorm([256, 7, 7]),
+        #     nn.AdaptiveAvgPool2d(3),  # (B, 256, 7, 7) -> (B, 256, 3, 3)
+        #     nn.Flatten(),  # (B, 2304)
+        #     *[layer for layer in mlp(2304, fc_policy_layers, self.action_space_size, use_layer_norm=True)]
+        # )
+
+        # 2차원 → 64차원으로 확장
+        self.goal_embed = nn.Sequential(
+            nn.Linear(2, 32),
+            nn.ReLU(),
+            nn.Linear(32, 64)
+        )
+        self.feature_compress = nn.Linear(2304, 256)
+        self.prediction_policy_mlp_with_dir = mlp(
+            320,  # 256 + 64
+            fc_policy_layers,
+            self.action_space_size,  # 9
+            use_layer_norm=True
+        )
+        self.prediction_policy_mlp = mlp(
+            256,  # 256
+            fc_policy_layers,
+            self.action_space_size,  # 9
+            use_layer_norm=True
+        )
+        self.prediction_policy_conv = nn.Sequential(
             nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # (B, 64, 25, 25) -> (B, 128, 13, 13)
             nn.ReLU(),
             nn.LayerNorm([128, 13, 13]),
@@ -616,25 +650,77 @@ class MuZeroNetwork(AbstractNetwork):
             nn.ReLU(),
             nn.LayerNorm([256, 7, 7]),
             nn.AdaptiveAvgPool2d(3),  # (B, 256, 7, 7) -> (B, 256, 3, 3)
-            nn.Flatten(),  # (B, 2304)
-            *[layer for layer in mlp(2304, fc_policy_layers, self.action_space_size, use_layer_norm=True)]
+            nn.Flatten()  # (B, 2304)
         )
 
         # Value: Policy와 동일한 구조로 강화 (공간 정보 보존)
         # Input: (B, 64, 25, 25)
-        self.prediction_value_network = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # (B, 64, 25, 25) -> (B, 128, 13, 13)
+        # self.prediction_value_network = nn.Sequential(
+        #     nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # (B, 64, 25, 25) -> (B, 128, 13, 13)
+        #     nn.ReLU(),
+        #     nn.LayerNorm([128, 13, 13]),
+        #     nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),  # (B, 128, 13, 13) -> (B, 256, 7, 7)
+        #     nn.ReLU(),
+        #     nn.LayerNorm([256, 7, 7]),
+        #     nn.AdaptiveAvgPool2d(3),  # (B, 256, 7, 7) -> (B, 256, 3, 3)
+        #     nn.Flatten(),  # (B, 2304)
+        #     *[layer for layer in mlp(2304, fc_value_layers, self.num_categorical_distribution_atoms, use_layer_norm=True)]
+        # )
+
+        self.prediction_value_conv = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
             nn.LayerNorm([128, 13, 13]),
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),  # (B, 128, 13, 13) -> (B, 256, 7, 7)
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
             nn.LayerNorm([256, 7, 7]),
-            nn.AdaptiveAvgPool2d(3),  # (B, 256, 7, 7) -> (B, 256, 3, 3)
-            nn.Flatten(),  # (B, 2304)
-            *[layer for layer in mlp(2304, fc_value_layers, self.num_categorical_distribution_atoms, use_layer_norm=True)]
+            nn.AdaptiveAvgPool2d(3),
+            nn.Flatten()  # (B, 2304)
+        )
+        self.value_feature_compress = nn.Linear(2304, 256)
+        self.prediction_value_mlp_with_dir = mlp(
+            320,  # 256 + 64
+            fc_value_layers,
+            self.num_categorical_distribution_atoms,
+            use_layer_norm=True
+        )
+        self.prediction_value_mlp = mlp(
+            256,  # 256
+            fc_value_layers,
+            self.num_categorical_distribution_atoms,
+            use_layer_norm=True
         )
 
-    def prediction(self, latent):
+
+    def policy_prediction_with(self, latent, goal_vec):
+        features = self.prediction_policy_conv(latent)      # (B, 2304)
+        features = self.feature_compress(features)          # (B, 256)
+        goal_emb = self.goal_embed(goal_vec)                # (B, 4) → (B, 64)
+        combined = torch.cat([features, goal_emb], dim=1)   # (B, 2368)
+        policy_logits = self.prediction_policy_mlp_with_dir(combined)  # (B, 9) ← 추가!
+        return policy_logits
+    
+    def policy_prediction(self, latent):
+        features = self.prediction_policy_conv(latent)      # (B, 2304)
+        features = self.feature_compress(features)          # (B, 256)
+        policy_logits = self.prediction_policy_mlp(features)  # (B, 9) ← 추가!
+        return policy_logits
+
+    def value_prediction_with(self, latent, goal_vec):
+        features = self.prediction_value_conv(latent)       # (B, 2304)
+        features = self.value_feature_compress(features)    # (B, 256)
+        goal_emb = self.goal_embed(goal_vec)                # (B, 64)
+        combined = torch.cat([features, goal_emb], dim=1)   # (B, 320)
+        value = self.prediction_value_mlp_with_dir(combined)         # (B, num_atoms)
+        return value
+
+    def value_prediction(self, latent):
+        features = self.prediction_value_conv(latent)       # (B, 2304)
+        features = self.value_feature_compress(features)    # (B, 256)
+        value = self.prediction_value_mlp(features)         # (B, num_atoms)
+        return value
+
+    def prediction(self, latent, observation):
         """Prediction function: f(s) -> (p, v)
         
         Args:
@@ -648,9 +734,41 @@ class MuZeroNetwork(AbstractNetwork):
         if len(latent.shape) == 3:  # (64, 25, 25)
             latent = latent.unsqueeze(0)  # (1, 64, 25, 25)
             
-        policy_logits = self.prediction_policy_network(latent)
-        value = self.prediction_value_network(latent)
+        # policy_logits = self.prediction_policy_network(latent) # 원본
+        # goal_vec = self.extract_goal_vec(observation)
+        # policy_logits = self.policy_prediction(latent, goal_vec)
+        # value = self.value_prediction(latent, goal_vec)
+
+        policy_logits = self.policy_prediction(latent)
+        value = self.value_prediction(latent)
         return policy_logits, value
+
+    def extract_goal_vec(self, observation):
+        """Observation에서 goal direction 추출"""
+        # 차원 처리 (MCTS에서 3차원으로 올 수 있음)
+        if len(observation.shape) == 3:  # (C, H, W)
+            observation = observation.unsqueeze(0)  # (1, C, H, W)
+
+        batch_size = observation.shape[0]
+        device = observation.device
+
+        goal_vec = torch.zeros((batch_size, 2), device=device)
+        
+        if observation.shape[1] >= 5:
+            near_x = observation[:, 3, 0, 0]
+            near_y = observation[:, 3, 0, 1]
+            # final_x = observation[:, 4, 0, 0]
+            # final_y = observation[:, 4, 0, 1]
+            
+            near_norm = torch.sqrt(near_x**2 + near_y**2 + 1e-8)        # FIXME: 이미 단위벡터로 정규화되어있음.. 결과값 똑같음
+            # final_norm = torch.sqrt(final_x**2 + final_y**2 + 1e-8)     # FIXME: 이미 단위벡터로 정규화되어있음.. 결과값 똑같음
+            
+            goal_vec[:, 0] = near_x / near_norm
+            goal_vec[:, 1] = near_y / near_norm
+            # goal_vec[:, 2] = final_x / final_norm
+            # goal_vec[:, 3] = final_y / final_norm
+        
+        return goal_vec
 
     def representation(self, observation):
         """
@@ -668,25 +786,15 @@ class MuZeroNetwork(AbstractNetwork):
         Returns:
             latent: (B, 64, 25, 25) 2D 공간 구조 유지
         """
-        batch_size = observation.shape[0]
-        device = observation.device
+        # batch_size = observation.shape[0]
+        # device = observation.device
         
+        # Goal 정보를 Latent 생성에 사용할 지 (Latent 의 취지에는 맞지 않음)
+        use_goal_dir = True 
+
         # 1. 방향 벡터 추출 (4차원: cosθ_local, sinθ_local, cosθ_final, sinθ_final)
-        goal_vec = torch.zeros((batch_size, 4), device=device)
-        if observation.shape[1] >= 5:  # 5채널 이상인 경우
-            near_x = observation[:, 3, 0, 0]  # near_x
-            near_y = observation[:, 3, 0, 1]  # near_y
-            final_x = observation[:, 4, 0, 0]  # final_x
-            final_y = observation[:, 4, 0, 1]  # final_y
-            
-            # 벡터 정규화 및 cos/sin 계산
-            near_norm = torch.sqrt(near_x**2 + near_y**2 + 1e-8)    # FIXME: 이미 단위벡터로 정규화되어있음.. 결과값 똑같음
-            final_norm = torch.sqrt(final_x**2 + final_y**2 + 1e-8) # FIXME: 이미 단위벡터로 정규화되어있음.. 결과값 똑같음
-            
-            goal_vec[:, 0] = near_x / near_norm   # cosθ_local
-            goal_vec[:, 1] = near_y / near_norm   # sinθ_local
-            goal_vec[:, 2] = final_x / final_norm # cosθ_final
-            goal_vec[:, 3] = final_y / final_norm # sinθ_final
+        if use_goal_dir:
+            goal_vec = self.extract_goal_vec(observation)
         
         # 2. Occupancy grid 생성 (Channel 0 + Channel 1 합치기)
         # occupancy_grid = torch.clamp(observation[:, 0:1] + observation[:, 1:2], 0, 1)  # (B, 1, 99, 99)
@@ -719,13 +827,26 @@ class MuZeroNetwork(AbstractNetwork):
             z_rep = self.repulsion_encoder(repulsion_input)    # (B, 64, 25, 25)
             z_att = self.attraction_encoder(attraction_input)  # (B, 64, 25, 25)
         
-        # 7. Fusion ... torch.cat 에 의해 (B, 128, 25, 25) 가 되고, 1x1 Conv로 (B, 64, 25, 25) 로 축소
-        z_fuse = self.fuse_1x1(torch.cat([z_rep, z_att], dim=1))  # (B, 64, 25, 25)
+
+        if use_goal_dir:
+            # 7. Fusion ... torch.cat 에 의해 (B, 128, 25, 25) 가 되고, 1x1 Conv로 (B, 64, 25, 25) 로 축소
+            z_fuse = self.fuse_1x1(torch.cat([z_rep, z_att], dim=1))  # (B, 64, 25, 25)
+            
+            # 8. Directional Gating (단일, Fusion 뒤 1회)
+            # z_fuse: 99x99 를 압축표현한 텐서
+            # goal_vec: 목표 방향벡터 (B, 4) - 근접목적지만 사용
+            z0 = self.dir_gate(z_fuse, goal_vec)  # (B, 64, 25, 25)
+        else:
+            z0 = self.fuse_1x1(torch.cat([z_rep, z_att], dim=1))  # (B, 64, 25, 25)
         
-        # 8. Directional Gating (단일, Fusion 뒤 1회)
-        # z_fuse: 99x99 를 압축표현한 텐서
-        # goal_vec: 목표 방향벡터 (B, 4)
-        z0 = self.dir_gate(z_fuse, goal_vec)  # (B, 64, 25, 25)
+        # TODO: 여기에 z0 입력받아 AttnMoEFiLM 적용
+        # 요약 1 -> z0 를 받아서 GlobalPooling 통해 MLP 로 현 Latent 에 대한 요약정보 A 를 뽑고, A를 어떤 상황과 유사한지 Expert Token 과 비교(Attention)한다.
+        # 요약 2 -> 유사한 Expert Token 들로 FiLM 파라미터(gamma, beta) 를 생성하고, 원본 Latent z0 에 FiLM 적용한다
+        if self.use_attn_soft_routing_film:
+            # z0 = self.attn_soft_routing_film(z0)
+            print("AttnSoftRoutingFiLM is applied")
+        else:
+            print("AttnSoftRoutingFiLM is NOT applied")
         
         return z0
 
@@ -821,7 +942,7 @@ class MuZeroNetwork(AbstractNetwork):
             초기 추론: 관측값으로부터 가치, 보상, 정책, 은닉 상태를 예측
         """
         latent = self.representation(observation)
-        policy_logits, value = self.prediction(latent)
+        policy_logits, value = self.prediction(latent, observation)
         
         # reward equal to 0 for consistency
         # 중앙값(0)에 해당하는 logits 생성 (log-softmax 이전 상태)
@@ -836,10 +957,10 @@ class MuZeroNetwork(AbstractNetwork):
             latent,
         )
 
-    def recurrent_inference(self, latent, action):
+    def recurrent_inference(self, latent, action, observation):
         """
             재귀적 추론: 초기추론 이후 은닉 상태와 액션으로부터 다음 상태 예측
         """
         next_latent, reward = self.dynamics(latent, action)
-        policy_logits, value = self.prediction(next_latent)
+        policy_logits, value = self.prediction(next_latent, observation)
         return value, reward, policy_logits, next_latent 

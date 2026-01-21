@@ -11,7 +11,7 @@ from .mcts import MCTS, IllegalStateException
 # from .environment import BaseEnvironment
 from .action import Action
 from .replay_buffer import ReplayBuffer, Episode
-from .utils import build_observation_tensor
+from .utils import build_observation_tensor, reward_sum_of_valid
 from .models import get_network
 from .config import MuZeroConfig
 import time
@@ -20,40 +20,48 @@ import time
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent / 'data' / 'db3_parser'))
 from rosetta import (
-    GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, GRID_VALUE_MISSING_POINTS
+    GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, GRID_VALUE_MISSING_POINTS, LDM_SEGMENTATION_IDS
 )
 
-def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
-    """병렬 처리용 Worker 함수 (모듈 레벨)
+def setup_mcts_network_context(episode_idx, network_state_dict, config, device):
+    """학습 모드용: Worker별 GPU 설정 및 network 생성/로드
+
+    병렬 학습 시 각 Worker 프로세스에서 호출되어 GPU를 분배하고
+    network를 새로 생성하여 state_dict를 로드합니다.
 
     Args:
-        args: (episode_idx, network_state_dict, config, device, episode) 튜플
-              - episode_idx: Episode 인덱스 (0~N-1)
-              - network_state_dict: 학습된 네트워크 파라미터
-              - config: MuZero 설정
-              - device: 'cuda' or 'cpu'
-              - episode: 처리할 Episode 객체
+        episode_idx: GPU 분배용 인덱스
+        network_state_dict: 학습된 네트워크 파라미터
+        config: MuZeroConfig
+        device: 기본 device (재설정될 수 있음)
 
     Returns:
-        MCTS enrichment가 완료된 Episode (실패 시 None)
+        (network, device) 튜플
     """
-    episode_idx, network_state_dict, config, device, episode = args
-
     import os
     gpu_id = None
-    # GPU 분산: Worker 프로세스마다 고정된 GPU 할당 (episode_idx 대신 PID 사용)
+    # GPU 분산: Worker 프로세스마다 고정된 GPU 할당
     if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-        num_gpus = min(torch.cuda.device_count(), config.use_gpu_device_max) if config.use_gpu_device_max is not None else torch.cuda.device_count()
-        # gpu_id = os.getpid() % num_gpus  # Worker마다 고정 GPU (같은 Worker는 항상 같은 GPU 사용)
-        gpu_id = episode_idx % num_gpus
+        if config.num_usage_of_gpu_devices is not None:
+            if isinstance(config.num_usage_of_gpu_devices, list):
+                # 리스트 형태: [2, 3] -> GPU 2, 3번만 사용
+                gpu_list = config.num_usage_of_gpu_devices
+                gpu_id = gpu_list[episode_idx % len(gpu_list)]
+            else:
+                # 정수 형태: 2 -> GPU 0, 1번 사용 (하위 호환)
+                num_gpus = min(torch.cuda.device_count(), config.num_usage_of_gpu_devices)
+                gpu_id = episode_idx % num_gpus
+        else:
+            # None: 모든 GPU 사용
+            num_gpus = torch.cuda.device_count()
+            gpu_id = episode_idx % num_gpus
         device = f'cuda:{gpu_id}'
         # 현재 Worker가 사용할 GPU만 visible하게 설정 (메모리 격리)
         torch.cuda.set_device(device)
     else:
         device = 'cpu'
 
-    # Progress Bar와 충돌하므로 개별 Episode 출력 제거
-    # Network 재생성 (utils.get_network() 사용 - main_muzero.py와 동일)
+    # Network 재생성 (utils.get_network() 사용)
     network = get_network(config, device)
 
     # 학습된 파라미터로 교체 (Iteration마다 업데이트된 파라미터)
@@ -62,16 +70,40 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
         k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v
         for k, v in network_state_dict.items()
     })
-    network.eval()
 
-    # Inference only 모드로 메모리 최적화
+    return network, device
+
+
+def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
+    """병렬 처리용 Worker 함수 (모듈 레벨)
+
+    Args:
+        args: 5개 또는 6개 인자 튜플
+              - 5개: (episode_idx, network_state_dict, config, device, episode) - 학습 모드
+              - 6개: (episode_idx, network_state_dict, config, device, episode, network) - 추론 모드
+
+    Returns:
+        MCTS enrichment가 완료된 Episode (실패 시 None)
+    """
+    # args 파싱 (5개: 학습, 6개: 추론)
+    episode_idx, network_state_dict, config, device, episode = args[:5]
+    network = args[5] if len(args) > 5 else None
+
+    # 학습 모드 (operating_mode == 0): network 새로 생성
+    if config.operating_mode == 0:
+        network, device = setup_mcts_network_context(
+            episode_idx, network_state_dict, config, device
+        )
+
+    # Inference 모드 설정 (학습/추론 공통)
+    network.eval()
     for param in network.parameters():
         param.requires_grad = False
 
-    # MCTS 재생성
+    # MCTS 생성
     mcts = MCTS(
         network=network,
-        action_space_size=len(config.action_space),
+        action_space_size=len(list(range(Action.get_action_space_size()))),
         num_simulations=config.num_simulations,
         mcts_value_backup_discount=config.mcts_value_backup_discount,
         puct_discount=config.puct_discount,
@@ -99,6 +131,12 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
     elif len(episode.pi) < num_steps:
         episode.pi.extend([None] * (num_steps - len(episode.pi)))
 
+    # policy_logits 필드 확인 및 초기화
+    if not hasattr(episode, 'policy_logits') or not episode.policy_logits:
+        episode.policy_logits = [None] * num_steps
+    elif len(episode.policy_logits) < num_steps:
+        episode.policy_logits.extend([None] * (num_steps - len(episode.policy_logits)))
+
     # actions 필드 확인 및 초기화
     if not hasattr(episode, 'actions') or not episode.actions:
         episode.actions = [0] * num_steps  # 기본값 0 (현재 위치)
@@ -110,6 +148,12 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
         episode.rewards = [0.0] * num_steps
     elif len(episode.rewards) < num_steps:
         episode.rewards.extend([0.0] * (num_steps - len(episode.rewards)))
+
+    # Target rewards 필드 확인 및 초기화
+    if not hasattr(episode, 'target_rewards') or not episode.target_rewards:
+        episode.target_rewards = [0.0] * num_steps
+    elif len(episode.target_rewards) < num_steps:
+        episode.target_rewards.extend([0.0] * (num_steps - len(episode.target_rewards)))
 
     # values 필드 확인 및 초기화
     if not hasattr(episode, 'values') or not episode.values:
@@ -136,8 +180,7 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
 
             # Ego 위치 기준으로 observation shift (처음에는 제자리임)
             # Episode 의 Step 들은 Root Step 의 위치를 공유함. 단, MCTS 시뮬레이션에 의해 선택된 Action 을 기반으로 중심점이 조정되도록 유도.
-            # episode.states[step_idx] = shift_observation(episode.states[0], (simulated_ego_row, simulated_ego_col))
-            episode.states[step_idx] = shift_observation(step_idx, episode, (simulated_ego_row, simulated_ego_col))
+            episode.states[step_idx] = simulate_ego_observation(step_idx, episode, (simulated_ego_row, simulated_ego_col))
 
             # 6채널 observation 생성 (공용 함수 사용) -> simulated_ego_pos 가 변해도(=step 이 진행되어도) 환경은 root 시점 그대로 고정됨.
             # device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -178,9 +221,16 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
 
             # MCTS가 선택한 action 저장
             selected_action = mcts_result['action']
+            
             # selected_action = 2  # Action 고정 테스트 (2=POS2=전방/상단)
             episode.actions[step_idx] = selected_action
             
+            # 정책 신경망이 출력한 logits 저장 (추후 분석용)
+            episode.policy_logits[step_idx] = mcts_result['policy_logits']  # 정책 신경망의 로짓 (추후 사용 가능)
+            
+            # 선택한 Action 에 대한 Reward 저장 (추후 분석용)
+            episode.rewards[step_idx] = mcts_result['root_node'].children[selected_action].reward
+
             # Action에 따라 simulated_ego_pos 업데이트 (최종 value 계산용)
             action = Action.from_index(selected_action)
             dx, dy = action.get_movement_vector()
@@ -191,13 +241,14 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
             # Episode state에도 업데이트 (최종 거리 계산을 위해)
             # 첫 번째 step 에서 Action 기반으로 예측된 simulated_ego_pos 가 저장됨
             episode.states[step_idx]['simulated_ego_pos'] = (simulated_ego_row, simulated_ego_col)
-
+            
             # GT 학습을 위한 환경 reward 계산 (Step마다)
-            reward = calculate_target_reward(
+            target_reward = calculate_target_reward(
                 config, episode, step_idx, selected_action, 
                 (simulated_ego_row, simulated_ego_col)
             )
-            episode.rewards[step_idx] = reward
+            # episode.rewards[step_idx] = reward
+            episode.target_rewards[step_idx] = target_reward
             
     # GPU 메모리 명시적 해제
     del network
@@ -236,6 +287,12 @@ def enrich_episode_with_mcts_parallel_worker(args) -> 'Episode':
 
     return None
 
+def simulate_ego_observation(step_idx, episode, new_pos: Tuple[int, int]) -> dict:
+    # 동역학, 동적 장애물의 변화 제외하고 주변 환경을 모두 Static 하다 가정한 상황에서 Ego 의 위치만 선택된 Action 에 기반하여 이동
+    # 선택된 Action 에 따라 반영된 위치가 new_pos 임.
+    return shift_observation(step_idx=step_idx, episode=episode, new_pos=new_pos)
+
+    # 향후 Object 예측 등 Dynamics 요소로 변경 가능.
 
 def shift_observation(step_idx, episode, new_pos: Tuple[int, int]) -> dict:
     """observation 내의 그리드 채널들을 새로운 simulated_ego_pos에 맞게 쉬프트
@@ -333,7 +390,11 @@ def calculate_legal_mask(state_dict: dict, current_pos: Tuple[int, int], config)
         legal_mask: 9개 원소의 0/1 배열 (Action 개수만큼)
     """
     legal_mask = np.ones(Action.get_action_space_size(), dtype=np.float32)
-
+    
+    if config.legal_mask_option == False:
+        # 사용하지 않으면, 모두 True 로 전달
+        return legal_mask
+    
     current_row, current_col = current_pos
     boundary = config.obstacles_collision_boundary
     half_boundary = boundary // 2
@@ -410,16 +471,16 @@ def calculate_target_value(config, episode: Episode):
 
     target[t] = r[t] + γ*r[t+1] + ... + γ^(k-1)*r[t+k-1] + γ^k*V[t+k]
     """
-    # 예외 처리: rewards가 비어있는 경우
-    if not episode.rewards:
+    # 예외 처리: target_rewards가 비어있는 경우
+    if not episode.target_rewards:
         return []
 
-    T = len(episode.rewards)
+    T = len(episode.target_rewards)
     # n_max가 T보다 크면 T-1로 제한 (항상 Bootstrap 사용)
     n_max = min(config.n_target_value_bootstrap, T - 1) if T > 1 else 1
     gamma = config.value_bootstrap_discount
 
-    # Values와 dones 길이를 rewards에 맞춤
+    # Values와 dones 길이를 target_rewards에 맞춤
     values = episode.values if hasattr(episode, "values") and episode.values else [0.0] * T
     if len(values) < T:
         values = list(values) + [0.0] * (T - len(values))
@@ -432,16 +493,16 @@ def calculate_target_value(config, episode: Episode):
     for t in range(T):
         target_value = 0.0
 
-        # n-step discounted rewards 누적
+        # n-step discounted target_rewards 누적
         for k in range(n_max):
             idx = t + k
             if idx >= T:
                 break
 
-            # Reward 누적
-            target_value += (gamma ** k) * episode.rewards[idx]
+            # target_rewards 누적
+            target_value += (gamma ** k) * episode.target_rewards[idx]
 
-            # Terminal 체크 (reward 누적 후)
+            # Terminal 체크 (target_rewards 누적 후)
             if dones[idx]:
                 break
         else: # break 없이 for 문이 정상 종료된 경우 실행됨
@@ -451,7 +512,9 @@ def calculate_target_value(config, episode: Episode):
                 bootstrap_value = values[bootstrap_idx] if values[bootstrap_idx] is not None else 0.0
                 target_value += (gamma ** n_max) * bootstrap_value
 
-        targets.append(target_value)
+        # categorical distribution 범위에 맞게 스케일링 (Reward 에 배율이 1일 때 1.3정도 나옴. reward 에 8배 해줘서, value 는 8배 나누었음)
+        scaled_target = target_value
+        targets.append(scaled_target)
 
     return targets
 
@@ -479,14 +542,19 @@ def calculate_target_reward(config, episode: Episode, step_idx: int, action: int
     
     # 목표: GT 만을 추종하는게 아닌, 다중 해를 허용하는 Target Reward 를 설계하는 것.
 
-    # 1. 직진성 강화하는 reward (즉, Path 의 오실레이션이 최소화 되어야함)
-    trajectory_smooth_reward = calculate_smoothness_reward(episode, step_idx)
-    trajectory_smooth_reward = 0 # FIXME: 제거. 테스트용
+    # 1. 직진성 강화하는 reward (즉, Path 의 오실레이션이 최소화 되어야함) 
+    # -> 현재 calculate_goal_direction_reward() 이 방향벡터 기반이로 방향성 및 직진성 강화역할 하는 중으로, calculate_smoothness_reward() 불필요함
+    # trajectory_smooth_reward = calculate_smoothness_reward(episode, step_idx)
+    # trajectory_smooth_reward = 0 # FIXME: 제거. 테스트용
 
     # 2. 이전 경로에서 Episode 의 끝 위치로 가까워지는 행동이면 +, 아니면 -
     # Potential-based reward shaping으로 목표 접근을 학습
     # trajectory_goal_follow_reward = self._calculate_goal_following_reward(episode, step_idx)
     trajectory_goal_follow_reward = calculate_goal_direction_reward(episode, step_idx)
+
+    terrain_reward  = calculate_terrain_reward(config, episode, step_idx)
+    # trajectory_goal_follow_reward = terrain_reward # FIXME: terrain_reward 잘 되나 테스트용
+    # trajectory_goal_follow_reward = 0 # FIXME: 
 
     # 3. 장애물과 충돌 상황에 대한 패널티
     collision_reward = calculate_collision_reward(config, episode, step_idx)
@@ -500,7 +568,8 @@ def calculate_target_reward(config, episode: Episode, step_idx: int, action: int
     #     # 충돌이 없으면 경로 추종 reward만 사용
     #     return trajectory_goal_follow_reward + trajectory_smooth_reward
     
-    return trajectory_goal_follow_reward + trajectory_smooth_reward
+    scaled_reward = (trajectory_goal_follow_reward + terrain_reward) # categorical distribution 범위에 맞게 스케일링 (Value 고려한 값. Value 도 -2.0 ~ +2.0 범위)
+    return scaled_reward
 
 
 
@@ -657,3 +726,49 @@ def calculate_goal_direction_reward(episode: Episode, step_idx: int) -> float:
 
     # 목표 방향이면 +0.1, 반대면 -0.1
     return 0.1 * cos_similarity  # [-0.1, +0.1] 범위
+
+def calculate_terrain_reward(config: MuZeroConfig, episode: Episode, step_idx: int) -> float:
+    """지형 기반 reward 계산
+    평지: +0.05, 언덕: -0.05, 절벽/장애물: -0.1
+    """
+
+    # Predicted Path Step 은 idx 별 action_moving_step_size_grid
+    compare_grid_size = 5 # 5x5 Grid (홀수 정의 필요))
+
+    # episode.states[step_idx]
+    # step_idx 의 expert_pos 는 다음 위치임
+    # 0 4 9 14
+    # idx 0 의 simulated_ego_pos 는 다음 수 임
+    expert_idx = min((step_idx + 1) * config.action_moving_step_size_grid - 1, len(episode.expert_ego_pos) - 1)
+    expert_pos_row, expert_pos_col = episode.expert_ego_pos[expert_idx]
+    # print(expert_pos_row, expert_pos_col)
+    # print(f"  [expert_pos_row {expert_pos_row}] / expert_pos_col {expert_pos_col} / expert_idx {(step_idx + 1) * config.action_moving_step_size_grid}")
+
+    pred_pos_row, pred_pos_col = episode.states[step_idx]['simulated_ego_pos']
+
+    # episode.states[0]['ground_class_id']  # Grid 채널
+    # episode.states[0]['ground_class_id'][row][col]
+
+    # Class Map 있어야함
+    # P[0] = block, P[1] = Asphalt, ...
+    P = [0 for key in LDM_SEGMENTATION_IDS.keys() if key != 99]
+    Q = [0 for key in LDM_SEGMENTATION_IDS.keys() if key != 99]
+    # state[idx-1]['simulated_ego_pos'] 는 state[idx]['ground_class_id'] 의 (49, 49) 위치임
+    # state[0]['ground_class_id'] 
+    for i in range(compare_grid_size):
+        row_tmp = i - int(compare_grid_size/2)
+        for j in range(compare_grid_size):
+            col_tmp = j - int(compare_grid_size/2)
+            P_idx = int(episode.states[0]['ground_class_id'][expert_pos_row + row_tmp][expert_pos_col + col_tmp])
+            if P_idx != 99:
+                P[P_idx] += 1
+            Q_idx = int(episode.states[0]['ground_class_id'][pred_pos_row + row_tmp][pred_pos_col + col_tmp])
+            if Q_idx != 99:
+                Q[Q_idx] += 1
+            
+
+    # 방법 1. 환경을 episode[0]기준으로 고정하여 계산
+    # 방법 2. 환경을 episode[step_idx] 기준으로 계산 (현재 위치 중심)
+    # 범위: [-0.05 ~ 0]
+    terrain_target_reward = reward_sum_of_valid(P, Q, grid_size=compare_grid_size, reward_max=0.5, reward_scale_factor=0.1, gt_threshold=0.2, count_threshold=0.3)
+    return terrain_target_reward

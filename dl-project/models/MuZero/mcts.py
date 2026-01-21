@@ -206,18 +206,19 @@ class MCTS:
                 raise ValueError("MCTS: No action selected. This should not happen.")
             
             # 네트워크 한 번만 호출
-            network_output = self._recurrent_inference(parent.hidden_state, current_action)
+            network_output = self._recurrent_inference(parent.hidden_state, current_action, observation)
             
             # 노드 정보 업데이트
             node.hidden_state = network_output['hidden_state']
             node.reward = network_output['reward']
             value = network_output['value']
-            
+            if i==0:
+                policy_logits = network_output['policy_logits']
             # 자식 노드 생성
             node.expand(network_output)
             
             # 백업 (역전파)
-            self._backup(search_path, value)
+            self._backup(search_path, value)            
             
         if debug:
             print(f"시뮬레이션 완료! 최종 노드 수: {root.count_nodes()}")
@@ -238,7 +239,8 @@ class MCTS:
             'policy_targets': policy_targets,
             'root_node': root,
             'total_nodes': total_nodes,  # 트리의 전체 노드 개수
-            'legal_mask': None  # 합법 액션 마스크 (추후 구현 필요)
+            'legal_mask': None,  # 합법 액션 마스크 (추후 구현 필요)
+            'policy_logits': policy_logits
         }
         
     def _select_child(self, node: Node, legal_mask=None) -> Tuple[int, Node]:
@@ -383,7 +385,7 @@ class MCTS:
             'hidden_state': hidden_state[0]
         }
         
-    def _recurrent_inference(self, hidden_state: torch.Tensor, action: int) -> Dict:
+    def _recurrent_inference(self, hidden_state: torch.Tensor, action: int, observation: torch.Tensor) -> Dict:
         """재귀적 추론"""
         # 배치 차원 추가
         if len(hidden_state.shape) == 1:
@@ -397,7 +399,7 @@ class MCTS:
         
         with torch.no_grad():
             value, reward, policy_logits, next_hidden_state = self.network.recurrent_inference(
-                hidden_state, action_tensor
+                hidden_state, action_tensor, observation
             )
             
         # Support를 실제 값으로 변환 (config의 categorical_distribution_min/max 사용)

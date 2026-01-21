@@ -5,7 +5,7 @@ MuZero 학습 모듈
 import torch
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler # Pytorch 2.4 이상
 from .utils import build_observation_tensor
 from .models import MuZeroNetwork
 from .self_play import enrich_episode_with_mcts_parallel_worker
@@ -134,17 +134,39 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
     is_multi_gpu = False
     original_network = network  # DataParallel wrapper 제거용
     if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        num_gpus = torch.cuda.device_count()
-        if config.use_gpu_device_max is not None:
-            num_gpus = min(num_gpus, config.use_gpu_device_max)
+        # num_gpus = torch.cuda.device_count()
+        # if config.num_usage_of_gpu_devices is not None:
+        #     num_gpus = min(num_gpus, config.num_usage_of_gpu_devices)
+
+        # if num_gpus > 1:
+        #     print(f"Multi-GPU 학습 활성화: {num_gpus}개 GPU 사용")
+        #     # DataParallel로 모델 래핑 (자동으로 배치를 GPU들에 분산)
+        #     # device_ids를 명시적으로 지정하여 사용할 GPU 제어
+        #     device_ids = list(range(num_gpus))
+        #     network = torch.nn.DataParallel(network, device_ids=device_ids)
+        #     is_multi_gpu = True
+        if config.num_usage_of_gpu_devices is not None:
+            if isinstance(config.num_usage_of_gpu_devices, list):
+                # 리스트 형태: [2, 3] -> GPU 2, 3번만 사용
+                device_ids = config.num_usage_of_gpu_devices
+                num_gpus = len(device_ids)
+            else:
+                # 정수 형태: 2 -> GPU 0, 1번 사용 (하위 호환)
+                num_gpus = min(torch.cuda.device_count(), config.num_usage_of_gpu_devices)
+                device_ids = list(range(num_gpus))
+        else:
+            # None: 모든 GPU 사용
+            num_gpus = torch.cuda.device_count()
+            device_ids = list(range(num_gpus))
 
         if num_gpus > 1:
-            print(f"Multi-GPU 학습 활성화: {num_gpus}개 GPU 사용")
-            # DataParallel로 모델 래핑 (자동으로 배치를 GPU들에 분산)
-            # device_ids를 명시적으로 지정하여 사용할 GPU 제어
-            device_ids = list(range(num_gpus))
-            network = torch.nn.DataParallel(network, device_ids=device_ids)
+            print(f"Multi-GPU 학습 활성화: {num_gpus}개 GPU 사용 (device_ids={device_ids})")
+            network = torch.nn.DataParallel(network, device_ids=device_ids, output_device=device_ids[0])
             is_multi_gpu = True
+
+    # DataParallel 래핑 여부와 무관하게 원본 모델 메서드 접근
+    # Multi GPU 의 경우, network.module 로 접근해야하지만 Single GPU 는 network.module 로 접근하면 터짐. 따라서 base_model 변수에 올바른 모델 할당
+    base_model = network.module if is_multi_gpu else network
 
     # Loss history 초기화 (전달되지 않은 경우만)
     if loss_history is None:
@@ -186,7 +208,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
     # - 메모리 절약: FP16 사용으로 GPU 메모리 사용량 약 50% 감소
     # - 수치적 안정성: GradScaler로 gradient underflow 방지 (loss scaling)
     use_amp = getattr(config, 'use_mixed_precision', False) and torch.cuda.is_available()
-    scaler = GradScaler() if use_amp else None  # FP16 gradient scaling으로 underflow 방지
+    scaler = GradScaler('cuda') if use_amp else None  # FP16 gradient scaling으로 underflow 방지
 
     # Support 벡터 미리 생성 (재사용을 위해)
     support_vector = None
@@ -219,14 +241,14 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
     
     batch_size = min(config.batch_size, replay_buffer.size())  # 배치 크기 조정
     
-    print(f"학습 설정:")
-    print(f"  - Optimizer: {config.optimizer}")
-    print(f"  - 학습률: {config.lr_init}")
-    print(f"  - 배치 크기: {batch_size}")
-    print(f"  - 학습 스텝: {training_steps}")
-    print(f"  - Unroll 스텝: {K}")
-    print(f"  - Mixed Precision: {'활성화' if use_amp else '비활성화'}")
-    print(f"  - Gradient Accumulation: {gradient_accumulation_steps}")
+    # print(f"학습 설정:")
+    # print(f"  - Optimizer: {config.optimizer}")
+    # print(f"  - 학습률: {config.lr_init}")
+    # print(f"  - 배치 크기: {batch_size}")
+    # print(f"  - 학습 스텝: {training_steps}")
+    # print(f"  - Unroll 스텝: {K}")
+    # print(f"  - Mixed Precision: {'활성화' if use_amp else '비활성화'}")
+    # print(f"  - Gradient Accumulation: {gradient_accumulation_steps}")
     
     # TensorBoard 설정 (전달되지 않은 경우만 생성)
     if writer is None:
@@ -299,8 +321,8 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
 
         with torch.no_grad():
             for episode in batch:
-                if hasattr(episode, 'rewards') and episode.rewards:
-                    for r in episode.rewards:
+                if hasattr(episode, 'target_rewards') and episode.target_rewards:
+                    for r in episode.target_rewards:
                         episode_rewards.append(to_python_float(r))
                 if hasattr(episode, 'values') and episode.values:
                     for v in episode.values:
@@ -352,8 +374,8 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
         # - autocast Context Manager: 순전파에서 자동으로 FP16/FP32 정밀도 선택
         # - Tensor Cores 활용: 행렬 곱셈, 합성곱 등이 하드웨어 가속으로 2-4배 빨라짐
         # - 배치 처리: 개별 처리 대신 전체 배치를 한번에 GPU로 전송하여 처리량 최대화
-        with autocast(enabled=use_amp):
-            batch_values, _, batch_policy_logits, batch_hidden_states = network.initial_inference(batch_observations)
+        with autocast('cuda', enabled=use_amp):
+            batch_values, _, batch_policy_logits, batch_hidden_states = base_model.initial_inference(batch_observations)
         
 
         # 4단계: 배치의 각 항목에 대해 손실 계산
@@ -446,14 +468,14 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
                 # reward_k, latent_{k+1} = dynamics(latent_k, action_k)
                 # policy_{k+1}, value_{k+1} = prediction(latent_{k+1})
                 # IMPORTANT: hidden_state.detach()로 computational graph 끊기 (메모리 누수 방지)
-                with autocast(enabled=use_amp):
+                with autocast('cuda', enabled=use_amp):
                     detached_hidden = hidden_state.detach() if hidden_state is not None else None
-                    value, reward, policy_logits, hidden_state = network.recurrent_inference(
-                        detached_hidden, action
+                    value, reward, policy_logits, hidden_state = base_model.recurrent_inference(
+                        detached_hidden, action, batch_observations[i:i+1]
                     )
                 
                 # Reward loss (k번째 액션의 reward)
-                target_reward_scalar = episode.rewards[start_idx + k]
+                target_reward_scalar = episode.target_rewards[start_idx + k]
                 # Two-hot categorical distribution - CPU에서 생성 후 GPU로
                 target_reward_dist = scalar_to_support(
                     torch.tensor([target_reward_scalar], dtype=torch.float32).to(device, non_blocking=True),
@@ -533,7 +555,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
         
         # Gradient Accumulation: 설정된 스텝마다만 가중치 업데이트
         # 이론: 여러 forward pass의 gradient를 누적한 후 한번에 optimizer step
-        # 효과적 배치 크기 = batch_size × gradient_accumulation_steps
+        # 효과적 배치 크기 = batch_size × gradient_accumulation_steps -> 즉, gradient_accumulation_steps 번 모아서 한 번에 학습
         if (step + 1) % gradient_accumulation_steps == 0:
             if use_amp:
                 # Mixed Precision Gradient Processing
@@ -555,8 +577,8 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
         
         # 로깅
         if step % 10 == 0:
-            print(f"Step {step}: Loss={total_loss:.4f} "
-                  f"(V={value_loss:.4f}, R={reward_loss:.4f}, P={policy_loss:.4f})")
+            # print(f"Training Step {step}: Loss={total_loss:.4f} "
+            #       f"(V={value_loss:.4f}, R={reward_loss:.4f}, P={policy_loss:.4f})")
 
             # TensorBoard 로깅 (전역 스텝 사용)
             global_step = base_step + step
@@ -641,7 +663,7 @@ def train_network(network, replay_buffer, config, device, logger, iteration_num=
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-    print("\n학습 완료!")
+    # print("\n학습 완료!")
 
     # 마지막 loss 값들 반환
     return {
@@ -657,7 +679,7 @@ def get_network(config, device):
         return MuZeroNetwork(
             config.observation_shape,
             config.stacked_observations,
-            len(config.action_space),
+            len(list(range(Action.get_action_space_size()))),
             config.encoding_size,
             config.fc_reward_layers,
             config.fc_value_layers,
@@ -668,9 +690,9 @@ def get_network(config, device):
             # 새로운 파라미터들
             use_coordconv=config.use_coordconv,
             use_goal_map=config.use_goal_map,
-            use_film=config.use_film,
             alpha_init=config.alpha_init,
             use_resnet=config.use_resnet,
+            use_attn_soft_routing_film=config.use_attn_soft_routing_film,
         ).to(device)
     else:
         raise NotImplementedError(

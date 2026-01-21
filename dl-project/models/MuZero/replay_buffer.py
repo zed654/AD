@@ -14,8 +14,11 @@ class Episode:
         self.actions = []     # 액션 목록 (self-play로 선택된 action)
         self.expert_ego_pos = []  # 전문가 ego 위치 목록 (GT 그리드 좌표 (row, col) 튜플)
         self.rewards = []     # 보상 목록
+        self.target_rewards = []  # 목표 보상 목록 (n-step 누적 보상)
         self.pi = []    # MCTS 방문분포 목록 (π)
+        self.policies = []    # 정책 신경망 출력 목록 (p)
         self.values = []      # MCTS 가치 목록
+        self.target_values = []  # 목표 가치 목록 (n-step 누적 가치)
         self.dones = []       # 종료 여부 목록
         self.legal_mask = []  # 합법 액션 마스크 (9개 원소의 0/1 배열)
 
@@ -138,7 +141,7 @@ class ReplayBuffer:
                 ranges = frame_ranges[source_file]
                 min_frame = min(r[0] for r in ranges)
                 max_frame = max(r[1] for r in ranges)
-                print(f"     프레임 범위: {min_frame} ~ {max_frame}")
+                # print(f"     프레임 범위: {min_frame} ~ {max_frame}")
         
         print(f"=== Buffer 활용도: {len(self.buffer)}/{self.capacity} ({len(self.buffer)/self.capacity*100:.1f}%) ===")
     

@@ -7,6 +7,7 @@ import numpy as np
 from pathlib import Path
 import datetime
 import argparse
+import random
 import json
 
 # MuZero 관련 import
@@ -18,17 +19,16 @@ from models.MuZero.action import Action
 from models.MuZero.observation_provider import GTObservationProvider, ROS2ObservationProvider, MockObservationProvider
 from models.MuZero.replay_buffer import ReplayBuffer
 from models.MuZero.train import train_network
-from models.MuZero.utils import build_observation_tensor, calculate_game_statistics, print_game_statistics
+from models.MuZero.utils import build_observation_tensor, calculate_game_statistics, print_game_statistics, visualize_training_progress, calculate_memory
 from models.MuZero.config_manager import load_config, save_config, print_config
 from models.MuZero.logger import get_logger
 from models.MuZero.expert_data_loader import ExpertDataLoader
 from models.MuZero.self_play import enrich_episode_with_mcts_parallel_worker
-from models.MuZero.utils import visualize_training_progress
 
 import torch.multiprocessing as mp
 import time
 from rich.progress import Progress, TimeElapsedColumn, BarColumn, TextColumn
-
+from pympler import asizeof
 
 def print_system_resources(iteration_num=None):
     """시스템 리소스 사용량을 상세히 출력하는 함수
@@ -130,13 +130,25 @@ def train_mode(config, checkpoint_path=None):
     print("="*60)
     
     # 디바이스 설정
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        if isinstance(config.num_usage_of_gpu_devices, list) and len(config.num_usage_of_gpu_devices) > 0:
+            # 리스트의 첫 번째 GPU를 primary device로 사용
+            device = torch.device(f"cuda:{config.num_usage_of_gpu_devices[0]}")
+            print(f"📱 Primary Device: cuda:{config.num_usage_of_gpu_devices[0]} (from {config.num_usage_of_gpu_devices})")
+        elif config.num_usage_of_gpu_devices is not None:
+            device = torch.device("cuda:0")
+        else:
+            device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
     print(f"📱 Device: {device}")
     logger.info(f"Device: {device}")
 
     # Multiprocessing spawn method 설정 (CUDA 안전성)
     try:
         mp.set_start_method('spawn', force=True)
+        mp.set_sharing_strategy('file_system')
     except RuntimeError:
         pass  # 이미 설정됨
 
@@ -173,7 +185,6 @@ def train_mode(config, checkpoint_path=None):
         expert_loader = ExpertDataLoader(config, observation_provider)
         expert_episodes = expert_loader.create_episodes_from_json(
             num_episodes=config.gt_num_episodes,  # config에서 읽기
-            episode_step_length=config.max_episode_step_length,  # config에서 읽기
             episode_overlap_steps=config.gt_episode_overlap  # config에서 읽기
         )
     elif config.observation_provider_type == "ros2":
@@ -213,14 +224,16 @@ def train_mode(config, checkpoint_path=None):
 
     # Multi-GPU 학습 감지 (train_network에서 DataParallel 사용 여부 확인)
     is_multi_gpu_train = False
-
     # pool = mp.Pool(processes=config.selfplay_parallel_workers)
-    for iteration in range(config.num_iterations):
+    for iteration in range(start_epoch, config.num_iterations):
         print(f"\n🔄 Iteration {iteration + 1}/{config.num_iterations}")
         enriched_episodes = [] # Replay Buffer에 추가할 에피소드 리스트 초기화
+        indices = random.sample(range(len(expert_episodes)), 
+                                min(config.selfplay_num_of_random_episodes, len(expert_episodes)))
+        selected_expert_episodes = [expert_episodes[i] for i in indices]
 
         # Episode에 MCTS 결과 추가
-        if len(expert_episodes) > 0:
+        if len(selected_expert_episodes) > 0:
             # Progress Bar가 시작 정보를 표시하므로 중복 출력 제거
             start_time = time.time()
 
@@ -234,52 +247,51 @@ def train_mode(config, checkpoint_path=None):
             # 3. Worker arguments 준비 (spawn 방식은 자동으로 deepcopy)
             args_list = [
                 (idx, network_state_dict, config, device, episode)
-                for idx, episode in enumerate(expert_episodes)
+                for idx, episode in enumerate(selected_expert_episodes)
             ]
 
             # 4. 병렬 처리 (mp.Pool.imap 사용 - 메모리 효율적)
             # imap 사용 시, 순서 보장 + 하나씩 yield (메모리 절약)
             # 진행률 표시 -> 🧠 MCTS Self-play (Enrich Episodes) ━━━━━━━━━━━━━━━━━━ 45% (150/330) 0:00:18 성공: 148개
             enriched_episodes = []
-            pool = mp.Pool(processes=config.selfplay_parallel_workers)
-            try:
-                with Progress(
-                    TextColumn("[bold blue]{task.description}"),
-                    BarColumn(),
-                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                    TextColumn("({task.completed}/{task.total})"),
-                    TimeElapsedColumn(),
-                    TextColumn("[green]성공: [bold yellow]{task.fields[success_count]}개"),
-                ) as progress:
-                    task = progress.add_task(
-                        "[cyan]🧠 Self-play (Enrich Episodes) ",
-                        total=len(args_list),
-                        success_count=0
-                    )
 
-                    for ep in pool.imap(
-                        enrich_episode_with_mcts_parallel_worker,
-                        args_list
-                    ):
-                        # None이 아닌 Episode만 수집
-                        if ep is not None:
-                            enriched_episodes.append(ep)
+            # with 문으로 Pool 관리 - 자동 리소스 정리 보장
+            with mp.Pool(processes=config.selfplay_parallel_workers) as pool:
+                try:
+                    with Progress(
+                        TextColumn("[bold blue]{task.description}"),
+                        BarColumn(),
+                        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                        TextColumn("({task.completed}/{task.total})"),
+                        TimeElapsedColumn(),
+                        TextColumn("[green]성공: [bold yellow]{task.fields[success_count]}개"),
+                    ) as progress:
+                        task = progress.add_task(
+                            "[cyan]🧠 Self-play (Enrich Episodes) ",
+                            total=len(args_list),
+                            success_count=0
+                        )
 
-                        # Progress bar 업데이트
-                        progress.update(task, advance=1, success_count=len(enriched_episodes))
+                        for ep in pool.imap(
+                            enrich_episode_with_mcts_parallel_worker,
+                            args_list
+                        ):
+                            # None이 아닌 Episode만 수집
+                            if ep is not None:
+                                enriched_episodes.append(ep)
 
-            except KeyboardInterrupt:
-                print("\n\n⚠️  사용자에 의해 중단되었습니다. Worker 프로세스를 정리하는 중...")
-                pool.terminate()  # 즉시 종료
-                pool.join()       # 종료 대기
-                print("✅ 정리 완료!")
-                raise  # 상위로 전파하여 프로그램 종료
-            finally:
-                # pool.terminate()  # 즉시 종료
+                            # Progress bar 업데이트
+                            progress.update(task, advance=1, success_count=len(enriched_episodes))
+
+                except KeyboardInterrupt:
+                    print("\n\n⚠️  사용자에 의해 중단되었습니다. Worker 프로세스를 정리하는 중...")
+                    pool.terminate()  # 즉시 종료
+                    pool.join()       # 종료 대기 (Python의 __exit__은 join 안 함)
+                    print("✅ 정리 완료!")
+                    raise  # 상위로 전파하여 프로그램 종료
+
+                # with 문이 자동으로 pool.__exit__() 호출 → pool.terminate()
                 print("   모든 Worker 프로세스 정리 중...")
-                pool.close()
-                pool.join()
-                # print("   worker 작업 완료. 모든 Worker 프로세스 유지")
 
             elapsed = time.time() - start_time
 
@@ -328,7 +340,7 @@ def train_mode(config, checkpoint_path=None):
             TimeElapsedColumn()
         ) as progress:
             task = progress.add_task(
-                "[green]저장 중",
+                "[green]Episode -> Replay Buffer 저장 중",
                 total=len(enriched_episodes)
             )
 
@@ -349,37 +361,31 @@ def train_mode(config, checkpoint_path=None):
             torch.cuda.empty_cache()
 
         # 🔍 Replay Buffer 텐서 분석 (첫 Iteration만)
-        if iteration == 0 and len(replay_buffer.buffer) > 0:
-            print(f"\n=== [Replay Buffer 분석] 첫 번째 Episode ===")
-            first_ep = replay_buffer.buffer[0]
-            for step_idx in range(min(3, len(first_ep.states))):
-                state_dict = first_ep.states[step_idx]
-                print(f"  Step {step_idx}:")
-                if isinstance(state_dict, dict):
-                    for key in ['obstacles', 'static_environment', 'ground_class_id']:
-                        if key in state_dict:
-                            value = state_dict[key]
-                            if isinstance(value, torch.Tensor):
-                                print(f"    ✓ {key}: Tensor(device={value.device}, dtype={value.dtype}, shape={value.shape})")
-                            elif isinstance(value, np.ndarray):
-                                print(f"    - {key}: ndarray(dtype={value.dtype}, shape={value.shape})")
-                            else:
-                                print(f"    ? {key}: {type(value).__name__}")
+        # if iteration == 0 and len(replay_buffer.buffer) > 0:
+        #     print(f"\n=== [Replay Buffer 분석] 첫 번째 Episode ===")
+        #     first_ep = replay_buffer.buffer[0]
+        #     for step_idx in range(min(3, len(first_ep.states))):
+        #         state_dict = first_ep.states[step_idx]
+        #         print(f"  Step {step_idx}:")
+        #         if isinstance(state_dict, dict):
+        #             for key in ['obstacles', 'static_environment', 'ground_class_id']:
+        #                 if key in state_dict:
+        #                     value = state_dict[key]
+        #                     if isinstance(value, torch.Tensor):
+        #                         print(f"    ✓ {key}: Tensor(device={value.device}, dtype={value.dtype}, shape={value.shape})")
+        #                     elif isinstance(value, np.ndarray):
+        #                         print(f"    - {key}: ndarray(dtype={value.dtype}, shape={value.shape})")
+        #                     else:
+        #                         print(f"    ? {key}: {type(value).__name__}")
 
         # Replay Buffer 상세 정보 출력
         replay_buffer.print_buffer_summary(True if iteration == 0 else False)
 
-        # GPU 메모리 사용량 출력
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated(device) / 1024**3  # GB
-            reserved = torch.cuda.memory_reserved(device) / 1024**3   # GB
-            print(f"  🎮 GPU Memory 1: {allocated:.3f}GB allocated, {reserved:.3f}GB reserved")
-
         # 네트워크 학습
-        print("  📖 네트워크 학습...")
+        print("  📖 네트워크 학습 시작")
         base_step = iteration * config.training_steps
         loss_dict = train_network(network, replay_buffer, config, device, logger, iteration_num=iteration+1, base_step=base_step, loss_history=loss_history, writer=writer)
-
+        print("  📖 네트워크 학습 완료")
 
         # GPU 메모리 사용량 출력 (동기화 후 측정)
         if torch.cuda.is_available():
@@ -387,13 +393,22 @@ def train_mode(config, checkpoint_path=None):
             torch.cuda.empty_cache()  # 캐시 한번 더 정리
             allocated = torch.cuda.memory_allocated(device) / 1024**3  # GB
             reserved = torch.cuda.memory_reserved(device) / 1024**3   # GB
-            print(f"  🎮 GPU Memory 2: {allocated:.3f}GB allocated, {reserved:.3f}GB reserved")
+            # print(f"  🎮 GPU Memory 2: {allocated:.3f}GB allocated, {reserved:.3f}GB reserved")
+        
+        if iteration % 1 == 0:  # 10번마다
+            print(f"\n📊 Memory @ Iter {calculate_memory(iteration)}:")
+            print(f"  expert_episodes: {calculate_memory(expert_episodes)/1024**2:.1f} MB")
+            print(f"  replay_buffer: {calculate_memory(replay_buffer.buffer)/1024**2:.1f} MB")
+            print(f"  loss_history: {calculate_memory(loss_history)/1024**2:.1f} MB")
+            print(f"  enriched_episodes: {calculate_memory(enriched_episodes)/1024**2:.1f} MB")
+            print(f"  network: {calculate_memory(network.state_dict())/1024**2:.1f} MB")
+            print(f"  writer (TensorBoard): {calculate_memory(writer)/1024**2:.1f} MB")
 
         
 
 
     # 최종 모델 저장
-    print("\n✅ 학습 완료!")
+    # print("\n✅ 학습 완료!")
     checkpoint_dir = config.results_path / config.checkpoint_save_dir
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     final_path = checkpoint_dir / config.checkpoint_final_name
@@ -414,101 +429,6 @@ def train_mode(config, checkpoint_path=None):
 
     print(f"\n📊 TensorBoard 확인: tensorboard --logdir {config.results_path / 'logs'}")
 
-
-def inference_mode(config, checkpoint_path=None):
-    """추론 모드 실행"""
-    # TODO: 학습 설계 완료 이후 구현하기
-
-
-def evaluate_mode(config, checkpoint_path=None):
-    """평가 모드 - GT 데이터에 대한 모델 성능 평가
-    
-    GT 데이터의 observation에 대해 MCTS를 실행하여 선택한 action과
-    expert action을 비교하여 모델의 성능을 평가합니다.
-
-    실제 추론 모드로 전환하여 성능 확인. (여기선 GT로, inference_mode 에서 ROS2 Topic 수신받아 수행)
-    """
-    # TODO: 학습 설계 완료 이후 구현하기
-    """학습 모드 실행"""
-    logger = get_logger("MuZero.Train", config.results_path / "logs")
-    
-    print("\n" + "="*60)
-    print("🎓 MuZero 학습 모드")
-    print("="*60)
-    
-    # 디바이스 설정
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"📱 Device: {device}")
-    logger.info(f"Device: {device}")
-
-    # Multiprocessing spawn method 설정 (CUDA 안전성)
-    try:
-        mp.set_start_method('spawn', force=True)
-    except RuntimeError:
-        pass  # 이미 설정됨
-
-    # 결과 디렉토리 설정 (config.results_path 사용)
-    print(f"📁 결과 저장 경로: {config.results_path}")
-
-    # 네트워크 생성
-    network = get_network(config, device)
-    
-    # 체크포인트 로드 (있는 경우)
-    if checkpoint_path and Path(checkpoint_path).exists():
-        print(f"📂 체크포인트 로드: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        network.load_state_dict(checkpoint['network_state_dict'])
-        start_epoch = checkpoint.get('iteration', 0)
-        print(f"   → {start_epoch}번째 에폭부터 재개")
-    else:
-        start_epoch = 0
-    
-    # Observation Provider 생성 (학습용)
-    # GT 인지, Mock 인지, ROS2 인지 설정에 따라 다름
-    observation_provider = create_observation_provider(config, mode="train")
-    # parsing_result = observation_provider.get_observation()  # 디버깅용 - 불필요
-    
-    # 파싱한 Json 을 활용하여 Episode 구성 단계
-    if config.observation_provider_type == "gt":
-        print("\n📚 전문가 데이터 로드 중...")
-        expert_loader = ExpertDataLoader(config, observation_provider)
-        expert_episodes = expert_loader.create_episodes_from_json(
-            num_episodes=config.gt_num_episodes,  # config에서 읽기
-            episode_step_length=config.max_episode_step_length,  # config에서 읽기
-            episode_overlap_steps=config.gt_episode_overlap  # config에서 읽기
-        )
-    elif config.observation_provider_type == "ros2":
-        print("\n🤖 ROS2 실시간 데이터 로드 중...")
-        expert_episodes = []
-    elif config.observation_provider_type == "mock":
-        print("\n⚠️  Mock 데이터 사용 (학습용 실제 데이터가 준비되지 않음)")
-        expert_episodes = []
-    else:
-        raise ValueError(f"지원하지 않는 observation_provider_type: {config.observation_provider_type}")
-    
-    print(f"   Episode 생성 완료: {len(expert_episodes)}개")
-        
-    
-    
-    # 기존 코드 (무한 루프로 추론 시간 측정)
-    episode_idx = 0
-    while True:
-        # import random
-        # rand_num = random.randint(0, len(expert_episodes)-1)
-        # episode = expert_episodes[rand_num]
-    
-        episode = expert_episodes[episode_idx]
-        args = (0, network.state_dict(), config, device, episode)
-        start_time = time.time()
-        enriched_episode = enrich_episode_with_mcts_parallel_worker(args)
-        elapsed = time.time() - start_time
-        print(f"Episode {episode_idx} enriched in {elapsed:.2f} seconds")
-    
-        episode_idx = (episode_idx+1) % len(expert_episodes)
-        time.sleep(0.1)
-
-    # # TODO: 여기서 시각화...?
-    # print(f"Parallel processing completed in {elapsed:.2f} seconds")
 
 
 
@@ -577,47 +497,6 @@ def main():
             checkpoint_path = config.resume_checkpoint_path
             print(f"🔄 config.py에서 체크포인트 자동 재개: {checkpoint_path}")
         train_mode(config, checkpoint_path)
-    
-    elif args.mode == "inference":
-        # checkpoint 경로 확인
-        checkpoint_path = args.checkpoint
-        # if checkpoint_path is None:
-        #     checkpoint_path, error = find_latest_checkpoint(config)
-        #     if error:
-        #         print(error)
-        #         return
-        
-        inference_mode(config, checkpoint_path, args.episodes, not args.no_render)
-    
-    elif args.mode == "evaluate":
-        # # checkpoint 경로 확인
-        # checkpoint_path = args.checkpoint
-        # # if checkpoint_path is None:
-        # #     checkpoint_path, error = find_latest_checkpoint(config)
-        # #     if error:
-        # #         print(error)
-        #         # return
-                
-        # # CLI 옵션으로 config 설정 덮어쓰기
-        # if args.episodes is not None:
-        #     config.eval_num_episodes = args.episodes
-        # if args.no_mcts:
-        #     config.eval_use_mcts = False
-        # if args.dataset:
-        #     config.eval_dataset_type = args.dataset
-        # if args.save:
-        #     config.eval_save_results = True
-
-        # 체크포인트 경로 결정: config에 설정되어 있으면 자동 재개
-        checkpoint_path = None
-        if args.resume:
-            # --resume 플래그가 있으면 우선적으로 명령줄 체크포인트 사용
-            checkpoint_path = args.checkpoint or config.resume_checkpoint_path
-        elif config.resume_checkpoint_path:
-            # config에 체크포인트가 설정되어 있으면 자동으로 재개
-            checkpoint_path = config.resume_checkpoint_path
-            print(f"🔄 config.py에서 체크포인트 자동 재개: {checkpoint_path}")
-        evaluate_mode(config, checkpoint_path)
 
 
 if __name__ == "__main__":

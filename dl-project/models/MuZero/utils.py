@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from typing import List, Dict, Tuple, TYPE_CHECKING
+import numpy as np
 
 if TYPE_CHECKING:
     from .self_play import GameHistory
@@ -10,7 +11,31 @@ if TYPE_CHECKING:
 from rosetta import (get_grid_value_info, get_ldm_segmentation_name, get_ldm_segmentation_color, 
                      GRID_VALUE_EMPTY, GRID_VALUE_PEDESTRIAN, GRID_VALUE_VEHICLE, GRID_VALUE_OTHER_OBJECT, 
                      GRID_VALUE_CLIFF, GRID_VALUE_STATIC_OBSTACLE, GRID_VALUE_MISSING_POINTS)
-
+import sys
+def calculate_memory(obj, seen=None):
+    """Recursively calculate memory usage of objects including Tensors and Numpy arrays"""
+    if seen is None:
+        seen = set()
+    
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    seen.add(obj_id)
+    
+    size = sys.getsizeof(obj)
+    
+    if torch.is_tensor(obj):
+        size += obj.element_size() * obj.nelement()
+    elif isinstance(obj, np.ndarray):
+        size += obj.nbytes
+    elif isinstance(obj, dict):
+        size += sum(calculate_memory(k, seen) + calculate_memory(v, seen) for k, v in obj.items())
+    elif hasattr(obj, '__dict__'):
+        size += calculate_memory(obj.__dict__, seen)
+    elif isinstance(obj, (list, tuple, set)):
+        size += sum(calculate_memory(i, seen) for i in obj)
+        
+    return size
 
 def calculate_game_statistics(games: List['GameHistory']) -> Dict[str, float]:
     """게임 통계 계산
@@ -283,7 +308,6 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
             
         # 전체 Episode 시각화
         visualization_steps = len(episode)
-        
         # Episode 전체를 복사 (수정하지 않기 위해)
         # from models.MuZero.replay_buffer import Episode
         # full_episode = Episode()
@@ -313,11 +337,11 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
                 old_predicted_rows.append(49)
                 old_predicted_cols.append(49)
 
-        if old_predicted_rows:
-            print(f"    📍 Old Predicted path: start({old_predicted_rows[0]}, {old_predicted_cols[0]}) -> end({old_predicted_rows[-1]}, {old_predicted_cols[-1]})")
+        # if old_predicted_rows:
+            # print(f"    📍 Old Predicted path: start({old_predicted_rows[0]}, {old_predicted_cols[0]}) -> end({old_predicted_rows[-1]}, {old_predicted_cols[-1]})")
 
         # 현재 네트워크로 MCTS enrichment 수행
-        print(f"    Episode {ep_idx+1}: {visualization_steps} 스텝 처리 중...")
+        # print(f"    Episode {ep_idx+1}: {visualization_steps} 스텝 처리 중...")
         # enriched_episodes = self_play_manager.enrich_episodes_with_mcts([full_episode])
         # enriched_episode = enriched_episodes[0]
         # args = (ep_idx, network_state_dict, config, device, episode)
@@ -346,7 +370,7 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
         # 첫 프레임의 환경 정보 시각화 (배경으로)
         # Shift 적용으로 각 스텝의 observation이 다르므로, 원본 좌표계인 첫 스텝 사용
         if len(episode.states) > 0:
-            last_state = episode.states[0]  # 첫 프레임 사용 -> 디버깅 목적이면, 마지막인 -1 로 설정
+            last_state = episode.states[0]  # 첫 프레임 사용 -> TODO: 디버깅 목적이면, 마지막인 -1 로 설정
             
             # Channel 0: Dynamic objects (빨간색 계열)
             if 'obstacles' in last_state and last_state['obstacles'] is not None:
@@ -483,8 +507,8 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
         
         # 디버그: Episode 정보 출력
         unique_actions = set(episode.actions)
-        print(f"🔍 Episode {ep_idx+1} - States: {len(episode.states)}, Expert pos: {len(episode.expert_ego_pos)}")
-        print(f"🔍 Actions: {unique_actions}, Total: {len(episode.actions)}")
+        # print(f"🔍 Episode {ep_idx+1} - States: {len(episode.states)}, Expert pos: {len(episode.expert_ego_pos)}")
+        # print(f"🔍 Actions: {unique_actions}, Total: {len(episode.actions)}")
 
         # Action별 Target Reward 평균 계산
         action_rewards = {}
@@ -494,7 +518,7 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
             action_rewards[action].append(reward)
 
         action_avg_str = ", ".join([f"{action}:{np.mean(rewards):.3f}" for action, rewards in sorted(action_rewards.items())])
-        print(f"🎯 Action별 Target Reward: {action_avg_str}")
+        # print(f"🎯 Action별 Target Reward: {action_avg_str}")
         
         # Episode states에서 직접 simulated_ego_pos 추출
         fallback_count = 0
@@ -513,7 +537,7 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
         if fallback_count > 0:
             print(f"⚠️ {fallback_count}/{len(episode.states)} 스텝에서 simulated_ego_pos 누락으로 fallback 사용")
         
-        print(f"🔍 simulated_ego_pos: start({sim_rows[0]}, {sim_cols[0]}) -> end({sim_rows[-1]}, {sim_cols[-1]})")
+        # print(f"🔍 simulated_ego_pos: start({sim_rows[0]}, {sim_cols[0]}) -> end({sim_rows[-1]}, {sim_cols[-1]})")
 
         # New Predicted Path (빨간색 그라데이션: 학습 후 경로) (simulated_ego_pos)
         if len(set(zip(sim_rows, sim_cols))) > 1:  # 서로 다른 위치가 2개 이상 있을 때만
@@ -638,13 +662,13 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
         
         # Action별 Target Reward 통계 (우측 하단에 표시)
-        if episode.actions and episode.rewards:
+        if episode.actions and episode.target_rewards:
             from models.MuZero.action import Action
             from collections import defaultdict
             
             # Action별 reward 수집
             action_rewards = defaultdict(list)
-            for action_idx, reward in zip(episode.actions, episode.rewards):
+            for action_idx, reward in zip(episode.actions, episode.target_rewards):
                 action_rewards[action_idx].append(reward)
             
             # 텍스트 생성 시작
@@ -654,9 +678,9 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
             action_stats_text += "First 30 Steps:\n"
             max_display_steps = min(30, len(episode.actions))
             for ep_step in range(max_display_steps):
-                if ep_step < len(episode.actions) and ep_step < len(episode.rewards):
+                if ep_step < len(episode.actions) and ep_step < len(episode.target_rewards):
                     action_obj = Action.from_index(episode.actions[ep_step])
-                    reward = episode.rewards[ep_step]
+                    reward = episode.target_rewards[ep_step]
 
                     # 해당 스텝의 simulated_ego_pos 가져오기
                     pos_info = ""
@@ -666,16 +690,24 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
                         pos = episode.states[ep_step]['simulated_ego_pos']
                         pos_info = f" @{pos}"
 
-                    # Target Value도 함께 표시
+                    # Target Value + Predicted Value (MCTS root value) 함께 표시
                     value_info = ""
                     if hasattr(episode, 'target_values') and ep_step < len(episode.target_values):
                         target_value = episode.target_values[ep_step]
-                        value_info = f" | Val: {target_value:.3f}"
+                        # Predicted Value (MCTS root value) 추가
+                        pred_v_info = ""
+                        if ep_step < len(episode.values) and episode.values[ep_step] is not None:
+                            pred_v_info = f" pred: {episode.values[ep_step]:.3f})"
+                        value_info = f" | V: (tar:{target_value:.3f}/{pred_v_info}"
                     elif ep_step < len(episode.values):
                         value = episode.values[ep_step]
-                        value_info = f" | Val: {value:.3f}"
+                        value_info = f" | V: (tar:{value:.3f})"
 
-                    action_stats_text += f"  {ep_step+1}: {action_obj.position.value}{pos_info} → {reward:.3f}{value_info}\n"
+                    # Predicted Reward 추가
+                    pred_r_info = ""
+                    if hasattr(episode, 'rewards') and ep_step < len(episode.rewards) and episode.rewards[ep_step] != 0.0:
+                        pred_r_info = f" pred: {episode.rewards[ep_step]:.3f}"
+                    action_stats_text += f"  {ep_step+1}: {action_obj.position.value}{pos_info} → R: (tar:{reward:.3f}/{pred_r_info}{value_info})\n"
             if len(episode.actions) > max_display_steps:
                 action_stats_text += f"  ... (+{len(episode.actions) - max_display_steps} more)\n"
             
@@ -683,9 +715,9 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
             action_stats_text += "\nAction Averages:\n"
             for action_idx in sorted(action_rewards.keys()):
                 action_obj = Action.from_index(action_idx)
-                rewards = action_rewards[action_idx]
-                avg_reward = np.mean(rewards)
-                count = len(rewards)
+                target_rewards = action_rewards[action_idx]
+                avg_reward = np.mean(target_rewards)
+                count = len(target_rewards)
                 
                 # Action의 이동 벡터 정보 추가
                 dx, dy = action_obj.get_movement_vector()
@@ -695,10 +727,10 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
             
             # 3. 전체 Target Rewards 통계
             action_stats_text += f"\nTotal Rewards:\n"
-            action_stats_text += f"Sum: {sum(episode.rewards):.2f}\n"
-            action_stats_text += f"Avg: {np.mean(episode.rewards):.3f}\n"
-            action_stats_text += f"Range: {np.min(episode.rewards):.3f}~{np.max(episode.rewards):.3f}\n"
-            action_stats_text += f"Non-zero: {np.count_nonzero(episode.rewards)}/{len(episode.rewards)}"
+            action_stats_text += f"Sum: {sum(episode.target_rewards):.2f}\n"
+            action_stats_text += f"Avg: {np.mean(episode.target_rewards):.3f}\n"
+            action_stats_text += f"Range: {np.min(episode.target_rewards):.3f}~{np.max(episode.target_rewards):.3f}\n"
+            action_stats_text += f"Non-zero: {np.count_nonzero(episode.target_rewards)}/{len(episode.target_rewards)}"
             
             # 우측 하단에 표시
             ax.text(0.98, 0.02, action_stats_text, transform=ax.transAxes, fontsize=6,
@@ -726,13 +758,13 @@ def visualize_training_progress(network, episodes, config, device, loss_history=
             save_path = save_dir / f"iter{iteration_num}_episode_{ep_idx+1}.png"
             plt.savefig(save_path, dpi=config.visualization_dpi, bbox_inches='tight')
             plt.close()
-            print(f"    💾 시각화 저장: {save_path}")
+            # print(f"    💾 시각화 저장: {save_path}")
 
     # 시각화 완료 후 GPU 메모리 정리
     # enrich_episodes_with_mcts()에서 생성한 GPU Tensor들 해제
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        print(f"    🧹 시각화 메모리 정리 완료")
+        # print(f"    🧹 시각화 메모리 정리 완료")
 
 
 # 학습 중 PNG 시각화 관련 3
@@ -783,3 +815,149 @@ def get_grid_color(value: float, channel: int = None) -> str:
     
     # 기본값
     return 'gray'
+
+
+def reward_sum_of_valid(P, Q, grid_size = 5, reward_max=0.5, reward_scale_factor=0.1, gt_threshold=0.2, count_threshold=0.3):
+    """
+    P: GT 분포 (Raw Count 권장)
+    Q: Robot 분포 (반드시 Raw Count여야 함! 예: [2, 0, 1...])
+    
+    [기능 1] Density Gate: 로봇이 예측한 픽셀 수가 너무 적으면(예: 30% 미만) 0점 처리 (찍기 방지)
+    [기능 2] Valid Sum: GT가 인정한 땅(20% 이상)에 대한 로봇의 점유율 합산
+    [기능 3] Saturation: 합산 점유율이 일정 수준(50%)을 넘으면 만점 처리 (자유도 부여)
+    
+    Args:
+        grid_total: 전체 그리드 칸 수 (예: 5x5 = 25)
+        max_reward: 최종 만점 점수 (예: 0.5)
+        gt_threshold: GT 유효성 기준 (예: 0.2 -> GT 20% 미만은 노이즈 취급)
+        count_threshold: 로봇 최소 개수 기준 (예: 0.3 -> 전체 그리드의 30%는 채워야 함)
+        saturation_point: 점수 포화 기준 (예: 0.5 -> 유효 확률 합이 50%만 넘으면 만점)
+    """
+    P = np.array(P)
+    Q = np.array(Q)
+    
+    # 정규화 (합이 1이 되도록 안전장치)
+    sum_p = np.sum(P)
+    sum_q = np.sum(Q)
+    
+    if sum_p > 0: P = P / sum_p
+    if sum_q > 0: Q = Q / sum_q
+
+    # 입력 값의 개수가 5x5 Grid 의 총 개수 25개의 count_threshold 비율보다 작으면, 입력값 조건 미충족으로 0 리턴
+    if sum_q < grid_size * grid_size * count_threshold:
+        return -reward_max*reward_scale_factor
+
+    # 1. GT에서 유효한(Valid) 클래스 찾기 (예: 20% 이상인 땅들)
+    # 경계선에서는 [True, True, False...] 처럼 두 개가 True가 됨
+    valid_mask = P >= gt_threshold
+    if not np.any(valid_mask):
+        print("GT 지면 Class 에 정상 데이터가 없어요")
+
+    # 2. 로봇이 '유효한 땅'에 둔 확률들을 전부 합침 (Sum)
+    # 로봇이 인도 0.5, 횡단보도 0.5를 줬다면 -> 합은 1.0
+    valid_prob_sum = np.sum(Q[valid_mask])
+    
+    # 3. 클리핑 (최대 1.0) 및 스케일링
+    # 합이 1.0을 넘을 순 없겠지만(확률이니까), 안전하게 min 처리
+    score = min(1.0, valid_prob_sum)
+    score = ((reward_max if score > reward_max else score) - reward_max) * reward_scale_factor  # TODO: 정리필요. 범위를 -0.5 ~ 0 으로 만들기 위함 (0~0.5 만든 후, -0.5 ~ 0 만들고 0.1 곱함. 수식 비효율적. 수정필요)
+    
+    return score
+
+def max_relative_scailing(P, Q, reward_scale=0.05):
+    """
+    P: GT (Ground Truth) 분포 [리스트]
+    Q: Robot 행동 분포 [리스트]
+    reward_scale: 리워드 최대값 (기본 0.05)
+    정답지 1등에 대해서 입력값의 1등이 얼마나 비중있는지를 점수화
+    """
+    P = np.array(P, dtype=np.float64)
+    Q = np.array(Q, dtype=np.float64)
+
+    # 정규화 (합이 1이 되도록 안전장치)
+    P = P / np.sum(P)
+    Q = Q / np.sum(Q)
+
+    # --- 2. Max-Relative Scaling 방식 (제안 방식) ---
+    # 로봇이 선택한 행동(Class) 찾기
+    # Q에서 가장 확률이 높은 인덱스를 로봇이 밟은 땅으로 간주
+    robot_choice_idx = np.argmax(Q)
+
+    # GT에서의 해당 클래스 확률 / GT의 최대 확률
+    p_at_robot_choice = P[robot_choice_idx]
+    p_max_gt = np.max(P)
+
+    if p_max_gt == 0:
+        score_ratio = 0
+    else:
+        score_ratio = p_at_robot_choice / p_max_gt
+
+    reward_max_rel = reward_scale * score_ratio
+
+    return {
+        "Reward_MaxRel": reward_max_rel,
+        "Robot_Choice": robot_choice_idx
+    }
+
+def js_divergence(p, q):
+    """
+    Jensen-Shannon Divergence 계산
+    
+    Args:
+        p: 확률 분포 P (list or numpy array)
+        q: 확률 분포 Q (list or numpy array)
+    
+    Returns:
+        float: JS Divergence 값
+    """
+    # numpy array로 변환
+    p = np.array(p, dtype=np.float64)
+    q = np.array(q, dtype=np.float64)
+    
+    # 정규화 (합이 1이 되도록)
+    p = p / np.sum(p)
+    q = q / np.sum(q)
+    
+    # 평균 분포 M
+    m = 0.5 * (p + q)
+    
+    # KL divergence 계산 (0*log(0) = 0 처리)
+    def kl_div(x, y):
+        # x > 0인 경우만 계산
+        mask = x > 0
+        result = np.sum(x[mask] * np.log2(x[mask] / y[mask]))
+        return result
+    
+    # JS divergence = 0.5 * KL(P||M) + 0.5 * KL(Q||M)
+    js = 0.5 * kl_div(p, m) + 0.5 * kl_div(q, m)
+    
+    return js
+
+
+# # 사용 예시
+# from js_divergence import js_divergence
+
+# p = [0.5, 0.3, 0.2]
+# q = [0.4, 0.4, 0.2]
+# result = js_divergence(p, q)
+# print(f"JS Divergence: {result}")
+# if __name__ == "__main__":
+#     # 예시 1: 같은 분포
+#     p1 = [0.5, 0.3, 0.2]
+#     q1 = [0.5, 0.3, 0.2]
+#     print(f"같은 분포: JS = {js_divergence(p1, q1):.6f}")
+    
+#     # 예시 2: 다른 분포
+#     p2 = [0.5, 0.3, 0.2]
+#     q2 = [0.4, 0.4, 0.2]
+#     print(f"다른 분포: JS = {js_divergence(p2, q2):.6f}")
+    
+#     # 예시 3: 정규화 필요한 경우
+#     p3 = [1, 2, 3]
+#     q3 = [3, 2, 1]
+#     print(f"정규화 필요: JS = {js_divergence(p3, q3):.6f}")
+    
+#     # 예시 4: 완전히 다른 분포
+#     p4 = [1, 0, 0]
+#     q4 = [0, 0, 1]
+#     print(f"완전히 다른 분포: JS = {js_divergence(p4, q4):.6f}")

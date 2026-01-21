@@ -12,8 +12,8 @@ cd /home/chp/ai_ws/AD/dl-project
 
 # matplotlib 백엔드 및 DISPLAY 설정
 export MPLBACKEND=Qt5Agg
-export DISPLAY=:0
-# export DISPLAY=:10.0
+#export DISPLAY=:0
+export DISPLAY=:10.0
 
 # 실행
 python visualize_muzero_episode.py "$@"

@@ -4,7 +4,7 @@ MuZero Action 정의
 """
 from enum import Enum
 from typing import Tuple
-
+from .config import MuZeroConfig
 
 class Action:
     """액션 관련 모든 기능을 담은 클래스"""
@@ -22,6 +22,7 @@ class Action:
         POS8 = "pos8" # 좌측
     
     POSITIONS = list(Position)
+    config = MuZeroConfig()
     
     def __init__(self, index: int = None, position: 'Action.Position' = None):
         """
@@ -90,7 +91,8 @@ class Action:
     
     def get_movement_vector(self):
         """이 액션의 이동 벡터를 반환 (그리드 단위)"""
-        return self.POSITION_VECTORS[self.position]
+        dx, dy = self.POSITION_VECTORS[self.position]
+        return (dx * self.config.action_moving_step_size_grid, dy * self.config.action_moving_step_size_grid)
     
 
     """

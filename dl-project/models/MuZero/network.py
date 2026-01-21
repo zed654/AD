@@ -30,7 +30,7 @@ class AbstractNetwork(torch.nn.Module, ABC):
         pass
     
     @abstractmethod
-    def recurrent_inference(self, hidden_state: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def recurrent_inference(self, hidden_state: torch.Tensor, action: torch.Tensor, observation: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         재귀적 추론: 은닉 상태와 액션으로부터 다음 상태 예측
         

@@ -10,6 +10,8 @@ from .replay_buffer import Episode
 from .data_parser import GTDataParser
 from .observation_provider import ObservationBuilder, ObservationProvider
 from .action import Action
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, MofNCompleteColumn
+from rich.console import Console
 
 
 class ExpertDataLoader:
@@ -40,14 +42,13 @@ class ExpertDataLoader:
     
     def create_episodes_from_json(self, 
                                  num_episodes: int = 10,
-                                 episode_step_length: int = 50,
                                  episode_overlap_steps: int = 25) -> List[Episode]:
         """
         JSON 데이터에서 Episode 생성
         
         Args:
             num_episodes: 생성할 에피소드 수
-            episode_step_length: 각 에피소드 길이
+            self.config.max_episode_step_length: 각 에피소드 길이
             episode_overlap_steps: 에피소드 간 겹치는 프레임 수
         
         Returns:
@@ -60,52 +61,116 @@ class ExpertDataLoader:
         episodes = []
         total_frames = self.parser.get_frame_count()
 
+        # 처리 가능한 프레임 범위 계산
+        processable_frames = max(0, total_frames - self.config.max_expert_pos_step_length)
+
+        print(f"📊 데이터 정보:")
+        print(f"  • 전체 프레임: {total_frames:,}개")
+        print(f"  • 처리 가능 범위: 0 ~ {processable_frames:,}")
+        print(f"  • 에피소드 길이: {self.config.max_episode_step_length}개 프레임")
+        print(f"  • 겹침 프레임: {episode_overlap_steps}개")
+        print(f"  • 목표 에피소드: {num_episodes}개")
+        if self.config.rotation_augmentation:
+            print(f"  • 데이터 증강: 4배 (0°, 90°, 180°, 270°)")
+        print()
+
         # 동적 시작점 관리 (효율적인 중복 스캔 방지)
         current_start_idx = 0
         ep_idx = 0
 
-        while ep_idx < num_episodes and current_start_idx < total_frames - episode_step_length:
-            print(f"Expert Episode {ep_idx + 1}/{num_episodes} 생성 중... (start_idx={current_start_idx})")
+        # Rich Progress 설정
+        console = Console()
 
-            episode, last_frame_idx = self._create_single_episode(current_start_idx, episode_step_length, ep_idx)
+        # 에피소드 수 추적
+        valid_episodes = 0  # 품질 통과 에피소드
+        failed_episodes = 0  # 품질 미달 에피소드
 
-            # Episode 품질 검증 - 마지막 jsonl 의 Frame 만 누락됨
-            if episode and self._validate_episode_quality(episode, episode_step_length):
-                # 데이터 증강: 0°, 90°, 180°, 270° 회전
-                # for rot_idx in range(4):
-                #     if rot_idx == 0:
-                #         episodes.append(episode)  # 원본 (0°)
-                #     else:
-                #         # 원본 episode를 각 각도로 회전 (누적이 아님!)
-                #         rotated_episode = self._rotate_episode(episode, angle=rot_idx * 90)
-                #         episodes.append(rotated_episode)
-                if self.config.rotation_augmentation:
-                    for rot_idx in range(4):
-                        if rot_idx == 0:
-                            episodes.append(episode)  # 원본 (0°)
-                        else:
-                            # 원본 episode를 각 각도로 회전 (누적이 아님!)
-                            rotated_episode = self._rotate_episode(episode, angle=rot_idx * 90)
-                            episodes.append(rotated_episode)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            TextColumn("•"),
+            TextColumn("[dim]{task.fields[status]}[/dim]"),
+            console=console,
+            refresh_per_second=1
+        ) as progress:
+
+            # 메인 진행률 태스크 (프레임 기준)
+            main_task = progress.add_task(
+                "[blue]프레임 스캔",
+                total=processable_frames if processable_frames > 0 else 1,
+                status=f"Episodes: ✓0 ✗0 / {num_episodes}"
+            )
+
+            # 프레임 진행 추적
+            max_frame_processed = 0
+
+
+            while ep_idx < num_episodes and current_start_idx < total_frames - self.config.max_expert_pos_step_length:
+                episode, last_frame_idx = self._create_single_episode(current_start_idx, ep_idx)
+
+                # Episode 품질 검증
+                if episode and self._validate_episode_quality(episode):
+                    valid_episodes += 1  # 유효 에피소드 카운트 증가
+
+                    if self.config.rotation_augmentation:
+                        # 데이터 증강 (서브 태스크 없이 처리)
+                        for rot_idx in range(4):
+                            if rot_idx == 0:
+                                episodes.append(episode)  # 원본 (0°)
+                            else:
+                                rotated_episode = self._rotate_episode(episode, angle=rot_idx * 90)
+                                episodes.append(rotated_episode)
+                        # console.print(f"    [green]✓[/green] Episode {ep_idx + 1} 추가: {len(episode.states)}개 스텝 (4x 증강 → 총 {len(episodes)}개)")
+                    else:
+                        episodes.append(episode)
+                        # console.print(f"    [green]✓[/green] Episode {ep_idx + 1} 추가: {len(episode.states)}개 스텝")
+
+                    # 다음 Episode는 마지막 사용 프레임에서 episode_overlap_steps 만큼 뺀 곳부터 시작
+                    current_start_idx = max(last_frame_idx - episode_overlap_steps, current_start_idx + 1)
                 else:
-                    episodes.append(episode)
-                    
-                print(f"    ✓ Episode {len(episodes)} 추가: {len(episode.states)}개 스텝")
-                # 다음 Episode는 마지막 사용 프레임에서 episode_overlap_steps 만큼 뺀 곳부터 시작
-                current_start_idx = max(last_frame_idx - episode_overlap_steps, current_start_idx + 1)
-            else:
-                print(f"    ✗ Episode {ep_idx + 1} 제외: 품질 기준 미달")
-                # Episode 생성 실패시 조금만 앞으로 이동 (데드락 방지)
-                current_start_idx += episode_step_length // 4
+                    failed_episodes += 1  # 실패한 에피소드 카운트 증가
+                    console.print(f"    [red]✗[/red] Episode {ep_idx + 1} 제외: 품질 기준 미달")
+                    # Episode 생성 실패시 조금만 앞으로 이동 (데드락 방지)
+                    current_start_idx += self.config.max_expert_pos_step_length // 4
 
-            ep_idx += 1
+                # 프레임 진행률 업데이트 (최대 처리된 프레임 기준)
+                if current_start_idx > max_frame_processed:
+                    frame_advance = current_start_idx - max_frame_processed
+                    progress.update(main_task, advance=frame_advance)
+                    max_frame_processed = current_start_idx
+
+                # 에피소드 카운트 업데이트
+                ep_idx += 1
+                progress.update(
+                    main_task,
+                    description=f"[blue]Ep Step(Josnl 프레임 수)",
+                    status=f"Episodes: ✓{valid_episodes} ✗{failed_episodes} / {num_episodes}"
+                )
         
-        print(f"\n생성된 Episode: {len(episodes)}개")
+        # 최종 결과 출력
+        print(f"\n📊 Episode 생성 결과:")
+        print(f"  • 생성 성공: {valid_episodes}개 (품질 통과)")
+        if self.config.rotation_augmentation:
+            print(f"  • 데이터 증강: {valid_episodes * 4}개 (4배 회전)")
+        print(f"  • 생성 실패: {failed_episodes}개 (품질 미달)")
+        print(f"  • 총 Episode: {len(episodes)}개")
         return episodes
     
-    def _create_single_episode(self, start_idx: int, episode_step_length: int, ep_idx: int = 0) -> Tuple[Optional[Episode], int]:
-        """단일 Episode 생성"""
-        # 출처 정보 설정 - 시작 프레임의 실제 파일명 사용 . # episode_step_length: Episode 최대 스텝 수
+    def _create_single_episode(self, start_idx: int, ep_idx: int = 0) -> Tuple[Optional[Episode], int]:
+        """단일 Episode 생성
+
+        Args:
+            start_idx: 시작 프레임 인덱스
+            self.config.max_episode_step_length: Episode 최대 스텝 수
+            ep_idx: Episode 인덱스
+
+        Returns:
+            (Episode 또는 None, 마지막 사용 프레임 인덱스)
+        """
         source_file = None
         start_frame_data = self.parser.get_frame_data(start_idx)
         if start_frame_data and '_source_file' in start_frame_data:
@@ -119,7 +184,7 @@ class ExpertDataLoader:
         episode = Episode(
             source_file=source_file,
             start_frame=start_idx,
-            end_frame=start_idx + episode_step_length - 1
+            end_frame=start_idx + self.config.max_expert_pos_step_length - 1
         )
         
         # 상태 추적
@@ -136,7 +201,8 @@ class ExpertDataLoader:
         skip_count = 0  # 스킵한 프레임 수
 
         # Episode.state 의 step 수집 루프 (Self-play 의 정보 빠진 상태)
-        while collected_steps < episode_step_length and frame_idx < self.parser.get_frame_count() - 1:
+        # Expert Pos 를 모두 담기 위해 self.config.max_expert_pos_step_length 만큼 수집
+        while collected_steps < self.config.max_expert_pos_step_length and frame_idx < self.parser.get_frame_count() - 1:
             # 현재 프레임 데이터
             frame_data = self.parser.get_frame_data(frame_idx)
             if not frame_data:
@@ -222,15 +288,21 @@ class ExpertDataLoader:
             frame_idx += 1
 
         # 수집 완료 로그
-        print(f"    - 수집 완료: {collected_steps}개 스텝 (스킵: {skip_count}개 프레임)")
+        # print(f"    - 수집 완료: {collected_steps}개 스텝 (스킵: {skip_count}개 프레임)")
         
         # Episode 구성 검증
         if len(expert_ego_positions) == 0 or len(observations) == 0:
             print(f"    - Episode 생성 실패: 유효한 데이터 없음")
             return None, frame_idx
 
+        # expert_ego_positions의 실제 길이만큼만 추가 (최대 max_expert_pos_step_length)
+        for i in range(min(len(expert_ego_positions), self.config.max_expert_pos_step_length)):
+            episode.expert_ego_pos.append(expert_ego_positions[i])
+
         # Episode 생성 (states와 expert_ego_pos 길이를 맞춤)
-        for i in range(len(observations)):
+        # observations의 실제 길이와 max_episode_step_length 중 작은 값만큼만 사용
+        episode_length = min(len(observations), self.config.max_episode_step_length)
+        for i in range(episode_length):
             # 디버깅 포인트 2: Episode step 추가 (필요시 주석 해제)
             # if i < 3:  # 처음 3개 step만
             #     print(f"\n--- Step {i} ---")
@@ -244,16 +316,23 @@ class ExpertDataLoader:
             if 'static_environment' in observations[i] and isinstance(observations[i]['static_environment'], np.ndarray):
                 state_with_tensor['static_environment'] = torch.tensor(observations[i]['static_environment'], dtype=torch.float32)
             
-            episode.add_step(
-                state=state_with_tensor,  # dict 형태의 state
-                action=0,           # self-play action은 0으로 초기화 (POS0: 현재 위치)
-                expert_ego_pos=expert_ego_positions[i],  # GT에서 추출한 전문가 ego 위치 (그리드 좌표)
-                reward=0.0,         # GT에서는 항상 0
-                pi=None,        # MCTS/self-play에서 계산됨 (Action 개수만큼 있어야함)
-                value=0.0,          # 0으로 초기화
-                done=(i == len(expert_ego_positions) - 1),
-                legal_mask=None  # 합법 액션 마스크 ... 추후 Self-play 단계에서 기입됨. 현재는 빈 값 사용
-            )
+            episode.states.append(state_with_tensor)
+            episode.actions.append(0)
+            episode.rewards.append(0.0)
+            episode.pi.append(None)
+            episode.values.append(0.0)
+            episode.dones.append(i == episode_length - 1)
+            episode.legal_mask.append(None)
+            # episode.add_step(
+            #     state=state_with_tensor,  # dict 형태의 state
+            #     action=0,           # self-play action은 0으로 초기화 (POS0: 현재 위치)
+            #     expert_ego_pos=expert_ego_positions[i],  # GT에서 추출한 전문가 ego 위치 (그리드 좌표)
+            #     reward=0.0,         # GT에서는 항상 0
+            #     pi=None,        # MCTS/self-play에서 계산됨 (Action 개수만큼 있어야함)
+            #     value=0.0,          # 0으로 초기화
+            #     done=(i == len(expert_ego_positions) - 1),
+            #     legal_mask=None  # 합법 액션 마스크 ... 추후 Self-play 단계에서 기입됨. 현재는 빈 값 사용
+            # )
 
         return episode, frame_idx
 
@@ -399,7 +478,7 @@ class ExpertDataLoader:
         # Grid에서 row는 x축(전방으로 큰 값), col은 y축(우측으로 큰 값)
         grid_center = self.config.observation_shape[1] // 2  # 49
         grid_row = grid_center + int(rel_x / self.config.cell_size)  # 상단으로 +
-        grid_col = grid_center + int(rel_y / self.config.cell_size)  # 우측으로 +
+        grid_col = grid_center - int(rel_y / self.config.cell_size)  # 좌측으로 +
         
         return grid_row, grid_col
     
@@ -451,7 +530,7 @@ class ExpertDataLoader:
         
         return static_env
 
-    def _validate_episode_quality(self, episode: 'Episode', target_length: int) -> bool:
+    def _validate_episode_quality(self, episode: 'Episode') -> bool:
         """Episode 품질 검증
 
         Args:
@@ -461,6 +540,7 @@ class ExpertDataLoader:
         Returns:
             bool: 품질 기준 통과 여부
         """
+        target_length = self.config.max_episode_step_length
         if not episode or not hasattr(episode, 'states') or not hasattr(episode, 'expert_ego_pos'):
             return False
 
@@ -474,9 +554,9 @@ class ExpertDataLoader:
             return False
 
         # 2. 데이터 일관성 검증
-        if states_count != positions_count:
-            print(f"      데이터 불일치: states={states_count}, positions={positions_count}")
-            return False
+        # if states_count != positions_count:
+        #     print(f"      데이터 불일치: states={states_count}, positions={positions_count}")
+        #     return False
 
         # 3. 실제 이동 거리 검증
         if positions_count >= 2:
@@ -488,12 +568,20 @@ class ExpertDataLoader:
                     distance = ((curr_pos[0] - prev_pos[0])**2 + (curr_pos[1] - prev_pos[1])**2)**0.5
                     total_distance += distance
 
-            # 최소 이동 거리 (5 cells = 1m)
-            min_distance = 5.0
+            # 최소 이동 거리
+            min_distance = 3.0
             if total_distance < min_distance:
                 print(f"      이동 거리 부족: {total_distance:.1f} < {min_distance}")
                 return False
 
-            print(f"      품질 통과: {states_count}스텝, 이동거리={total_distance:.1f}cells")
+            # print(f"      품질 통과: {states_count}스텝, 이동거리={total_distance:.1f}cells")
+
+        # 4. expert_ego_pos 범위 검증
+        for i, pos in enumerate(episode.expert_ego_pos):
+            if pos is not None:
+                row, col = pos
+                if not (0 <= row < 99 and 0 <= col < 99):
+                    print(f"      expert_ego_pos 범위 벗어남: step {i}, pos=({row}, {col})")
+                    return False
 
         return True

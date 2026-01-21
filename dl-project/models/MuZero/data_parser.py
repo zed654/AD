@@ -397,7 +397,7 @@ class ObservationBuilder:
                 obj.global_x, obj.global_y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
             )
             grid_row = self.ego_grid_row + int(rel_x / self.cell_size) # 상단으로 +
-            grid_col = self.ego_grid_col + int(rel_y / self.cell_size) # 우측으로 +
+            grid_col = self.ego_grid_col - int(rel_y / self.cell_size) # 좌측으로 +
             
             if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
                 grid[0, grid_row, grid_col] = grid_value  # Channel 0: Dynamic objects
@@ -409,7 +409,7 @@ class ObservationBuilder:
                     point_x, point_y, episode_start_ego.x, episode_start_ego.y, episode_start_ego.yaw
                 )
                 grid_row = self.ego_grid_row + int(rel_x / self.cell_size)  # 상단으로 +
-                grid_col = self.ego_grid_col + int(rel_y / self.cell_size)  # 우측으로 +
+                grid_col = self.ego_grid_col - int(rel_y / self.cell_size)  # 좌측으로 +
                 
                 if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
                     grid[0, grid_row, grid_col] = grid_value  # Channel 0: Dynamic objects
@@ -423,7 +423,7 @@ class ObservationBuilder:
             )
             
             grid_row = self.ego_grid_row + int(rel_x / self.cell_size)  # 상단으로 +
-            grid_col = self.ego_grid_col + int(rel_y / self.cell_size)  # 우측으로 +
+            grid_col = self.ego_grid_col - int(rel_y / self.cell_size)  # 좌측으로 +
             
             if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
                 # rosetta.py의 함수 사용하여 그리드 값 변환
@@ -446,18 +446,18 @@ class ObservationBuilder:
             length = np.sqrt(near_x**2 + near_y**2)
             if length > 0.01:
                 direction_vectors[0] = near_x / length
-                direction_vectors[1] = near_y / length
-        
+                direction_vectors[1] = -near_y / length  # 그리드 좌표계와 일치하도록 y 부호 반전
+
         if final_destination_direction:
             dest_x = final_destination_direction.get('x', 0)
             dest_y = final_destination_direction.get('y', 0)
-            
+
             # 방향 벡터는 이미 차량 좌표계 기준으로 저장됨
             # 정규화 (단위 벡터로)
             length = np.sqrt(dest_x**2 + dest_y**2)
             if length > 0.01:
                 direction_vectors[2] = dest_x / length
-                direction_vectors[3] = dest_y / length
+                direction_vectors[3] = -dest_y / length  # 그리드 좌표계와 일치하도록 y 부호 반전
         
         return {
             'grid': grid,

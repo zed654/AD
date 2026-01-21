@@ -5,51 +5,105 @@ MuZero 설정 파일
 from pathlib import Path
 import datetime
 import torch
-from models.MuZero.action import Action
+# from models.MuZero.action import Action
 
 # MuZero 설정 클래스
 class MuZeroConfig:
     def __init__(self):
-        self.test_mode = 2  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
+        self.test_mode = 1  # 0: 학습모드, 1: 빠른테스트모드(빠른학습), 2: 수렴테스트모드(Episode 1개 수렴여부 확인)
+        self.sort_of_device = 0 # 0: 노트북GPU(VRAM 12GB), 1: 서버GPU
+        self.operating_mode = 0 # 0: 학습모드, 1: 추론모드
 
         # 체크포인트 재개 설정
         self.resume_checkpoint_path = None  # 재개할 체크포인트 경로 (None이면 새로 시작)
-        # self.resume_checkpoint_path = "models/MuZero/results/2025-11-03--13-27-04/checkpoints/iter2449.pth"
+        # self.resume_checkpoint_path = "/home/chp/ai_ws/src/autonomy-planning-e2e/dl-project/models/MuZero/results/2025-11-27--22-35-50-step-5-no-legal-mask-plus-class-reward/iter999.pth"
+        # self.resume_checkpoint_path = "/home/chp/ai_ws/src/autonomy-planning-e2e/dl-project/models/MuZero/results/iter5399.pth"
+        # self.resume_checkpoint_path = "/home/chp/ai_ws/src/autonomy-planning-e2e/dl-project/models/MuZero/results/dir_policy_version_251216/iter1999.pth"
         # "/home/chp/ai_ws/AD/dl-project/models/MuZero/results/2025-09-02--10-03-53/checkpoints/muzero_epoch_15.pth"
         # 예: "models/MuZero/results/2025-09-02--00-11-57/checkpoints/muzero_epoch_5.pth"
         
         # 새로운 Representation 구조 설정
         self.use_coordconv = False  # CoordConv 사용 여부 (기본 OFF)
         self.use_goal_map = False   # Goal을 2D 가우시안 히트맵으로 투영 여부 (기본 OFF)
-        self.use_film = False       # FiLM 채널 단위 주입 실험용 (기본 OFF)
         self.alpha_init = 0.5       # DirectionalGating alpha 초기값 (0.3~0.7 권장)
         self.use_resnet = False  # Representation, Dynamics 에서 ResNet 사용 여부 (True: ResNet)
+        self.use_attn_soft_routing_film = True # Representation 에 Attention based FiLM (내부적으로 Attention 사용)사용 여부 (기본 OFF)
+        # soft MoE based Feature Modulation (+ Feature-wise Linear Modulation)
+        # 입력: z (B, 64, 25, 25) - 현재 주행 환경
+        #         ↓
+        # [1] GlobalPool → (B, 64) → Query
+        #         ↓
+        # [2] Query vs Expert Tokens → "어떤 상황과 유사?" → Weights
+        #         ↓
+        # [3] Weights로 FiLM Params 가중합 → gamma, beta
+        #         ↓
+        # [4] z * (1 + gamma) + beta
+        #         ↓
+        # 출력: z_modulated (B, 64, 25, 25)
 
         # 학습 설정
+        # 서버 + Resnet: 16 Batch / 8 Worker
+        # 서버 + ConvGRU: 128 Batch / 16 Worker
+        # Batch Size 가 줄어들면 training_steps 를 늘리는 것이 좋음. training_steps 마다 신규 batch 를 샘플링 하기 때문. 
+        # Replay Buffer 의 사이즈가 training_steps * batch_size 보다 작으면, training_steps 를 줄여서 효율 증대 권장
         self.selfplay_parallel_workers = 8  # Self-play 의 Episode 생성 병렬 워커 수 (멀티프로세싱)
-        self.batch_size = 4  # 32 -> 128 (GPU 메모리 활용도 최대화)
+        if self.sort_of_device == 0:
+            self.selfplay_num_of_random_episodes = 32  # Self-Play 시 매 반복마다 무작위로 생성할 에피소드 수 (다양성 확보 목적)
+        elif self.sort_of_device == 1:
+            self.selfplay_num_of_random_episodes = 64
+
+        if self.use_resnet:
+            self.batch_size = 16  # 32 -> 128 (GPU 메모리 활용도 최대화)
+        else:
+            if self.sort_of_device == 0:
+                self.batch_size = 32  # Fully Connected Network 용 배치 크기
+            elif self.sort_of_device == 1:
+                self.batch_size = 64
         self.rotation_augmentation = True # 90도씩 360도 회전 데이터 증강 사용 여부
-        self.use_gpu_device_max = None  # 최대 GPU 사용 개수 (None이면 모든 사용 가능 GPU 사용)
-        self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
+        self.num_usage_of_gpu_devices = [0]  # Option: None, 0, [2, 3], ... -> 최대 GPU 사용 개수 (None이면 모든 사용 가능 GPU 사용. [2, 3] 이면 cuda:2, cuda:3 만 사용)
+
+        # Self-Play 설정
+        # TODO: 실제 Inference 할 때, MCTS Sim 이후 Step 선택하는 Action 부에 Temperature 를 0으로 줘야함
+        if self.operating_mode == 0:
+            self.num_simulations = 200  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
+        elif self.operating_mode == 1:
+            self.num_simulations = 50   # 추론 모드에서는 시뮬레이션 횟수 줄임 (속도 향상 목적)
+        self.value_bootstrap_discount = 0.97
+        self.mcts_value_backup_discount = 0.99
+        self.puct_discount = 0.997
+        self.temperature_threshold = None
+        self.mcts_dirichlet_alpha = 1.2  # Dirichlet alpha: **클수록** 균등분포→탐험 강화 (5.0~10.0 권장), 작을수록 특정 action 집중→탐험 약화
+        self.mcts_exploration_fraction = 0.25  # dirichlet noise (클 수록 탐험도 커짐) -> 기존 prior 를 얼마나 깎고, noise 로 대체할건지 결정하는 항임. 값이 크면 prior 덜 반영됨 (0~1 사이). 1이면, prior 결과 안쓰고 noise 만 쓴다는거임
+        self.num_stochastic_steps = 30  # [지금 얘 안씀] 초기 30스텝 동안 확률적 행동 선택
+        self.max_game_length = 500  # Self-play 안전장치 (무한루프 방지)
+        self.action_moving_step_size_grid = 5  # 액션 1스텝 이동 거리 (m). Grid 1개에 0.2 m 이동
+        self.legal_mask_option = False
+        
+        # Gradient Accumulation 스텝 수: Multi-GPU 시 각 GPU당 mini-batch 크기가 작아지므로 자동 조정
+        # 예: batch_size=64, GPU 2개 → 각 GPU당 32개 → accumulation 8로 증가 → effective batch=256 유지
+        num_gpus = len(self.num_usage_of_gpu_devices) if isinstance(self.num_usage_of_gpu_devices, list) else (self.num_usage_of_gpu_devices or 1)
+        self.gradient_accumulation_steps = 4 * num_gpus if num_gpus > 1 else 4
+        self.results_path = Path(__file__).resolve().parent / "results" / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S-401-representation-near-dir-only")
         self.save_model = True
         if self.test_mode == 1:
             self.num_iterations = 10
-            self.training_steps = 10
+            self.training_steps = 8 * num_gpus # gradient_accumulation_steps 의 배수가 유리함
         elif self.test_mode == 2:
             self.num_iterations = 10000 # 100 {Self-Play - 학습} 사이클 반복 횟수
-            self.training_steps = 10
+            self.training_steps = 8 * num_gpus # gradient_accumulation_steps 의 배수가 유리함
         elif self.test_mode == 0:
             self.num_iterations = 10000 # 100 {Self-Play - 학습} 사이클 반복 횟수
-            self.training_steps = 10  # 1000. K-Step Unrolling 반복 횟수
-        self.unroll_steps = 5  # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
-        self.n_target_value_bootstrap = 4 # Target Value 생성 시 n-스텝 부트스트랩 길이. (인덱스 0~n-1 까지 Reward 쓰고, n 번째에서 Value 씀. 총 n+1 개임)
-        self.value_loss_weight = 1
+            self.training_steps = 8 * num_gpus  # gradient_accumulation_steps 의 배수가 유리함
+        self.unroll_steps = int(5/self.action_moving_step_size_grid*2)   # K-step unrolling 길이 (Episode 의 Step 사이즈보다 작게하는게 좋음. 왜냐하면, 길어질수록 신뢰도 떨어져서. [전체 Episode 커버 - Monte Carlo에 가까운 학습])
+        self.n_target_value_bootstrap = int(4  / self.action_moving_step_size_grid * 3) # Target Value 생성 시 n-스텝 부트스트랩 길이. (인덱스 0~n-1 까지 Reward 쓰고, n 번째에서 Value 씀. 총 n+1 개임)
+        self.value_loss_weight = 0.25
         self.reward_loss_weight = 1
         self.policy_loss_weight = 1
         self.train_on_gpu = torch.cuda.is_available()
 
         # 게임 관련 설정
-        self.action_space = list(range(Action.get_action_space_size()))  # Position 9개 액션 (POS0~POS8)
+        # self.action_space = list(range(Action.get_action_space_size()))  # Position 9개 액션 (POS0~POS8)
+        # self.action_space = list(range(Action.get_action_space_size()))  # Position 9개 액션 (POS0~POS8)
         self.players = list(range(1))  # 플레이어 목록
         self.stacked_observations = 0  # 현재 관찰에 추가할 이전 관찰 및 이전 액션 수
 
@@ -82,9 +136,10 @@ class MuZeroConfig:
         # Reward 와 Value 모두 적용됨
         # Reward 실제 범위: -2.0 ~ +0.1 → h_transform 후 -0.73 ~ +0.05
         # Value는 누적되므로 더 넓은 범위 필요
+        # 변경 시, Reward 와 Value 의 스케일링/디스케일링 함수도 수정 필요 (muzero_network.py)
         self.categorical_distribution_min = -2.0    # 최소 값
         self.categorical_distribution_max = 2.0     # 최대 값
-        self.num_categorical_distribution_atoms = 21      # 카테고리 개수 (홀수 권장; 해상도임)
+        self.num_categorical_distribution_atoms = 401      # 카테고리 개수 (홀수 권장; 해상도임)
         # -2.0~2.0 에 atoms 21 이면
         #     [2.0, -1.8, -1.6, -1.4, -1.2, -1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
 
@@ -101,7 +156,9 @@ class MuZeroConfig:
         self.observation_provider_type = "gt"  # "mock", "gt", "ros2" 중 선택
         # GT 데이터 경로: 파일(.jsonl) 또는 폴더 경로 모두 지원
         if self.test_mode == 1 or self.test_mode == 2:
-            self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일 ... 정상 주행 데이터 (코너 상황 대표 샘플)
+            # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일 ... 정상 주행 데이터 (코너 상황 대표 샘플)
+            self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171426_93.jsonl")  # 단일 파일 ... 정상 주행 데이터 (코너 상황 대표 샘플)
+            
         elif self.test_mode == 0:
             self.gt_data_path = Path("data/db3_parser/results/")  # 폴더 경로로 변경하면 모든 JSONL 파일 로드
         # self.gt_data_path = Path("data/db3_parser/results/IO_GT_matching_sensor_data_171626_95.jsonl")  # 단일 파일 ... 정상 주행 데이터 (코너 상황 대표 샘플)
@@ -121,22 +178,10 @@ class MuZeroConfig:
             self.gt_num_episodes = 1  # Episode 1개로 수렴여부 확인용
         elif self.test_mode == 0:
             self.gt_num_episodes = 999999 # 모든데이터 사용하려면 999999 로 설정  # GT 데이터에서 생성할 에피소드 수 (jsonl 파일 여러개면 더 많아도 됨. jsonl 이 현재 7700개 정도의 Steps 임. Episode * (Steps - Overlap Steps) 개수만큼 커버 가능)
-        self.max_episode_step_length = 25  # 에피소드 별 최대 스텝 수 (약 10초, 5Hz 기준). 너무 클 필요 없음. 1 스텝 최대이동이 0.2m 임. 50스텝=10m 이동
-        self.gt_episode_overlap = 10 # 10 . 25  # 에피소드 간 겹침 스텝 수
+        self.max_episode_step_length = int(25/self.action_moving_step_size_grid)  # 에피소드 별 최대 스텝 수 (약 10초, 5Hz 기준). 너무 클 필요 없음. 1 스텝 최대이동이 0.2m 임. 50스텝=10m 이동
+        self.max_expert_pos_step_length = 25 # expert pos(미래 궤적) 파싱 개수
+        self.gt_episode_overlap = int(10/self.action_moving_step_size_grid) # 10 . 25  # 에피소드 간 겹침 스텝 수
         self.replay_buffer_size = 3300 # 3300  # Replay Buffer 최대 사이즈. 너무 크게하면 과거 데이터의 업데이트가 늦어질 수 있음.
-        
-        # Self-Play 설정
-        # TODO: 실제 Inference 할 때, MCTS Sim 이후 Step 선택하는 Action 부에 Temperature 를 0으로 줘야함
-        self.selfplay_on_gpu = False
-        self.num_simulations = 15  # MCTS 시뮬레이션 횟수 (더 다양한 action 탐색)
-        self.value_bootstrap_discount = 0.97
-        self.mcts_value_backup_discount = 0.99
-        self.puct_discount = 0.997
-        self.temperature_threshold = None
-        self.mcts_dirichlet_alpha = 1.2  # Dirichlet alpha: **클수록** 균등분포→탐험 강화 (5.0~10.0 권장), 작을수록 특정 action 집중→탐험 약화
-        self.mcts_exploration_fraction = 0.25  # dirichlet noise (클 수록 탐험도 커짐) -> 기존 prior 를 얼마나 깎고, noise 로 대체할건지 결정하는 항임. 값이 크면 prior 덜 반영됨 (0~1 사이). 1이면, prior 결과 안쓰고 noise 만 쓴다는거임
-        self.num_stochastic_steps = 30  # [지금 얘 안씀] 초기 30스텝 동안 확률적 행동 선택
-        self.max_game_length = 500  # Self-play 안전장치 (무한루프 방지)
         
         # 학습 중 시각화 설정
         self.enable_training_visualization = True  # 학습 중 시각화 생성 여부
@@ -153,16 +198,16 @@ class MuZeroConfig:
 
         # pth 체크포인트 저장 설정
         if self.test_mode == 1:
-            self.pth_checkpoint_interval_iteration = 50 # iteration 몇 시점마다 체크포인트 저장할지
+            self.pth_checkpoint_interval_iteration = 200 # iteration 몇 시점마다 체크포인트 저장할지
         elif self.test_mode == 0 or self.test_mode == 2:
-            self.pth_checkpoint_interval_iteration = 50
+            self.pth_checkpoint_interval_iteration = 200
         self.checkpoint_save_dir = "checkpoints"  # 체크포인트 저장 디렉토리 이름
         self.checkpoint_final_name = "muzero_final.pth"  # 최종 모델 파일명
         self.checkpoint_training_steps_prefix = "muzero_training_steps_"  # 에폭별 체크포인트 파일명 접두사
 
         # 성능 최적화 설정
         self.use_mixed_precision = True  # Mixed Precision Training (AMP) 활성화
-        self.gradient_accumulation_steps = 4  # Gradient Accumulation으로 대용량 배치 시뮬레이션
+        # self.gradient_accumulation_steps는 위에서 Multi-GPU 설정에 따라 자동 계산됨 (Line 39)
         self.pin_memory = True  # DataLoader pin_memory 설정
         self.num_data_workers = 4  # CPU 병렬 처리 워커 수
 
